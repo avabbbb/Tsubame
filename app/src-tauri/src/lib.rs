@@ -29,11 +29,7 @@ fn import_media(path: String, state: State<AppState>) -> Result<MediaItem, Strin
 }
 
 #[tauri::command]
-fn update_media_duration(
-    id: i64,
-    duration_ms: i64,
-    state: State<AppState>,
-) -> Result<(), String> {
+fn update_media_duration(id: i64, duration_ms: i64, state: State<AppState>) -> Result<(), String> {
     state
         .db
         .lock()
