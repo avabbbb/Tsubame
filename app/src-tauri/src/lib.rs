@@ -10,22 +10,46 @@ struct AppState {
 
 #[tauri::command]
 fn list_media(state: State<AppState>) -> Result<Vec<MediaItem>, String> {
-    state.db.lock().map_err(|e| e.to_string())?.list_media().map_err(|e| e.to_string())
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_media()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn import_media(path: String, state: State<AppState>) -> Result<MediaItem, String> {
-    state.db.lock().map_err(|e| e.to_string())?.import_media(&path).map_err(|e| e.to_string())
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .import_media(&path)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn update_media_duration(id: i64, duration_ms: i64, state: State<AppState>) -> Result<(), String> {
-    state.db.lock().map_err(|e| e.to_string())?.update_media_duration(id, duration_ms).map_err(|e| e.to_string())
+fn update_media_duration(
+    id: i64,
+    duration_ms: i64,
+    state: State<AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .update_media_duration(id, duration_ms)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_segments(media_id: i64, state: State<AppState>) -> Result<Vec<Segment>, String> {
-    state.db.lock().map_err(|e| e.to_string())?.get_segments(media_id).map_err(|e| e.to_string())
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_segments(media_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -39,9 +63,16 @@ fn update_segment(
     state: State<AppState>,
 ) -> Result<Segment, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.update_segment(id, expected_revision, &source_text, &translated_text, start_ms, end_ms)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "segment revision conflict".to_string())
+    db.update_segment(
+        id,
+        expected_revision,
+        &source_text,
+        &translated_text,
+        start_ms,
+        end_ms,
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "segment revision conflict".to_string())
 }
 
 pub fn run() {
