@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yuzuki.local/schemas/operation.schema.json",
+  "title": "Yuzuki Operation Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "mutation", "side_effects"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "mutation": { "type": "boolean" },
+    "side_effects": {
+      "type": "array",
+      "items": {
+        "enum": ["none", "local-write", "network", "download", "remote-inference", "cost"]
+      },
+      "uniqueItems": true
+    },
+    "requires_expected_revision": { "type": "boolean", "default": false },
+    "supports_progress": { "type": "boolean", "default": false },
+    "supports_cancel": { "type": "boolean", "default": false }
+  }
+}
