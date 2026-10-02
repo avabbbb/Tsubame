@@ -1,0 +1,19 @@
+[package]
+name = "yuzuki"
+version = "0.1.0"
+description = "Local-first ASMR library and AI dubbing workbench"
+license = "GPL-3.0"
+edition = "2021"
+
+[lib]
+name = "yuzuki_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
