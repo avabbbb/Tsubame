@@ -1,0 +1,35 @@
+name: desktop-check
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "Cargo.toml"
+      - ".github/workflows/desktop-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "Cargo.toml"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install
+        working-directory: app
+      - run: npm run build
+        working-directory: app
+
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
