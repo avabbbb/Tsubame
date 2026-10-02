@@ -94,9 +94,20 @@ Playback does not stop when navigating elsewhere.
 
 ## Visual language
 
-Target: **Notion × Codex × Linear**, not a card-heavy consumer dashboard.
+Target: **Apple Music × Codex Workbench**.
+
+- **Codex/VS Code contributes the information architecture**: Activity Rail, contextual navigation, tabs, work surface, Inspector, collapsible panes and a persistent bottom control surface.
+- **Apple Music contributes the visual/media language**: artwork-forward hierarchy, soft layered surfaces, subtle translucency/material, generous media headers, strong album/work identity, refined player controls and content-driven accent color.
+
+Do not copy Apple Music pixel-for-pixel. Treat it as a visual-system reference while keeping Yuzuki's denser professional editing layout.
 
 Rules:
+- keep compact 12–13 px utility text in navigation/editor chrome, while allowing larger 20–32 px work/album titles and artwork-led headers;
+- artwork and current-media color may influence local accent/background treatment, but must preserve contrast;
+- use subtle material/translucency primarily for navigation/player/overlay layers, not every content panel;
+- prefer softly layered surfaces over a dashboard made of cards;
+- playback controls should feel like a first-class media product, not a debug toolbar;
+- dark and light themes are equally supported;
 - compact 12–13 px UI text;
 - 1 px low-contrast separators;
 - limited shadow;
