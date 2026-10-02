@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
-// @ts-expect-error process is provided by the Tauri/Vite dev environment\nconst host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is provided by the Tauri/Vite dev environment
+const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [vue()],
