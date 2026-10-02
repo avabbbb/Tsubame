@@ -1,0 +1,48 @@
+{
+  "profiles": [
+    {
+      "id": "jp-best-quality",
+      "name": "Japanese · Best Quality",
+      "capabilities": {
+        "speech.asr": {
+          "provider": "faster-whisper",
+          "model": "large-v3"
+        },
+        "transcript.refine": {
+          "provider": "byok-llm",
+          "model": "auto"
+        },
+        "speech.align": {
+          "provider": "qwen-forced-aligner",
+          "model": "default"
+        },
+        "text.translate": {
+          "provider": "openai-compatible",
+          "model": "auto"
+        },
+        "speech.tts": {
+          "provider": "indextts",
+          "model": "2.5"
+        }
+      }
+    },
+    {
+      "id": "mac-local",
+      "name": "Japanese · Mac Local",
+      "capabilities": {
+        "speech.asr": {
+          "provider": "apple-speech",
+          "model": "system"
+        },
+        "transcript.refine": {
+          "provider": "local-llm",
+          "model": "auto"
+        },
+        "text.translate": {
+          "provider": "local-llm",
+          "model": "auto"
+        }
+      }
+    }
+  ]
+}
