@@ -63,10 +63,7 @@ impl MediaDb {
 
     pub fn import_media(&self, path: &str) -> rusqlite::Result<MediaItem> {
         let p = Path::new(path);
-        let title = p
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled");
+        let title = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled");
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
