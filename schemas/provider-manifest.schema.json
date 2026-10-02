@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yuzuki.local/schemas/provider-manifest.schema.json",
+  "title": "Yuzuki Provider Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "display_name", "kind", "capabilities"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "display_name": { "type": "string", "minLength": 1 },
+    "kind": { "enum": ["native", "worker", "remote", "openai-compatible"] },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "supports_model_discovery": { "type": "boolean", "default": false },
+    "requires_secret": { "type": "boolean", "default": false },
+    "runtime_pack": { "type": ["string", "null"] }
+  }
+}
