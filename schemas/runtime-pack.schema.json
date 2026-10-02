@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yuzuki.local/schemas/runtime-pack.schema.json",
+  "title": "Yuzuki Runtime Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "platforms", "capabilities", "artifacts", "entrypoint"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["os", "arch"],
+        "properties": {
+          "os": { "enum": ["windows", "macos", "linux"] },
+          "arch": { "type": "string" }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "sha256"],
+        "properties": {
+          "url": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+          "size": { "type": ["integer", "null"], "minimum": 0 }
+        }
+      }
+    },
+    "entrypoint": { "type": "string" },
+    "health_probe": { "type": ["array", "null"], "items": { "type": "string" } }
+  }
+}

@@ -100,7 +100,10 @@ The Skill is for fast initialization and orchestration:
 - launch or connect to the Desktop;
 - operate the library, jobs, segments, providers and sources through stable interfaces.
 
-## Planned documentation
+## Documentation
+
+- [中文初始基线](docs/BASELINE.zh-CN.md)
+
 
 - `docs/00-vision.md`
 - `docs/01-product.md`

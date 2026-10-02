@@ -1,0 +1,41 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# JS
+node_modules/
+dist/
+
+# Rust
+target/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Yuzuki local state
+.yuzuki/
+runtime/
+runtimes/
+models/
+downloads/
+media/
+cache/
+logs/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Generated artifacts
+*.zip
+*.msi
+*.exe
+*.dmg
+*.app
