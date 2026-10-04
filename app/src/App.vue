@@ -100,7 +100,7 @@ onMounted(refreshLibrary);
 <template>
   <div class="workbench">
     <aside class="rail">
-      <button class="brand" aria-label="Yuzuki">Y</button>
+      <button class="brand" aria-label="Tsubame">Y</button>
       <nav>
         <button v-for="item in ['home','library','discover','downloads','studio','jobs']"
           :key="item" :class="{active: activeRail === item}" @click="activeRail = item"
@@ -115,7 +115,7 @@ onMounted(refreshLibrary);
       <div class="sidebar-head">
         <div>
           <p class="eyebrow">LIBRARY</p>
-          <h1>Yuzuki</h1>
+          <h1>Tsubame</h1>
         </div>
         <button class="icon-button" @click="importFiles" title="Import media">＋</button>
       </div>

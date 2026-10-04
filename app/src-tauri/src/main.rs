@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    yuzuki_lib::run()
+    tsubame_lib::run()
 }

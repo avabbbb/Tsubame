@@ -77,7 +77,7 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let db = MediaDb::open(&dir.join("yuzuki.db"))?;
+            let db = MediaDb::open(&dir.join("tsubame.db"))?;
             app.manage(AppState { db: Mutex::new(db) });
             Ok(())
         })
@@ -89,5 +89,5 @@ pub fn run() {
             update_segment
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Yuzuki");
+        .expect("error while running Tsubame");
 }

@@ -51,7 +51,7 @@ Primary role: architecture/reference for:
 - resumability;
 - metadata normalization.
 
-Yuzuki does not need to carry a Go runtime merely to reuse these ideas.
+Tsubame does not need to carry a Go runtime merely to reuse these ideas.
 
 ## Import policy
 
@@ -62,8 +62,8 @@ Before importing code:
 3. preserve required notices;
 4. add attribution to NOTICE where appropriate;
 5. avoid copying unavailable/non-open source implementation;
-6. keep upstream-specific behavior behind Yuzuki contracts.
+6. keep upstream-specific behavior behind Tsubame contracts.
 
 ## Namesake
 
-Yuzuki is named as a personal homage to voice actress Tsubame Yuzuki (柚木つばめ). This is not an upstream software dependency and does not imply affiliation.
+Tsubame is named as a personal homage to voice actress Yuzuki Tsubame (柚木つばめ). This is not an upstream software dependency and does not imply affiliation.

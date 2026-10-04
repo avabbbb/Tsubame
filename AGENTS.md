@@ -1,10 +1,10 @@
-# AGENTS.md — Yuzuki
+# AGENTS.md — Tsubame
 
 This file is the execution contract for coding agents working in this repository.
 
 ## Product invariant
 
-Yuzuki is a **local-first desktop ASMR library and AI dubbing workbench**.
+Tsubame is a **local-first desktop ASMR library and AI dubbing workbench**.
 
 It is not:
 - a web app that happens to be wrapped by Tauri;
@@ -32,10 +32,10 @@ Before changing contracts or implementation, read:
 
 1. **Capability first.** Product features never depend directly on a concrete model/provider name.
 2. **Provider != model.** Providers own authentication, discovery and transport. Models declare capabilities.
-3. **Desktop is canonical.** Yuzuki SQLite owns product state. Worker caches/manifests are execution state.
+3. **Desktop is canonical.** Tsubame SQLite owns product state. Worker caches/manifests are execution state.
 4. **Segment is first-class.** One sentence can be edited, regenerated and invalidated independently.
 5. **No environment setup for end users.** Do not require global Python, Node, Rust, FFmpeg or CUDA tooling.
-6. **App-managed runtimes.** Heavy engines/models install into Yuzuki-owned directories through verified manifests.
+6. **App-managed runtimes.** Heavy engines/models install into Tsubame-owned directories through verified manifests.
 7. **BYOK secrets belong in OS credential storage.** Never store API keys in SQLite, logs, project manifests or git.
 8. **Agent operations use CLI/MCP/local RPC.** Never make GUI automation the canonical control path.
 9. **Source-specific logic stays in adapters.** No website parser in UI/domain code.

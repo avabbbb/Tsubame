@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-## ADR-001 — Yuzuki is a Workbench, not a set of pages
+## ADR-001 — Tsubame is a Workbench, not a set of pages
 
 Accepted.
 
@@ -52,7 +52,7 @@ ASMR.one and Japanese ASMR are initial adapters, not foundational domain types.
 
 Accepted.
 
-Yuzuki may incorporate/adapt code while replacing both projects' user-facing product boundaries with its canonical contracts.
+Tsubame may incorporate/adapt code while replacing both projects' user-facing product boundaries with its canonical contracts.
 
 ## ADR-010 — GalGame mode is not on the initial roadmap
 
@@ -65,3 +65,10 @@ It does not contribute to the core acquisition → transcript → edit → dub l
 Accepted.
 
 The project name is a homage only and does not grant permission to use the namesake's voice/model/recordings.
+
+
+## ADR-012 — Product name is Tsubame
+
+Accepted.
+
+The repository and product name are **Tsubame**, a personal homage to **Yuzuki Tsubame / 柚木つばめ**. The shorter name is more distinctive than “Yuzuki” while still pointing to the intended namesake. This naming decision does not imply affiliation or permission to use her voice; `docs/09-security-rights.md` remains authoritative for that boundary.

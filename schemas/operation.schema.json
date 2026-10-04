@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yuzuki.local/schemas/operation.schema.json",
-  "title": "Yuzuki Operation Descriptor",
+  "$id": "https://tsubame.local/schemas/operation.schema.json",
+  "title": "Tsubame Operation Descriptor",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "mutation", "side_effects"],

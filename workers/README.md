@@ -9,4 +9,4 @@ Initial targets include:
 - SenseVoice/FunASR runtime pack;
 - IndexTTS runtime pack.
 
-Workers never own canonical product state and never write directly to Yuzuki SQLite.
+Workers never own canonical product state and never write directly to Tsubame SQLite.

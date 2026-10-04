@@ -1,5 +1,7 @@
 # Roadmap
 
+For the concrete review-sized sequence and acceptance criteria, see [Pull Request Plan](12-pr-plan.md).
+
 The roadmap is ordered to prove architecture and user value, not to maximize feature count.
 
 ## PR 0 — Product/architecture baseline
@@ -16,7 +18,7 @@ Freeze:
 - source adapter contract;
 - rights/licensing boundaries.
 
-## PR 1 — ASPlayer → Yuzuki baseline migration
+## PR 1 — ASPlayer → Tsubame baseline migration
 
 Bring in the useful desktop lineage while preserving attribution/license:
 - Tauri 2 + Vue;
@@ -94,7 +96,7 @@ Windows x64:
 - doctor;
 - no global environment setup.
 
-## PR 8 — Yuzuki Skill + CLI/MCP
+## PR 8 — Tsubame Skill + CLI/MCP
 
 Implement:
 - install detection/bootstrap;

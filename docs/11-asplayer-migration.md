@@ -27,8 +27,8 @@ Upstream: https://github.com/yumili426/ASPlayer
 
 ## First migration delta
 
-Yuzuki immediately renames the canonical subtitle row to **Segment** and adds `revision` so human/agent edits can use optimistic concurrency from the beginning.
+Tsubame immediately renames the canonical subtitle row to **Segment** and adds `revision` so human/agent edits can use optimistic concurrency from the beginning.
 
 The first frontend shell also applies the already-approved **Apple Music visual language × Codex workbench layout** instead of preserving ASPlayer's existing page composition.
 
-Subsequent commits in this PR can port/refactor additional proven playback and subtitle behavior while keeping these Yuzuki contracts intact.
+Subsequent commits in this PR can port/refactor additional proven playback and subtitle behavior while keeping these Tsubame contracts intact.

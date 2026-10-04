@@ -2,7 +2,7 @@
 
 ## Product statement
 
-**Yuzuki is a local-first ASMR library, player and AI dubbing workbench.**
+**Tsubame is a local-first ASMR library, player and AI dubbing workbench.**
 
 It can discover or import media, persist it in a local library, play it continuously, build a sentence timeline, translate/edit individual sentences, synthesize selected or full speech, and export derived assets.
 
@@ -20,7 +20,7 @@ It can discover or import media, persist it in a local library, play it continuo
 
 ### No setup tax
 
-A normal user installs Yuzuki Desktop and uses it. They do not manually install a Python environment, Rust toolchain, Node, FFmpeg, CUDA SDK or model server.
+A normal user installs Tsubame Desktop and uses it. They do not manually install a Python environment, Rust toolchain, Node, FFmpeg, CUDA SDK or model server.
 
 ### Play before process
 
@@ -55,14 +55,14 @@ Media, timeline state, playback state, job state and user edits are local by def
 - social/community features;
 - cloud account sync;
 - DRM/paywall bypass;
-- training custom voice models inside Yuzuki;
+- training custom voice models inside Tsubame;
 - mobile clients.
 
 ## Success metric for the first real build
 
 A fresh Windows user can:
 
-1. install Yuzuki;
+1. install Tsubame;
 2. import one local Japanese audio/video file;
 3. choose or install an ASR provider;
 4. generate sentence subtitles;

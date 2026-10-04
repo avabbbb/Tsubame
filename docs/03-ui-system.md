@@ -1,4 +1,4 @@
-# UI System — Yuzuki Workbench
+# UI System — Tsubame Workbench
 
 ## Canonical shell
 
@@ -99,7 +99,7 @@ Target: **Apple Music × Codex Workbench**.
 - **Codex/VS Code contributes the information architecture**: Activity Rail, contextual navigation, tabs, work surface, Inspector, collapsible panes and a persistent bottom control surface.
 - **Apple Music contributes the visual/media language**: artwork-forward hierarchy, soft layered surfaces, subtle translucency/material, generous media headers, strong album/work identity, refined player controls and content-driven accent color.
 
-Do not copy Apple Music pixel-for-pixel. Treat it as a visual-system reference while keeping Yuzuki's denser professional editing layout.
+Do not copy Apple Music pixel-for-pixel. Treat it as a visual-system reference while keeping Tsubame's denser professional editing layout.
 
 Rules:
 - keep compact 12–13 px utility text in navigation/editor chrome, while allowing larger 20–32 px work/album titles and artwork-led headers;

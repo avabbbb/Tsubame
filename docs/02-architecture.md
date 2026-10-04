@@ -27,29 +27,29 @@ Adapters  providers       ASMR-Dubber adapter        providers
 ## Planned repository structure
 
 ```text
-Yuzuki/
+Tsubame/
 ├─ app/                         # Tauri 2 + Vue workbench
 ├─ crates/
-│  ├─ yuzuki-domain/
-│  ├─ yuzuki-library/
-│  ├─ yuzuki-jobs/
-│  ├─ yuzuki-providers/
-│  ├─ yuzuki-sources/
-│  ├─ yuzuki-runtime/
-│  └─ yuzuki-control/
+│  ├─ tsubame-domain/
+│  ├─ tsubame-library/
+│  ├─ tsubame-jobs/
+│  ├─ tsubame-providers/
+│  ├─ tsubame-sources/
+│  ├─ tsubame-runtime/
+│  └─ tsubame-control/
 ├─ workers/
 │  ├─ dubber/
 │  └─ provider-packs/
 ├─ schemas/
 ├─ examples/
-├─ .agents/skills/yuzuki/
+├─ .agents/skills/tsubame/
 ├─ docs/
 └─ scripts/
 ```
 
 ## State ownership
 
-**Yuzuki SQLite is the canonical product state.**
+**Tsubame SQLite is the canonical product state.**
 
 Worker project files, caches and manifests may exist for execution/recovery but never become the source of truth for user-edited segments.
 
@@ -88,7 +88,7 @@ Use isolated workers when an AI ecosystem is materially better outside Rust. Wor
 
 ASMR-Dubber is treated as an execution-engine lineage, not a second product UI.
 
-Yuzuki should reuse/adapt its strongest ideas:
+Tsubame should reuse/adapt its strongest ideas:
 - VAD/segmentation;
 - ASR backends;
 - review/alignment;
@@ -97,7 +97,7 @@ Yuzuki should reuse/adapt its strongest ideas:
 - timing/mixing;
 - recoverable runtime/model management.
 
-Its Gradio UI is not the user-facing Yuzuki product.
+Its Gradio UI is not the user-facing Tsubame product.
 
 ## ASPlayer role
 
@@ -109,4 +109,4 @@ ASPlayer is the desktop/player lineage:
 - local transcription flow;
 - dictionary/learning utilities where still relevant.
 
-Yuzuki restructures it around the Workbench shell and modular processing architecture.
+Tsubame restructures it around the Workbench shell and modular processing architecture.

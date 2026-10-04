@@ -1,8 +1,8 @@
-# Agent Control and Yuzuki Skill
+# Agent Control and Tsubame Skill
 
 ## Goal
 
-A local coding/general agent should be able to operate the installed Yuzuki Desktop without clicking the UI.
+A local coding/general agent should be able to operate the installed Tsubame Desktop without clicking the UI.
 
 The Desktop remains the canonical state owner.
 
@@ -11,7 +11,7 @@ The Desktop remains the canonical state owner.
 ```text
 Local Agent
     │
-  $yuzuki Skill
+  $tsubame Skill
     │
  ┌──┴───────────┐
  │              │
@@ -21,7 +21,7 @@ CLI            MCP
       │
   Local RPC
       │
-Yuzuki Desktop
+Tsubame Desktop
       │
 Operation Registry
 ```
@@ -31,7 +31,7 @@ Operation Registry
 The Skill provides host-agnostic instructions for:
 - locating the install;
 - bootstrapping when necessary;
-- opening/connecting to Yuzuki;
+- opening/connecting to Tsubame;
 - running diagnostics;
 - resolving/installing required models/runtimes;
 - invoking stable CLI/MCP operations;
@@ -44,28 +44,28 @@ It must not contain provider-specific business logic duplicated from the app.
 Examples:
 
 ```bash
-yuzuki doctor --json
-yuzuki app status --json
-yuzuki app ensure
+tsubame doctor --json
+tsubame app status --json
+tsubame app ensure
 
-yuzuki provider list --json
-yuzuki provider models <provider> --refresh --json
-yuzuki profile resolve "Japanese · Best Quality" --json
+tsubame provider list --json
+tsubame provider models <provider> --refresh --json
+tsubame profile resolve "Japanese · Best Quality" --json
 
-yuzuki runtime plan --profile "Japanese · Best Quality" --json
-yuzuki runtime install --plan <plan-id>
+tsubame runtime plan --profile "Japanese · Best Quality" --json
+tsubame runtime install --plan <plan-id>
 
-yuzuki source search japanese-asmr "keyword" --json
-yuzuki source acquire <source-item-id>
+tsubame source search japanese-asmr "keyword" --json
+tsubame source acquire <source-item-id>
 
-yuzuki library list --json
-yuzuki work show <work-id> --json
-yuzuki segment list <track-id> --json
-yuzuki segment update <segment-id> --expected-revision 7 --translation "..."
-yuzuki segment regenerate <segment-id>
+tsubame library list --json
+tsubame work show <work-id> --json
+tsubame segment list <track-id> --json
+tsubame segment update <segment-id> --expected-revision 7 --translation "..."
+tsubame segment regenerate <segment-id>
 
-yuzuki job list --json
-yuzuki job cancel <job-id>
+tsubame job list --json
+tsubame job cancel <job-id>
 ```
 
 ## MCP

@@ -1,14 +1,14 @@
 # Notices
 
-Yuzuki is an independent open-source project.
+Tsubame is an independent open-source project.
 
 ## Namesake
 
-The name **Yuzuki** is a personal homage to voice actress **Tsubame Yuzuki (柚木つばめ)**.
+The name **Tsubame** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
 
-Yuzuki is not affiliated with, endorsed by, sponsored by, or an official product of Tsubame Yuzuki.
+Tsubame is not affiliated with, endorsed by, sponsored by, or an official product of Yuzuki Tsubame.
 
-No voice recording, voice model, likeness, logo or other branding asset of Tsubame Yuzuki is included by virtue of this naming choice.
+No voice recording, voice model, likeness, logo or other branding asset of Yuzuki Tsubame is included by virtue of this naming choice.
 
 ## Upstream software
 

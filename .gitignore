@@ -16,8 +16,8 @@ target/
 __pycache__/
 *.pyc
 
-# Yuzuki local state
-.yuzuki/
+# Tsubame local state
+.tsubame/
 runtime/
 runtimes/
 models/

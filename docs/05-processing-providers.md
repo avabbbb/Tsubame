@@ -90,7 +90,7 @@ After a user connects a remote Provider:
 
 1. validate credentials;
 2. call provider model-list API when available;
-3. merge provider metadata with Yuzuki's model catalog;
+3. merge provider metadata with Tsubame's model catalog;
 4. optionally run lightweight capability probes;
 5. expose unknown models with explicit “unverified capability” state;
 6. allow manual override for advanced users.
@@ -151,4 +151,4 @@ Profiles can be cloned/edited but execution records the exact resolved providers
 
 ## Failure rule
 
-If the selected provider/model is missing, unsupported or unavailable, Yuzuki shows the failure and explicit alternatives. It must not silently switch to another model.
+If the selected provider/model is missing, unsupported or unavailable, Tsubame shows the failure and explicit alternatives. It must not silently switch to another model.

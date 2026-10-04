@@ -1,8 +1,8 @@
-# Yuzuki
+# Tsubame
 
 > Local-first ASMR Library & AI Dubbing Workbench.
 
-Yuzuki is a desktop workbench for discovering, downloading, organizing, playing, transcribing, translating, editing, dubbing, and exporting ASMR / voice media.
+Tsubame is a desktop workbench for discovering, downloading, organizing, playing, transcribing, translating, editing, dubbing, and exporting ASMR / voice media.
 
 The product combines three ideas into one coherent desktop app:
 
@@ -10,7 +10,7 @@ The product combines three ideas into one coherent desktop app:
 - **ASMR-Dubber-grade processing pipelines**
 - **pluggable source/download adapters**
 
-The result is not a downloader, player, and dubbing tool glued together. Yuzuki is one local-first workbench with a single library, one canonical segment timeline, one job system, and modular providers.
+The result is not a downloader, player, and dubbing tool glued together. Tsubame is one local-first workbench with a single library, one canonical segment timeline, one job system, and modular providers.
 
 ## Status
 
@@ -27,7 +27,7 @@ We intentionally freeze product, data, provider, runtime, Skill, agent-control, 
 5. **BYOK by default for cloud AI.** Provider credentials are user-owned; supported providers can discover accessible models automatically.
 6. **Local runtimes are modular.** Faster-Whisper, SenseVoice, Apple Speech, future ASR/TTS engines, etc. are replaceable providers.
 7. **On-demand install.** Heavy runtimes/models are downloaded only when the chosen processing profile needs them.
-8. **Agent-operable.** Local agents use the same product through the Yuzuki Skill + CLI/MCP/local RPC, not brittle GUI automation.
+8. **Agent-operable.** Local agents use the same product through the Tsubame Skill + CLI/MCP/local RPC, not brittle GUI automation.
 9. **Source adapters are isolated.** ASMR.one, Japanese ASMR, local folders, and future sources share one contract.
 10. **No silent fallback.** Model/provider/runtime changes are explicit and auditable.
 
@@ -75,7 +75,7 @@ The Desktop remains the product and canonical state owner.
 ```text
 Local Agent
     │
-  $yuzuki Skill
+  $tsubame Skill
     │
  ┌──┴──────────────┐
  │                 │
@@ -85,14 +85,14 @@ CLI               MCP
         │
    Local RPC
         │
- Yuzuki Desktop
+ Tsubame Desktop
         │
  Operation Registry
 ```
 
 The Skill is for fast initialization and orchestration:
 
-- detect/install Yuzuki Desktop;
+- detect/install Tsubame Desktop;
 - run doctor checks;
 - inspect hardware;
 - resolve a processing profile;
@@ -116,9 +116,10 @@ The Skill is for fast initialization and orchestration:
 - `docs/08-source-adapters.md`
 - `docs/09-security-rights.md`
 - `docs/10-roadmap.md`
+- `docs/12-pr-plan.md`
 - `docs/DECISIONS.md`
 - `docs/UPSTREAM.md`
-- `.agents/skills/yuzuki/SKILL.md`
+- `.agents/skills/tsubame/SKILL.md`
 
 ## Upstream lineage
 
@@ -132,9 +133,9 @@ If ASPlayer code is incorporated, the distributed derivative remains GPL-3.0 and
 
 ## Name
 
-**Yuzuki** is a personal homage to voice actress **Tsubame Yuzuki (柚木つばめ)**.
+**Tsubame** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
 
-This project is **not affiliated with, endorsed by, or an official product of Tsubame Yuzuki**. It does not bundle her recordings, voice model, likeness, branding assets, or training data.
+This project is **not affiliated with, endorsed by, or an official product of Yuzuki Tsubame**. It does not bundle her recordings, voice model, likeness, branding assets, or training data.
 
 The project must not be used to train, clone, or synthesize a real person's voice without the rights/permission required for that use.
 
