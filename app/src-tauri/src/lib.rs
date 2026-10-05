@@ -184,7 +184,6 @@ fn export_subtitles(
     Ok(path)
 }
 
-
 #[tauri::command]
 fn provider_presets() -> Vec<ProviderPreset> {
     presets()
@@ -371,7 +370,9 @@ fn set_model_capabilities(
     capabilities: Option<Vec<String>>,
     state: State<AppState>,
 ) -> Result<ModelDescriptor, String> {
-    let normalized = capabilities.as_ref().map(|values| normalize_capabilities(values));
+    let normalized = capabilities
+        .as_ref()
+        .map(|values| normalize_capabilities(values));
     state
         .db
         .lock()
