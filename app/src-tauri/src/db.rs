@@ -183,20 +183,22 @@ impl MediaDb {
              FROM media_files ORDER BY added_at DESC,id DESC",
         )?;
 
-        stmt.query_map([], |row| {
-            Ok(MediaItem {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                title: row.get(2)?,
-                media_type: row.get(3)?,
-                duration_ms: row.get(4)?,
-                playback_position: row.get(5)?,
-                file_size: row.get(6)?,
-                speed: row.get(7)?,
-                volume: row.get(8)?,
-            })
-        })?
-        .collect()
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MediaItem {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    media_type: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    playback_position: row.get(5)?,
+                    file_size: row.get(6)?,
+                    speed: row.get(7)?,
+                    volume: row.get(8)?,
+                })
+            })?
+            .collect();
+        rows
     }
 
     pub fn update_media_duration(&self, id: i64, duration_ms: i64) -> rusqlite::Result<()> {
@@ -239,7 +241,8 @@ impl MediaDb {
              ORDER BY start_ms,ordinal,id",
         )?;
 
-        stmt.query_map([media_id], row_to_segment)?.collect()
+        let rows = stmt.query_map([media_id], row_to_segment)?.collect();
+        rows
     }
 
     pub fn get_segment(&self, id: i64) -> rusqlite::Result<Option<Segment>> {
