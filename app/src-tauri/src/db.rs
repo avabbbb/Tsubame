@@ -92,18 +92,10 @@ impl MediaDb {
         Self::ensure_segment_column(&conn, "refine_provenance", "TEXT")?;
         Self::ensure_segment_column(&conn, "translation_provenance", "TEXT")?;
         Self::ensure_segment_column(&conn, "tts_provenance", "TEXT")?;
-        Self::ensure_segment_column(
-            &conn,
-            "translation_dirty",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
+        Self::ensure_segment_column(&conn, "translation_dirty", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_segment_column(&conn, "tts_dirty", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_segment_column(&conn, "mix_dirty", "INTEGER NOT NULL DEFAULT 0")?;
-        Self::ensure_segment_column(
-            &conn,
-            "subtitle_dirty",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
+        Self::ensure_segment_column(&conn, "subtitle_dirty", "INTEGER NOT NULL DEFAULT 0")?;
 
         Ok(Self { conn })
     }
