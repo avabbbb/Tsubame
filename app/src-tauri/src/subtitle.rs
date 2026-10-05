@@ -83,12 +83,9 @@ fn parse_timing_line(line: &str) -> Result<(i64, i64), String> {
 
 pub fn parse_subtitles(contents: &str, format: SubtitleFormat) -> Result<Vec<SegmentDraft>, String> {
     let normalized = contents
-        .trim_start_matches('﻿')
-        .replace("
-", "
-")
-        .replace('', "
-");
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
 
     let mut lines = normalized.lines().peekable();
 
