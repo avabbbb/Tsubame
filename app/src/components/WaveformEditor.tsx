@@ -27,6 +27,15 @@ export default function WaveformEditor({
   onTimingCommit,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
+  const segmentsRef = useRef(segments);
+  const onSelectRef = useRef(onSelect);
+  const onTimingCommitRef = useRef(onTimingCommit);
+
+  segmentsRef.current = segments;
+  onSelectRef.current = onSelect;
+  onTimingCommitRef.current = onTimingCommit;
 
   useEffect(() => {
     if (!containerRef.current || !media || !sourceUrl) return;
@@ -51,9 +60,66 @@ export default function WaveformEditor({
       plugins: [regions, timeline],
     });
 
-    const addRegions = () => {
+    wavesurferRef.current = wavesurfer;
+    regionsRef.current = regions;
+
+    const clicked = regions.on("region-clicked", (region, event) => {
+      event.stopPropagation();
+      const id = Number(region.id);
+      if (Number.isFinite(id)) onSelectRef.current(id);
+    });
+
+    const updated = regions.on("region-updated", (region) => {
+      const id = Number(region.id);
+      const segment = segmentsRef.current.find((row) => row.id === id);
+      if (!segment) return;
+      onTimingCommitRef.current(
+        id,
+        Math.round(region.start * 1000),
+        Math.round(region.end * 1000),
+        segment.revision,
+      );
+    });
+
+    return () => {
+      clicked();
+      updated();
+      wavesurfer.destroy();
+      wavesurferRef.current = null;
+      regionsRef.current = null;
+    };
+  }, [media, sourceUrl]);
+
+  useEffect(() => {
+    const regions = regionsRef.current;
+    const wavesurfer = wavesurferRef.current;
+    if (!regions || !wavesurfer || wavesurfer.getDuration() <= 0) return;
+
+    regions.clearRegions();
+    for (const segment of segments) {
+      regions.addRegion({
+        id: String(segment.id),
+        start: segment.start_ms / 1000,
+        end: segment.end_ms / 1000,
+        drag: true,
+        resize: true,
+        minLength: 0.08,
+        color:
+          segment.id === selectedId
+            ? "rgba(250,45,72,.18)"
+            : "rgba(130,130,138,.10)",
+      });
+    }
+  }, [segments, selectedId]);
+
+  useEffect(() => {
+    const wavesurfer = wavesurferRef.current;
+    const regions = regionsRef.current;
+    if (!wavesurfer || !regions) return;
+
+    const render = () => {
       regions.clearRegions();
-      for (const segment of segments) {
+      for (const segment of segmentsRef.current) {
         regions.addRegion({
           id: String(segment.id),
           start: segment.start_ms / 1000,
@@ -69,35 +135,9 @@ export default function WaveformEditor({
       }
     };
 
-    const ready = wavesurfer.on("ready", addRegions);
-
-    const click = regions.on("region-clicked", (region, event) => {
-      event.stopPropagation();
-      const id = Number(region.id);
-      if (Number.isFinite(id)) onSelect(id);
-    });
-
-    const updated = regions.on("region-updated", (region) => {
-      const id = Number(region.id);
-      const segment = segments.find((row) => row.id === id);
-      if (!segment) return;
-      onTimingCommit(
-        id,
-        Math.round(region.start * 1000),
-        Math.round(region.end * 1000),
-        segment.revision,
-      );
-    });
-
-    if (wavesurfer.getDuration() > 0) addRegions();
-
-    return () => {
-      ready();
-      click();
-      updated();
-      wavesurfer.destroy();
-    };
-  }, [media, onSelect, onTimingCommit, segments, selectedId, sourceUrl]);
+    const unsubscribe = wavesurfer.on("ready", render);
+    return unsubscribe;
+  }, [selectedId]);
 
   return (
     <div className="waveform-shell">
