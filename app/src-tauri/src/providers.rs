@@ -193,17 +193,9 @@ pub fn catalog_capabilities(model_id: &str) -> Vec<String> {
         return vec!["image.generate".into()];
     }
 
-    if [
-        "gpt",
-        "qwen",
-        "deepseek",
-        "glm",
-        "kimi",
-        "claude",
-        "gemini",
-    ]
-    .iter()
-    .any(|prefix| id.contains(prefix))
+    if ["gpt", "qwen", "deepseek", "glm", "kimi", "claude", "gemini"]
+        .iter()
+        .any(|prefix| id.contains(prefix))
     {
         return vec![
             "text.generate".into(),
@@ -281,21 +273,29 @@ fn advertised_capabilities(value: &Value) -> Vec<String> {
 }
 
 pub fn parse_model_response(value: &Value) -> Result<Vec<DiscoveredModel>, String> {
-    let array = model_array(value).ok_or_else(|| "model list response contains no model array".to_string())?;
+    let array = model_array(value)
+        .ok_or_else(|| "model list response contains no model array".to_string())?;
     let mut models = Vec::new();
 
     for item in array {
         let Some(model_id) = string_field(
             item,
-            &["id", "model_id", "modelId", "model_name", "modelName", "name"],
+            &[
+                "id",
+                "model_id",
+                "modelId",
+                "model_name",
+                "modelName",
+                "name",
+            ],
         ) else {
             continue;
         };
 
         let display_name = string_field(item, &["display_name", "displayName", "name"])
             .unwrap_or_else(|| model_id.clone());
-        let owned_by = string_field(item, &["owned_by", "ownedBy", "provider", "vendor"])
-            .unwrap_or_default();
+        let owned_by =
+            string_field(item, &["owned_by", "ownedBy", "provider", "vendor"]).unwrap_or_default();
 
         let mut capabilities = advertised_capabilities(item);
         if capabilities.is_empty() {
@@ -365,17 +365,17 @@ pub async fn discover_models(
     parse_model_response(&value)
 }
 
-pub async fn test_provider(
-    provider: &ProviderConfig,
-    secret: Option<&str>,
-) -> ProviderTestResult {
+pub async fn test_provider(provider: &ProviderConfig, secret: Option<&str>) -> ProviderTestResult {
     match model_request(provider, secret).await {
         Ok((status, value)) => match parse_model_response(&value) {
             Ok(models) => ProviderTestResult {
                 ok: true,
                 status: status.as_u16().to_string(),
                 model_count: models.len(),
-                message: format!("Connected. {} models are visible to this credential.", models.len()),
+                message: format!(
+                    "Connected. {} models are visible to this credential.",
+                    models.len()
+                ),
             },
             Err(error) => ProviderTestResult {
                 ok: false,
@@ -410,7 +410,9 @@ mod tests {
 
         let models = parse_model_response(&response).unwrap();
         assert_eq!(models.len(), 2);
-        assert!(models[0].capabilities.contains(&"text.generate".to_string()));
+        assert!(models[0]
+            .capabilities
+            .contains(&"text.generate".to_string()));
         assert!(models[1].capabilities.contains(&"speech.asr".to_string()));
     }
 
@@ -426,7 +428,9 @@ mod tests {
 
         let models = parse_model_response(&response).unwrap();
         assert_eq!(models[0].model_id, "qwen-example");
-        assert!(models[0].capabilities.contains(&"text.translate".to_string()));
+        assert!(models[0]
+            .capabilities
+            .contains(&"text.translate".to_string()));
     }
 
     #[test]
