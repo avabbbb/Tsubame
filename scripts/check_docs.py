@@ -22,7 +22,7 @@ REQUIRED = [
     "docs/09-security-rights.md",
     "docs/10-roadmap.md",
     "docs/DECISIONS.md",
-    "docs/UPSTREAM.md",
+    "docs/REFERENCES.md",
     ".agents/skills/tsubame/SKILL.md",
 ]
 
