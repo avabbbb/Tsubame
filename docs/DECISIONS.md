@@ -48,11 +48,13 @@ Accepted.
 
 ASMR.one and Japanese ASMR are initial adapters, not foundational domain types.
 
-## ADR-009 — ASPlayer is desktop lineage, ASMR-Dubber is processing lineage
+## ADR-009 — ASPlayer is reference-only
 
 Accepted.
 
-Tsubame may incorporate/adapt code while replacing both projects' user-facing product boundaries with its canonical contracts.
+ASPlayer may inform product/interaction research, but its GPL-3.0 source is not copied, adapted, vendored or linked into Tsubame. Tsubame is a clean-room MIT implementation.
+
+ASMR-Dubber remains a potential MIT processing dependency behind worker contracts.
 
 ## ADR-010 — GalGame mode is not on the initial roadmap
 
@@ -72,3 +74,18 @@ The project name is a homage only and does not grant permission to use the names
 Accepted.
 
 The repository and product name are **Tsubame**, a personal homage to **Yuzuki Tsubame / 柚木つばめ**. The shorter name is more distinctive than “Yuzuki” while still pointing to the intended namesake. This naming decision does not imply affiliation or permission to use her voice; `docs/09-security-rights.md` remains authoritative for that boundary.
+
+
+## ADR-013 — React + Tauri 2 + Rust is the canonical Desktop stack
+
+Accepted.
+
+Tsubame uses React/TypeScript for the Workbench UI and Tauri 2/Rust for the native Desktop shell, SQLite ownership, filesystem boundaries, local jobs and runtime management.
+
+Rust is retained because it is a strong fit for the existing Desktop architecture. Python remains isolated to AI workers when justified by model ecosystem support.
+
+## ADR-014 — Tsubame is MIT
+
+Accepted.
+
+MIT compatibility is protected by excluding GPL source code from the repository. Reference-only research does not authorize source reuse.
