@@ -348,6 +348,10 @@ export default function App() {
 
   const chooseSegment = useCallback(
     (segment: Segment) => {
+      if (selected?.id !== segment.id) {
+        setUndoStack([]);
+        setRedoStack([]);
+      }
       setSelected(segment);
       setDraftSource(segment.source_text);
       setDraftTranslation(segment.translated_text);
@@ -356,7 +360,7 @@ export default function App() {
       setEditorMessage("");
       seekTo(segment.start_ms / 1000);
     },
-    [seekTo],
+    [seekTo, selected?.id],
   );
 
   const applySegmentMutation = useCallback(
