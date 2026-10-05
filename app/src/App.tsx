@@ -128,7 +128,7 @@ export default function App() {
   const [undoStack, setUndoStack] = useState<SegmentSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SegmentSnapshot[]>([]);
   const [editorMessage, setEditorMessage] = useState("");
-  const [mediaElement, setMediaElement] = useState<HTMLMediaElement | null>(null);
+  const [boundMedia, setBoundMedia] = useState<HTMLMediaElement | null>(null);
   const [activeRail, setActiveRail] = useState<RailSection>(
     initial.activeRail ?? "library",
   );
