@@ -10,18 +10,29 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{
-      "title": "Tsubame",
-      "width": 1440,
-      "height": 900,
-      "minWidth": 900,
-      "minHeight": 620,
-      "center": true
-    }],
+    "windows": [
+      {
+        "title": "Tsubame",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
     "security": {
       "csp": null,
-      "assetProtocol": { "enable": true, "scope": ["**"] }
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**"
+        ]
+      }
     }
   },
-  "bundle": { "active": true, "targets": "all" }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
 }
