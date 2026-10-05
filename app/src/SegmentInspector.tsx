@@ -129,17 +129,16 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
 
   async function undo() {
     if (!segment || undoStack.length === 0) return;
-    const target = undoStack.at(-1);
+    const target = undoStack[undoStack.length - 1];
     if (!target) return;
     const current = segmentDraft(segment);
 
     setSaving(true);
     setError(null);
     try {
-      const updated = await mutate(segment, target, false);
+      await mutate(segment, target, false);
       setUndoStack((items) => items.slice(0, -1));
       setRedoStack((items) => [...items, current]);
-      onUpdated(updated);
     } catch (errorValue) {
       await handleConflict(errorValue);
     } finally {
@@ -149,17 +148,16 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
 
   async function redo() {
     if (!segment || redoStack.length === 0) return;
-    const target = redoStack.at(-1);
+    const target = redoStack[redoStack.length - 1];
     if (!target) return;
     const current = segmentDraft(segment);
 
     setSaving(true);
     setError(null);
     try {
-      const updated = await mutate(segment, target, false);
+      await mutate(segment, target, false);
       setRedoStack((items) => items.slice(0, -1));
       setUndoStack((items) => [...items, current]);
-      onUpdated(updated);
     } catch (errorValue) {
       await handleConflict(errorValue);
     } finally {
