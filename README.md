@@ -118,6 +118,7 @@ The Skill is for fast initialization and orchestration:
 - `docs/10-roadmap.md`
 - `docs/11-clean-room-reset.md`
 - `docs/12-pr-plan.md`
+- `docs/14-segment-editor.md`
 - `docs/DECISIONS.md`
 - `docs/REFERENCES.md`
 - `.agents/skills/tsubame/SKILL.md`
