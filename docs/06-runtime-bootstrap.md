@@ -2,7 +2,7 @@
 
 ## User promise
 
-A normal user installs Yuzuki Desktop and does not manually configure developer environments.
+A normal user installs Tsubame Desktop and does not manually configure developer environments.
 
 Do not require:
 - system Python;
@@ -17,7 +17,7 @@ Do not require:
 Initial production target: Windows x64.
 
 ```text
-Yuzuki installer
+Tsubame installer
   └─ Desktop core
       ├─ Tauri app
       ├─ bootstrap/runtime manager
@@ -32,7 +32,7 @@ Heavy AI runtimes/models are separate on-demand packs.
 Conceptual layout:
 
 ```text
-YuzukiData/
+TsubameData/
 ├─ db/
 ├─ media/
 ├─ cache/
@@ -106,14 +106,14 @@ Large third-party model assets should use their lawful canonical hosts/mirrors w
 
 Desktop app updates and model/runtime updates are separate channels.
 
-Updating Yuzuki must not force re-downloading multi-GB models when compatible packs already exist.
+Updating Tsubame must not force re-downloading multi-GB models when compatible packs already exist.
 
 ## Skill bootstrap
 
-The Yuzuki Skill may:
+The Tsubame Skill may:
 - detect an existing installation;
 - download a trusted Desktop release/bootstrap helper when absent;
 - run `doctor`;
 - ask the Desktop/runtime manager to install missing packs.
 
-The Skill must not reproduce environment-management logic independently. Runtime installation logic belongs to Yuzuki.
+The Skill must not reproduce environment-management logic independently. Runtime installation logic belongs to Tsubame.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yuzuki.local/schemas/runtime-pack.schema.json",
-  "title": "Yuzuki Runtime Pack",
+  "$id": "https://tsubame.local/schemas/runtime-pack.schema.json",
+  "title": "Tsubame Runtime Pack",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "version", "platforms", "capabilities", "artifacts", "entrypoint"],

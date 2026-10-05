@@ -2,7 +2,7 @@
 
 ## Goal
 
-Yuzuki must not become “an ASMR.one client”.
+Tsubame must not become “an ASMR.one client”.
 
 Content acquisition is a pluggable source capability.
 
@@ -10,7 +10,7 @@ Initial adapters:
 
 - Local files/folders;
 - ASMR.one where functional;
-- Japanese ASMR;
+- Japanese ASMR — https://japaneseasmr.com/;
 - future lawful sources.
 
 ## SourceAdapter contract
@@ -27,7 +27,7 @@ acquire(asset_id, destination)
 refresh(record)
 ```
 
-Adapters normalize remote metadata into Yuzuki domain objects.
+Adapters normalize remote metadata into Tsubame domain objects.
 
 ## Normalized Work
 
@@ -98,3 +98,16 @@ Therefore:
 - fixtures/contracts test each adapter;
 - adapter failures do not corrupt Library state;
 - imported/acquired local assets remain usable even if the source disappears later.
+
+
+## Name normalization
+
+Voice-actor identity must preserve the original Japanese display name and keep romanized names as aliases rather than replacing the canonical source name.
+
+Examples observed in the target ecosystem:
+
+- `大山チロル` → common Western-order display `Chiroru Oyama`; literal romanization also appears as `Ooyama Chiroru`.
+- `秋山はるる` → `Haruru Akiyama`.
+- `篠守ゆきこ` → `Yukiko Shinomori` (Japanese-order romanization: `Shinomori Yukiko`).
+
+Adapters should not use romanized display strings as identity keys. Prefer source IDs / RJ metadata / canonical Japanese names plus aliases.

@@ -19,7 +19,7 @@ Store secrets in the OS credential store and persist only an opaque `secret_ref`
 
 ## Remote provider transparency
 
-Before remote inference, Yuzuki can show:
+Before remote inference, Tsubame can show:
 - provider;
 - model;
 - data class being uploaded;
@@ -44,29 +44,29 @@ Voice synthesis/voice-clone features must distinguish:
 - user-owned/authorized reference voices;
 - real-person voices with unclear/no permission.
 
-Yuzuki must not ship unauthorized real-person voice models or recordings.
+Tsubame must not ship unauthorized real-person voice models or recordings.
 
-### Project name and Tsubame Yuzuki
+### Project name and Yuzuki Tsubame
 
-The name **Yuzuki** is a personal homage to voice actress **Tsubame Yuzuki / 柚木つばめ**.
+The name **Tsubame** is a personal homage to voice actress **Yuzuki Yuzuki Tsubame / 柚木つばめ**.
 
 This repository is not affiliated with or endorsed by her.
 
-Her official website states that AI learning/use of her voice is prohibited. Therefore Yuzuki must not:
+Her official website states that AI learning/use of her voice is prohibited. Therefore Tsubame must not:
 - bundle her voice recordings as model/reference assets;
 - train or distribute a voice model based on her recordings;
-- present a built-in “Tsubame Yuzuki voice”;
+- present a built-in “Yuzuki Tsubame voice”;
 - imply that the project is official or approved by her.
 
 References:
-- https://yuzuki-tsubame.com/
-- https://yuzuki-tsubame.com/job-request/
+- https://tsubame-tsubame.com/
+- https://tsubame-tsubame.com/job-request/
 
 The same principle applies to other real people: model/reference use requires the rights/permission appropriate to that use.
 
 ## Source content
 
-Source adapters only access content the user is entitled to access. Yuzuki does not provide DRM/paywall/access-control bypass.
+Source adapters only access content the user is entitled to access. Tsubame does not provide DRM/paywall/access-control bypass.
 
 ## Agent safety
 

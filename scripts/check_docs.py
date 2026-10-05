@@ -23,7 +23,7 @@ REQUIRED = [
     "docs/10-roadmap.md",
     "docs/DECISIONS.md",
     "docs/UPSTREAM.md",
-    ".agents/skills/yuzuki/SKILL.md",
+    ".agents/skills/tsubame/SKILL.md",
 ]
 
 for rel in REQUIRED:

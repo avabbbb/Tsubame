@@ -2,7 +2,7 @@
 
 ## One product, not three tools
 
-Yuzuki combines the useful parts of three existing product directions:
+Tsubame combines the useful parts of three existing product directions:
 
 - a sentence-aware local media player;
 - a recoverable AI transcription/translation/dubbing pipeline;
@@ -45,7 +45,7 @@ Mix / export
 
 At every stage the user can keep playing the original media.
 
-## What makes Yuzuki different
+## What makes Tsubame different
 
 The differentiator is the combination of:
 
