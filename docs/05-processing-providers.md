@@ -86,6 +86,8 @@ This is important for ASMR where whispering, breath sounds, elongated speech, na
 
 ## BYOK model discovery
 
+PR #6 implements the remote Provider Registry described in [Provider / Model Registry](15-provider-registry.md).
+
 After a user connects a remote Provider:
 
 1. validate credentials;
@@ -96,6 +98,8 @@ After a user connects a remote Provider:
 6. allow manual override for advanced users.
 
 Never infer all capabilities from model-name string matching.
+
+The registry may use a centralized convenience catalog for recognized families, but runtime feature code only consumes resolved capability metadata. Unknown models remain explicit and can be manually classified.
 
 ## OpenAI-compatible provider
 
