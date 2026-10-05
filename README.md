@@ -14,7 +14,7 @@ The result is not a downloader, player, and dubbing tool glued together. Tsubame
 
 ## Status
 
-**Architecture-first baseline.**
+**React + Tauri/Rust clean-room foundation.**
 
 The current implementation is a clean-room Tsubame codebase built around its own product and data contracts.
 
@@ -116,9 +116,10 @@ The Skill is for fast initialization and orchestration:
 - `docs/08-source-adapters.md`
 - `docs/09-security-rights.md`
 - `docs/10-roadmap.md`
+- `docs/11-clean-room-reset.md`
 - `docs/12-pr-plan.md`
 - `docs/DECISIONS.md`
-- `docs/UPSTREAM.md`
+- `docs/REFERENCES.md`
 - `.agents/skills/tsubame/SKILL.md`
 
 ## Implementation boundaries
