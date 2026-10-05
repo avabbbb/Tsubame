@@ -9,7 +9,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import WaveformEditor from "./components/WaveformEditor";
 import type {
   MediaItem,
   RailSection,
@@ -35,6 +36,11 @@ const RAIL_ICONS: Record<RailSection, string> = {
   studio: "✦",
   jobs: "≡",
 };
+
+type SegmentSnapshot = Pick<
+  Segment,
+  "id" | "source_text" | "translated_text" | "start_ms" | "end_ms"
+>;
 
 type UiState = {
   activeRail: RailSection;
@@ -70,6 +76,26 @@ function formatTime(value: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+function formatPrecise(ms: number) {
+  const total = Math.max(0, Math.round(ms));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+}
+
+function parsePrecise(input: string) {
+  const match = input.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+  if (!match) return null;
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const millis = Number((match[4] ?? "0").padEnd(3, "0"));
+  if (minutes > 59 || seconds > 59) return null;
+  return hours * 3_600_000 + minutes * 60_000 + seconds * 1000 + millis;
+}
+
 function isEditableTarget(target: EventTarget | null) {
   const element = target as HTMLElement | null;
   if (!element) return false;
@@ -97,6 +123,12 @@ export default function App() {
   const [volume, setVolume] = useState(1);
   const [draftSource, setDraftSource] = useState("");
   const [draftTranslation, setDraftTranslation] = useState("");
+  const [draftStart, setDraftStart] = useState("");
+  const [draftEnd, setDraftEnd] = useState("");
+  const [undoStack, setUndoStack] = useState<SegmentSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<SegmentSnapshot[]>([]);
+  const [editorMessage, setEditorMessage] = useState("");
+  const [mediaElement, setMediaElement] = useState<HTMLMediaElement | null>(null);
   const [activeRail, setActiveRail] = useState<RailSection>(
     initial.activeRail ?? "library",
   );
@@ -319,28 +351,220 @@ export default function App() {
       setSelected(segment);
       setDraftSource(segment.source_text);
       setDraftTranslation(segment.translated_text);
+      setDraftStart(formatPrecise(segment.start_ms));
+      setDraftEnd(formatPrecise(segment.end_ms));
+      setEditorMessage("");
       seekTo(segment.start_ms / 1000);
     },
     [seekTo],
   );
 
+  const applySegmentMutation = useCallback(
+    async (
+      segment: Segment,
+      values: Pick<SegmentSnapshot, "source_text" | "translated_text" | "start_ms" | "end_ms">,
+      recordHistory: boolean,
+    ) => {
+      try {
+        const updated = await invoke<Segment>("update_segment", {
+          id: segment.id,
+          expectedRevision: segment.revision,
+          sourceText: values.source_text,
+          translatedText: values.translated_text,
+          startMs: values.start_ms,
+          endMs: values.end_ms,
+        });
+
+        if (recordHistory) {
+          setUndoStack((stack) => [
+            ...stack.slice(-49),
+            {
+              id: segment.id,
+              source_text: segment.source_text,
+              translated_text: segment.translated_text,
+              start_ms: segment.start_ms,
+              end_ms: segment.end_ms,
+            },
+          ]);
+          setRedoStack([]);
+        }
+
+        setSegments((rows) =>
+          rows.map((row) => (row.id === updated.id ? updated : row)),
+        );
+        setSelected(updated);
+        setDraftSource(updated.source_text);
+        setDraftTranslation(updated.translated_text);
+        setDraftStart(formatPrecise(updated.start_ms));
+        setDraftEnd(formatPrecise(updated.end_ms));
+        setEditorMessage("Saved");
+        return updated;
+      } catch (error) {
+        const message = String(error);
+        if (message.toLowerCase().includes("revision")) {
+          setEditorMessage("Revision conflict: this sentence changed elsewhere. Reloading latest state.");
+          if (current) {
+            const latest = await invoke<Segment[]>("get_segments", { mediaId: current.id });
+            setSegments(latest);
+            const fresh = latest.find((row) => row.id === segment.id) ?? null;
+            setSelected(fresh);
+            if (fresh) {
+              setDraftSource(fresh.source_text);
+              setDraftTranslation(fresh.translated_text);
+              setDraftStart(formatPrecise(fresh.start_ms));
+              setDraftEnd(formatPrecise(fresh.end_ms));
+            }
+          }
+        } else {
+          setEditorMessage(message);
+        }
+        throw error;
+      }
+    },
+    [current],
+  );
+
   const saveSegment = useCallback(async () => {
     if (!selected) return;
+    const startMs = parsePrecise(draftStart);
+    const endMs = parsePrecise(draftEnd);
+    if (startMs === null || endMs === null || endMs <= startMs) {
+      setEditorMessage("Invalid timing. Use HH:MM:SS.mmm and keep End after Start.");
+      return;
+    }
+    await applySegmentMutation(
+      selected,
+      {
+        source_text: draftSource,
+        translated_text: draftTranslation,
+        start_ms: startMs,
+        end_ms: endMs,
+      },
+      true,
+    ).catch(() => undefined);
+  }, [
+    applySegmentMutation,
+    draftEnd,
+    draftSource,
+    draftStart,
+    draftTranslation,
+    selected,
+  ]);
 
-    const updated = await invoke<Segment>("update_segment", {
+  const undoSegment = useCallback(async () => {
+    if (!selected || !undoStack.length) return;
+    const previous = undoStack[undoStack.length - 1];
+    if (previous.id !== selected.id) {
+      setEditorMessage("Undo history belongs to another sentence.");
+      return;
+    }
+    const currentSnapshot: SegmentSnapshot = {
       id: selected.id,
-      expectedRevision: selected.revision,
-      sourceText: draftSource,
-      translatedText: draftTranslation,
-      startMs: selected.start_ms,
-      endMs: selected.end_ms,
-    });
+      source_text: selected.source_text,
+      translated_text: selected.translated_text,
+      start_ms: selected.start_ms,
+      end_ms: selected.end_ms,
+    };
+    const updated = await applySegmentMutation(selected, previous, false).catch(() => null);
+    if (!updated) return;
+    setUndoStack((stack) => stack.slice(0, -1));
+    setRedoStack((stack) => [...stack.slice(-49), currentSnapshot]);
+  }, [applySegmentMutation, selected, undoStack]);
 
-    setSegments((rows) =>
-      rows.map((row) => (row.id === updated.id ? updated : row)),
-    );
-    setSelected(updated);
-  }, [draftSource, draftTranslation, selected]);
+  const redoSegment = useCallback(async () => {
+    if (!selected || !redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    if (next.id !== selected.id) {
+      setEditorMessage("Redo history belongs to another sentence.");
+      return;
+    }
+    const currentSnapshot: SegmentSnapshot = {
+      id: selected.id,
+      source_text: selected.source_text,
+      translated_text: selected.translated_text,
+      start_ms: selected.start_ms,
+      end_ms: selected.end_ms,
+    };
+    const updated = await applySegmentMutation(selected, next, false).catch(() => null);
+    if (!updated) return;
+    setRedoStack((stack) => stack.slice(0, -1));
+    setUndoStack((stack) => [...stack.slice(-49), currentSnapshot]);
+  }, [applySegmentMutation, redoStack, selected]);
+
+  const commitWaveformTiming = useCallback(
+    async (id: number, startMs: number, endMs: number, expectedRevision: number) => {
+      const segment = segments.find((row) => row.id === id);
+      if (!segment || segment.revision !== expectedRevision) return;
+      await applySegmentMutation(
+        segment,
+        {
+          source_text: segment.source_text,
+          translated_text: segment.translated_text,
+          start_ms: startMs,
+          end_ms: endMs,
+        },
+        true,
+      ).catch(() => undefined);
+    },
+    [applySegmentMutation, segments],
+  );
+
+  const importSubtitleFile = useCallback(
+    async (target: "source" | "translation") => {
+      if (!current) return;
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Subtitles", extensions: ["srt", "vtt"] }],
+      });
+      if (!picked || Array.isArray(picked)) return;
+      try {
+        const next = await invoke<Segment[]>("import_subtitles", {
+          mediaId: current.id,
+          path: picked,
+          target,
+        });
+        setSegments(next);
+        setSelected(null);
+        setUndoStack([]);
+        setRedoStack([]);
+        setEditorMessage(
+          target === "source"
+            ? `Imported ${next.length} source cues`
+            : `Imported translations for ${next.length} segments`,
+        );
+      } catch (error) {
+        setEditorMessage(String(error));
+      }
+    },
+    [current],
+  );
+
+  const exportSubtitleFile = useCallback(
+    async (target: "source" | "translation" | "bilingual", format: "srt" | "vtt") => {
+      if (!current) return;
+      const destination = await save({
+        defaultPath: `${current.title}.${target}.${format}`,
+        filters: [
+          {
+            name: format === "srt" ? "SubRip" : "WebVTT",
+            extensions: [format],
+          },
+        ],
+      });
+      if (!destination) return;
+      try {
+        await invoke("export_subtitles_command", {
+          mediaId: current.id,
+          path: destination,
+          target,
+        });
+        setEditorMessage(`Exported ${target} subtitles`);
+      } catch (error) {
+        setEditorMessage(String(error));
+      }
+    },
+    [current],
+  );
 
   const togglePlayback = useCallback(async () => {
     const media = mediaRef.current;
@@ -646,6 +870,7 @@ export default function App() {
       <video
         ref={(node) => {
           mediaRef.current = node;
+          setMediaElement(node);
         }}
         src={sourceUrl}
         className="video-stage"
@@ -663,6 +888,7 @@ export default function App() {
       <audio
         ref={(node) => {
           mediaRef.current = node;
+          setMediaElement(node);
         }}
         src={sourceUrl}
         className="audio-engine"
