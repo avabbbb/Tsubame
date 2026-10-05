@@ -1,6 +1,4 @@
-use crate::providers::{
-    resolve_capabilities, DiscoveredModel, ModelDescriptor, ProviderConfig,
-};
+use crate::providers::{resolve_capabilities, DiscoveredModel, ModelDescriptor, ProviderConfig};
 use crate::subtitle::SubtitleCue;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -403,7 +401,8 @@ impl MediaDb {
         let secret_ref = self
             .get_provider(id)?
             .and_then(|provider| provider.secret_ref);
-        self.conn.execute("DELETE FROM providers WHERE id=?1", [id])?;
+        self.conn
+            .execute("DELETE FROM providers WHERE id=?1", [id])?;
         Ok(secret_ref)
     }
 
@@ -470,7 +469,10 @@ impl MediaDb {
         self.list_provider_models(provider_id)
     }
 
-    pub fn list_provider_models(&self, provider_id: &str) -> rusqlite::Result<Vec<ModelDescriptor>> {
+    pub fn list_provider_models(
+        &self,
+        provider_id: &str,
+    ) -> rusqlite::Result<Vec<ModelDescriptor>> {
         let mut stmt = self.conn.prepare(
             "SELECT provider_id,model_id,display_name,owned_by,available,
                     discovered_capabilities,manual_capabilities,last_seen_at
@@ -482,8 +484,8 @@ impl MediaDb {
         stmt.query_map([provider_id], |row| {
             let discovered_json: String = row.get(5)?;
             let manual_json: Option<String> = row.get(6)?;
-            let discovered = serde_json::from_str::<Vec<String>>(&discovered_json)
-                .unwrap_or_default();
+            let discovered =
+                serde_json::from_str::<Vec<String>>(&discovered_json).unwrap_or_default();
             let manual = manual_json
                 .as_deref()
                 .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok());
