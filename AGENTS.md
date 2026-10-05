@@ -42,6 +42,8 @@ Before changing contracts or implementation, read:
 10. **Workbench shell is canonical.** Features attach to Rail, Sidebar, Tabs, Main, Inspector or Bottom Bar.
 11. **No silent fallback.** Provider/model/runtime changes must be visible and auditable.
 12. **Real-person voice rights are explicit.** Never ship or train a real-person voice model without documented permission/rights.
+13. **MIT clean-room boundary.** Do not copy, adapt, vendor, or link GPL/AGPL source into the Tsubame codebase. ASPlayer is reference-only.
+14. **Canonical Desktop stack.** Use React + TypeScript for the Workbench and Tauri 2 + Rust for the native Desktop unless an ADR explicitly changes this decision.
 
 ## Change discipline
 
