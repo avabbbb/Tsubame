@@ -89,3 +89,22 @@ Rust is retained because it is a strong fit for the existing Desktop architectur
 Accepted.
 
 MIT compatibility is protected by excluding GPL source code from the repository. Reference-only research does not authorize source reuse.
+
+
+## ADR-015 — Provider, model and capability are separate
+
+Accepted.
+
+Provider owns authentication, transport and model discovery.
+
+Model owns identity plus capability metadata.
+
+Features resolve a capability and cannot hard-code a vendor/model ID.
+
+Inference base URL and model-discovery URL are independent because compatible providers may expose them on different paths.
+
+## ADR-016 — Raw provider secrets never enter SQLite
+
+Accepted.
+
+Provider rows store only a `secret_ref`. The Desktop resolves the actual credential through the OS credential store. UI, CLI and MCP surfaces expose redacted state/reference metadata only.
