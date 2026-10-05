@@ -7,13 +7,17 @@ use std::time::Duration;
 pub const KEYRING_SERVICE: &str = "dev.tsubame.provider";
 
 pub const CAPABILITY_VOCABULARY: &[&str] = &[
+    "audio.segment",
+    "speech.asr",
+    "transcript.refine",
+    "speech.align",
     "text.generate",
     "text.translate",
-    "transcript.refine",
-    "speech.asr",
     "speech.tts",
-    "speech.align",
+    "speech.voice_clone",
     "audio.separate",
+    "speaker.diarize",
+    "audio.mix",
     "embedding.text",
     "image.generate",
 ];
