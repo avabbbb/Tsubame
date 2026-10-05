@@ -326,21 +326,23 @@ impl MediaDb {
              FROM providers ORDER BY name COLLATE NOCASE,id",
         )?;
 
-        stmt.query_map([], |row| {
-            Ok(ProviderConfig {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                kind: row.get(2)?,
-                base_url: row.get(3)?,
-                model_list_url: row.get(4)?,
-                auth_mode: row.get(5)?,
-                secret_ref: row.get(6)?,
-                enabled: row.get(7)?,
-                last_refresh_at: row.get(8)?,
-                last_error: row.get(9)?,
-            })
-        })?
-        .collect()
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ProviderConfig {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    base_url: row.get(3)?,
+                    model_list_url: row.get(4)?,
+                    auth_mode: row.get(5)?,
+                    secret_ref: row.get(6)?,
+                    enabled: row.get(7)?,
+                    last_refresh_at: row.get(8)?,
+                    last_error: row.get(9)?,
+                })
+            })?
+            .collect();
+        rows
     }
 
     pub fn get_provider(&self, id: &str) -> rusqlite::Result<Option<ProviderConfig>> {
@@ -481,30 +483,32 @@ impl MediaDb {
              ORDER BY available DESC,model_id COLLATE NOCASE",
         )?;
 
-        stmt.query_map([provider_id], |row| {
-            let discovered_json: String = row.get(5)?;
-            let manual_json: Option<String> = row.get(6)?;
-            let discovered =
-                serde_json::from_str::<Vec<String>>(&discovered_json).unwrap_or_default();
-            let manual = manual_json
-                .as_deref()
-                .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok());
-            let (effective, source) = resolve_capabilities(&discovered, manual.as_ref());
+        let rows = stmt
+            .query_map([provider_id], |row| {
+                let discovered_json: String = row.get(5)?;
+                let manual_json: Option<String> = row.get(6)?;
+                let discovered =
+                    serde_json::from_str::<Vec<String>>(&discovered_json).unwrap_or_default();
+                let manual = manual_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok());
+                let (effective, source) = resolve_capabilities(&discovered, manual.as_ref());
 
-            Ok(ModelDescriptor {
-                provider_id: row.get(0)?,
-                model_id: row.get(1)?,
-                display_name: row.get(2)?,
-                owned_by: row.get(3)?,
-                available: row.get(4)?,
-                discovered_capabilities: discovered,
-                manual_capabilities: manual,
-                effective_capabilities: effective,
-                capability_source: source,
-                last_seen_at: row.get(7)?,
-            })
-        })?
-        .collect()
+                Ok(ModelDescriptor {
+                    provider_id: row.get(0)?,
+                    model_id: row.get(1)?,
+                    display_name: row.get(2)?,
+                    owned_by: row.get(3)?,
+                    available: row.get(4)?,
+                    discovered_capabilities: discovered,
+                    manual_capabilities: manual,
+                    effective_capabilities: effective,
+                    capability_source: source,
+                    last_seen_at: row.get(7)?,
+                })
+            })?
+            .collect();
+        rows
     }
 
     pub fn set_model_capabilities(
