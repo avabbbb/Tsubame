@@ -1129,7 +1129,7 @@ export default function App() {
 
                 {segments.length > 0 && boundMedia && (
                   <WaveformEditor
-                    media={mediaElement}
+                    media={boundMedia}
                     sourceUrl={sourceUrl}
                     segments={segments}
                     selectedId={selected?.id ?? null}
