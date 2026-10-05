@@ -6,7 +6,7 @@ Tsubame is a desktop workbench for discovering, downloading, organizing, playing
 
 The product combines three ideas into one coherent desktop app:
 
-- **ASPlayer-style playback and sentence timeline**
+- **sentence-aware playback and timeline editing**
 - **ASMR-Dubber-grade processing pipelines**
 - **pluggable source/download adapters**
 
@@ -16,7 +16,7 @@ The result is not a downloader, player, and dubbing tool glued together. Tsubame
 
 **Architecture-first baseline.**
 
-We intentionally freeze product, data, provider, runtime, Skill, agent-control, and UI contracts before importing upstream implementation code.
+The current implementation is a clean-room Tsubame codebase built around its own product and data contracts.
 
 ## Product principles
 
@@ -121,15 +121,15 @@ The Skill is for fast initialization and orchestration:
 - `docs/UPSTREAM.md`
 - `.agents/skills/tsubame/SKILL.md`
 
-## Upstream lineage
+## Implementation boundaries
 
-Implementation will selectively build on ideas/code from:
+Tsubame is implemented with **React + TypeScript + Tauri 2 + Rust + SQLite**.
 
-- [yumili426/ASPlayer](https://github.com/yumili426/ASPlayer) — GPL-3.0; Tauri/Vue/Rust player, SQLite library, sentence subtitles and local transcription.
-- [EveningStudy/asmr-dubber](https://github.com/EveningStudy/asmr-dubber) — MIT; recoverable ASR/translation/alignment/TTS/mix pipeline.
-- [fireinrain/asmr-downloader](https://github.com/fireinrain/asmr-downloader) — MIT; download/source architecture reference.
+Reference projects inform product research, but license boundaries are explicit:
 
-If ASPlayer code is incorporated, the distributed derivative remains GPL-3.0 and preserves required notices.
+- [ASPlayer](https://github.com/yumili426/ASPlayer) — **reference only** for playback/timeline UX. Its GPL-3.0 source is not copied or incorporated into Tsubame.
+- [ASMR-Dubber](https://github.com/EveningStudy/asmr-dubber) — MIT; selected processing ideas/code may be reused later with required notices.
+- [asmr-downloader / ASMRoner](https://github.com/fireinrain/asmr-downloader) — MIT; selected downloader/source ideas/code may be reused later with required notices.
 
 ## Name
 
@@ -141,4 +141,6 @@ The project must not be used to train, clone, or synthesize a real person's voic
 
 ## License
 
-Planned: **GPL-3.0**, matching the ASPlayer lineage once ASPlayer code is incorporated.
+**MIT.**
+
+Tsubame remains MIT-compatible by keeping GPL source out of the codebase. Reference-only projects may inspire independently implemented features without becoming code dependencies.
