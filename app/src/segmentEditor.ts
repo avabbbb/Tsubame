@@ -27,13 +27,13 @@ export function parseEditorTime(value: string): number | null {
   const parts = normalized.split(":");
   if (parts.length !== 2 && parts.length !== 3) return null;
 
-  const secondsPart = parts.at(-1);
+  const secondsPart = parts[parts.length - 1];
   if (!secondsPart) return null;
   const [secondsRaw, millisRaw = "0"] = secondsPart.split(".");
   if (!/^\d+$/.test(secondsRaw) || !/^\d{1,3}$/.test(millisRaw)) return null;
 
   const seconds = Number(secondsRaw);
-  const minutes = Number(parts.at(-2));
+  const minutes = Number(parts[parts.length - 2]);
   const hours = parts.length === 3 ? Number(parts[0]) : 0;
   if (![hours, minutes, seconds].every(Number.isFinite)) return null;
   if (minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59 || hours < 0) {
