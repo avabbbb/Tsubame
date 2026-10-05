@@ -10,12 +10,17 @@ Tsubame is not affiliated with, endorsed by, sponsored by, or an official produc
 
 No voice recording, voice model, likeness, logo or other branding asset of Yuzuki Tsubame is included by virtue of this naming choice.
 
-## Upstream software
+## Software references and dependencies
 
-Planned/upstream lineages include:
+### Reference only — no source incorporated
 
 - ASPlayer — GPL-3.0 — https://github.com/yumili426/ASPlayer
+
+ASPlayer may be consulted for product/interaction research only. Tsubame does not copy, adapt, vendor, link, or distribute ASPlayer source code.
+
+### MIT projects that may be integrated later
+
 - ASMR-Dubber — MIT — https://github.com/EveningStudy/asmr-dubber
 - asmr-downloader / ASMRoner — MIT — https://github.com/fireinrain/asmr-downloader
 
-When source is incorporated, file-level and license notices must be preserved as required.
+If code from MIT projects is incorporated, their copyright and license notices must be preserved as required.
