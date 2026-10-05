@@ -185,11 +185,7 @@ fn parse_timestamp(value: &str, decimal: char) -> Result<i64, String> {
     let parts = whole.split(':').collect::<Vec<_>>();
     let (hours, minutes, seconds) = match parts.as_slice() {
         [minutes, seconds] => (0_i64, parse_i64(minutes)?, parse_i64(seconds)?),
-        [hours, minutes, seconds] => (
-            parse_i64(hours)?,
-            parse_i64(minutes)?,
-            parse_i64(seconds)?,
-        ),
+        [hours, minutes, seconds] => (parse_i64(hours)?, parse_i64(minutes)?, parse_i64(seconds)?),
         _ => return Err(format!("invalid timestamp: {value}")),
     };
 
@@ -233,7 +229,8 @@ fn serialize_srt(cues: &[SubtitleCue]) -> String {
 }
 
 fn serialize_vtt(cues: &[SubtitleCue]) -> String {
-    let body = cues.iter()
+    let body = cues
+        .iter()
         .map(|cue| {
             format!(
                 "{} --> {}\n{}",
