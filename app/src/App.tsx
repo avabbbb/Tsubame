@@ -1127,7 +1127,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {segments.length > 0 && mediaElement && (
+                {segments.length > 0 && boundMedia && (
                   <WaveformEditor
                     media={mediaElement}
                     sourceUrl={sourceUrl}
