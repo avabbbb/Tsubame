@@ -10,6 +10,9 @@ import {
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import SegmentInspector from "./SegmentInspector";
+import SubtitleActions from "./SubtitleActions";
+import WaveformEditor from "./WaveformEditor";
 import type {
   MediaItem,
   RailSection,
@@ -95,8 +98,6 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [volume, setVolume] = useState(1);
-  const [draftSource, setDraftSource] = useState("");
-  const [draftTranslation, setDraftTranslation] = useState("");
   const [activeRail, setActiveRail] = useState<RailSection>(
     initial.activeRail ?? "library",
   );
@@ -122,6 +123,7 @@ export default function App() {
   const [loopB, setLoopB] = useState<number | null>(null);
 
   const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const [mediaElement, setMediaElement] = useState<HTMLMediaElement | null>(null);
   const pendingResumeMsRef = useRef(0);
   const lastPersistAtRef = useRef(0);
 
@@ -317,30 +319,50 @@ export default function App() {
   const chooseSegment = useCallback(
     (segment: Segment) => {
       setSelected(segment);
-      setDraftSource(segment.source_text);
-      setDraftTranslation(segment.translated_text);
       seekTo(segment.start_ms / 1000);
     },
     [seekTo],
   );
 
-  const saveSegment = useCallback(async () => {
-    if (!selected) return;
-
-    const updated = await invoke<Segment>("update_segment", {
-      id: selected.id,
-      expectedRevision: selected.revision,
-      sourceText: draftSource,
-      translatedText: draftTranslation,
-      startMs: selected.start_ms,
-      endMs: selected.end_ms,
-    });
-
+  const handleSegmentUpdated = useCallback((updated: Segment) => {
     setSegments((rows) =>
       rows.map((row) => (row.id === updated.id ? updated : row)),
     );
-    setSelected(updated);
-  }, [draftSource, draftTranslation, selected]);
+    setSelected((currentSelection) =>
+      currentSelection?.id === updated.id ? updated : currentSelection,
+    );
+  }, []);
+
+  const commitSegmentTiming = useCallback(
+    async (segment: Segment, startMs: number, endMs: number) => {
+      try {
+        const updated = await invoke<Segment>("update_segment", {
+          id: segment.id,
+          expectedRevision: segment.revision,
+          sourceText: segment.source_text,
+          translatedText: segment.translated_text,
+          startMs,
+          endMs,
+        });
+        handleSegmentUpdated(updated);
+      } catch (errorValue) {
+        const latest = await invoke<Segment | null>("get_segment", {
+          id: segment.id,
+        }).catch(() => null);
+        if (latest) {
+          handleSegmentUpdated(latest);
+          setSelected(latest);
+        }
+        console.warn("Could not commit waveform timing change", errorValue);
+      }
+    },
+    [handleSegmentUpdated],
+  );
+
+  const handleSubtitleImported = useCallback((rows: Segment[]) => {
+    setSegments(rows);
+    setSelected(null);
+  }, []);
 
   const togglePlayback = useCallback(async () => {
     const media = mediaRef.current;
@@ -641,12 +663,15 @@ export default function App() {
     );
   };
 
-  const mediaElement = current ? (
+  const attachMedia = useCallback((node: HTMLMediaElement | null) => {
+    mediaRef.current = node;
+    setMediaElement(node);
+  }, []);
+
+  const mediaElementView = current ? (
     current.media_type === "video" ? (
       <video
-        ref={(node) => {
-          mediaRef.current = node;
-        }}
+        ref={attachMedia}
         src={sourceUrl}
         className="video-stage"
         playsInline
@@ -661,9 +686,7 @@ export default function App() {
       />
     ) : (
       <audio
-        ref={(node) => {
-          mediaRef.current = node;
-        }}
+        ref={attachMedia}
         src={sourceUrl}
         className="audio-engine"
         onTimeUpdate={onTimeUpdate}
@@ -824,7 +847,7 @@ export default function App() {
                 </div>
               )}
 
-              {mediaElement}
+              {mediaElementView}
 
               <div className="hero-copy">
                 <p className="eyebrow">
@@ -889,6 +912,21 @@ export default function App() {
                   </div>
                 </div>
 
+                <SubtitleActions
+                  media={current}
+                  segmentCount={segments.length}
+                  onImported={handleSubtitleImported}
+                />
+
+                <WaveformEditor
+                  media={mediaElement}
+                  sourceUrl={sourceUrl}
+                  segments={segments}
+                  selectedId={selected?.id ?? null}
+                  onSelect={chooseSegment}
+                  onTimingCommit={commitSegmentTiming}
+                />
+
                 <div className="segments">
                   {segments.map((segment) => (
                     <button
@@ -948,40 +986,7 @@ export default function App() {
           onPointerDown={(event) => beginResize("inspector", event)}
         />
         {selected ? (
-          <>
-            <p className="eyebrow">SEGMENT {selected.ordinal + 1}</p>
-            <h3>Sentence Inspector</h3>
-            <label>
-              Original
-              <textarea
-                value={draftSource}
-                onChange={(event) => setDraftSource(event.target.value)}
-              />
-            </label>
-            <label>
-              Translation
-              <textarea
-                value={draftTranslation}
-                onChange={(event) => setDraftTranslation(event.target.value)}
-              />
-            </label>
-            <div className="time-grid">
-              <label>
-                Start
-                <input value={formatTime(selected.start_ms / 1000)} readOnly />
-              </label>
-              <label>
-                End
-                <input value={formatTime(selected.end_ms / 1000)} readOnly />
-              </label>
-            </div>
-            <button className="primary wide" onClick={() => void saveSegment()}>
-              Save changes
-            </button>
-            <button className="secondary wide" disabled>
-              Regenerate Segment · planned
-            </button>
-          </>
+          <SegmentInspector segment={selected} onUpdated={handleSegmentUpdated} />
         ) : (
           <>
             <p className="eyebrow">INSPECTOR</p>

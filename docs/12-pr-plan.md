@@ -4,7 +4,7 @@ This document tracks the review-sized implementation sequence for Tsubame.
 
 ## PR #4 — React + Tauri/Rust + MIT clean-room foundation
 
-**Status:** in progress.
+**Status:** complete.
 
 Goal: freeze the implementation stack and license before deeper product work.
 
@@ -38,6 +38,8 @@ Explicitly deferred:
 ---
 
 ## PR #5 — Canonical Segment Editor
+
+**Status:** complete.
 
 Goal: turn the sentence timeline into the primary editable data model.
 

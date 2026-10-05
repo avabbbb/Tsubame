@@ -19,7 +19,26 @@ export interface Segment {
   translated_text: string;
   ordinal: number;
   revision: number;
+  transcript_provenance: string;
+  asr_provenance: string;
+  refine_provenance: string;
+  translation_provenance: string;
+  tts_provenance: string;
+  dirty_translation: boolean;
+  dirty_tts: boolean;
+  dirty_mix: boolean;
+  dirty_subtitle: boolean;
+  reviewed: boolean;
 }
+
+export interface SegmentDraft {
+  source_text: string;
+  translated_text: string;
+  start_ms: number;
+  end_ms: number;
+}
+
+export type SubtitleTextMode = "source" | "translation" | "bilingual";
 
 export type RailSection =
   | "home"
