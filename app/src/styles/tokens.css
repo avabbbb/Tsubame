@@ -41,7 +41,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none !important; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
