@@ -228,7 +228,7 @@ export default function ProviderSettings() {
     }
   };
 
-  const setCapabilities = async (
+  const saveModelCapabilities = async (
     model: ProviderModel,
     next: string[] | null,
   ) => {
@@ -254,7 +254,7 @@ export default function ProviderSettings() {
     const next = current.includes(capability)
       ? current.filter((value) => value !== capability)
       : [...current, capability];
-    void setCapabilities(model, next);
+    void saveModelCapabilities(model, next);
   };
 
   return (
@@ -540,7 +540,7 @@ export default function ProviderSettings() {
                         <button
                           className="provider-auto-button"
                           disabled={model.manual_capabilities === null}
-                          onClick={() => void setCapabilities(model, null)}
+                          onClick={() => void saveModelCapabilities(model, null)}
                         >
                           Reset to discovered/catalog capabilities
                         </button>
