@@ -50,9 +50,6 @@ for path in [ROOT / "README.md", *ROOT.glob("docs/*.md")]:
         if not candidate.exists():
             raise SystemExit(f"{path.relative_to(ROOT)}: broken relative link: {raw}")
 
-print("docs-check: ok")
-
-
 # Architecture guardrails: keep the clean-room Desktop boundary machine-checkable.
 package_json = (ROOT / "app/package.json").read_text(encoding="utf-8")
 if '"react"' not in package_json or '"react-dom"' not in package_json:
@@ -73,3 +70,6 @@ if 'license = "MIT"' not in cargo_text:
 reference_text = (ROOT / "docs/REFERENCES.md").read_text(encoding="utf-8")
 if "ASPlayer is consulted only for product/interaction research" not in reference_text:
     raise SystemExit("reference contract: ASPlayer must remain reference-only")
+
+
+print("docs-check: ok")
