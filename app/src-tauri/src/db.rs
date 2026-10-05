@@ -712,6 +712,109 @@ mod tests {
     }
 
     #[test]
+    fn provider_config_roundtrip_never_needs_raw_secret() -> rusqlite::Result<()> {
+        let db = MediaDb::open(Path::new(":memory:"))?;
+        let provider = ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "https://example.com/v1".into(),
+            model_list_url: "https://example.com/v1/models".into(),
+            auth_mode: "bearer".into(),
+            secret_ref: Some("tsubame/provider/provider-1/api-key".into()),
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        };
+
+        db.save_provider(&provider)?;
+        let stored = db.get_provider("provider-1")?.unwrap();
+        assert_eq!(stored, provider);
+        Ok(())
+    }
+
+    #[test]
+    fn model_refresh_preserves_manual_capability_override() -> rusqlite::Result<()> {
+        let mut db = MediaDb::open(Path::new(":memory:"))?;
+        db.save_provider(&ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "https://example.com/v1".into(),
+            model_list_url: "https://example.com/v1/models".into(),
+            auth_mode: "none".into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        })?;
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "unknown-model".into(),
+                display_name: "Unknown".into(),
+                owned_by: "example".into(),
+                capabilities: vec![],
+            }],
+        )?;
+
+        let manual = vec!["speech.asr".to_string()];
+        let updated = db
+            .set_model_capabilities("provider-1", "unknown-model", Some(&manual))?
+            .unwrap();
+        assert_eq!(updated.effective_capabilities, manual);
+        assert_eq!(updated.capability_source, "manual");
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "unknown-model".into(),
+                display_name: "Unknown v2".into(),
+                owned_by: "example".into(),
+                capabilities: vec!["text.generate".into()],
+            }],
+        )?;
+
+        let refreshed = db.list_provider_models("provider-1")?.remove(0);
+        assert_eq!(refreshed.effective_capabilities, vec!["speech.asr"]);
+        assert_eq!(refreshed.capability_source, "manual");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_models_are_retained_as_unavailable() -> rusqlite::Result<()> {
+        let mut db = MediaDb::open(Path::new(":memory:"))?;
+        db.save_provider(&ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "http://localhost/v1".into(),
+            model_list_url: "http://localhost/v1/models".into(),
+            auth_mode: "none".into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        })?;
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "model-a".into(),
+                display_name: "Model A".into(),
+                owned_by: String::new(),
+                capabilities: vec!["text.generate".into()],
+            }],
+        )?;
+        db.replace_discovered_models("provider-1", &[])?;
+
+        let model = db.list_provider_models("provider-1")?.remove(0);
+        assert!(!model.available);
+        Ok(())
+    }
+
+    #[test]
     fn timing_edit_does_not_force_tts_when_tts_was_clean() -> rusqlite::Result<()> {
         let (mut db, media) = setup()?;
         let rows = db.replace_segments(
