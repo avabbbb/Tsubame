@@ -24,3 +24,11 @@ ASPlayer may be consulted for product/interaction research only. Tsubame does no
 - asmr-downloader / ASMRoner — MIT — https://github.com/fireinrain/asmr-downloader
 
 If code from MIT projects is incorporated, their copyright and license notices must be preserved as required.
+
+
+### WaveSurfer.js
+
+Repository: https://github.com/katspaugh/wavesurfer.js  
+License: BSD-3-Clause
+
+Used by the canonical Segment Editor for waveform/timeline rendering and editable regions. Distribution must retain the WaveSurfer.js copyright, license conditions, and disclaimer.
