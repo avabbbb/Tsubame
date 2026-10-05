@@ -75,3 +75,20 @@ Local agents:
 - receive redacted provider config;
 - never receive raw API keys unless a provider action absolutely requires an isolated secret handoff;
 - should plan large downloads/paid inference before execution.
+
+
+## Provider secrets
+
+Remote provider API keys are user-owned secrets.
+
+Rules:
+
+- raw API keys never enter SQLite;
+- SQLite stores only a `secret_ref`;
+- the Desktop resolves that reference through the OS credential store;
+- UI, CLI and MCP return only redacted state/reference metadata;
+- provider-controlled HTTP error bodies are not persisted because an untrusted endpoint could echo submitted credentials;
+- deleting a provider also requests deletion of its stored credential;
+- do not place API keys in Base URLs, query strings, logs, screenshots or exported diagnostics.
+
+See [Provider / Model Registry](15-provider-registry.md).

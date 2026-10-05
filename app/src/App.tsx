@@ -10,6 +10,7 @@ import {
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
 import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
@@ -28,6 +29,7 @@ const RAILS: RailSection[] = [
   "downloads",
   "studio",
   "jobs",
+  "settings",
 ];
 
 const RAIL_ICONS: Record<RailSection, string> = {
@@ -37,6 +39,7 @@ const RAIL_ICONS: Record<RailSection, string> = {
   downloads: "↓",
   studio: "✦",
   jobs: "≡",
+  settings: "⚙",
 };
 
 type UiState = {
@@ -838,7 +841,9 @@ export default function App() {
           </button>
         </header>
 
-        {mediaWorkspaceVisible ? (
+        {activeRail === "settings" ? (
+          <ProviderSettings />
+        ) : mediaWorkspaceVisible ? (
           <section className="content media-workspace">
             <div className={`hero ${current?.media_type === "video" ? "video-hero" : ""}`}>
               {(!current || current.media_type === "audio") && (
@@ -985,7 +990,23 @@ export default function App() {
           className="resize-handle resize-handle-left"
           onPointerDown={(event) => beginResize("inspector", event)}
         />
-        {selected ? (
+        {activeRail === "settings" ? (
+          <>
+            <p className="eyebrow">PROVIDER REGISTRY</p>
+            <h3>Capability-first</h3>
+            <p className="inspector-help">
+              Providers own authentication and model discovery. Features request
+              capabilities such as speech.asr or text.translate, never a vendor or
+              model name.
+            </p>
+            <div className="track-facts">
+              <div><span>Secrets</span><strong>OS credential store</strong></div>
+              <div><span>SQLite</span><strong>secret_ref only</strong></div>
+              <div><span>Discovery</span><strong>Provider-defined URL</strong></div>
+              <div><span>Unknown model</span><strong>Manual override</strong></div>
+            </div>
+          </>
+        ) : selected ? (
           <SegmentInspector segment={selected} onUpdated={handleSegmentUpdated} />
         ) : (
           <>

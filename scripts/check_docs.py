@@ -22,6 +22,7 @@ REQUIRED = [
     "docs/09-security-rights.md",
     "docs/10-roadmap.md",
     "docs/14-segment-editor.md",
+    "docs/15-provider-registry.md",
     "docs/DECISIONS.md",
     "docs/REFERENCES.md",
     ".agents/skills/tsubame/SKILL.md",

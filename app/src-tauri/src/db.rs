@@ -1,3 +1,4 @@
+use crate::providers::{resolve_capabilities, DiscoveredModel, ModelDescriptor, ProviderConfig};
 use crate::subtitle::SubtitleCue;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -81,7 +82,38 @@ impl MediaDb {
                FOREIGN KEY (media_id) REFERENCES media_files(id) ON DELETE CASCADE
              );
              CREATE INDEX IF NOT EXISTS idx_segments_media_time
-               ON segments(media_id, start_ms, ordinal);",
+               ON segments(media_id, start_ms, ordinal);
+
+             CREATE TABLE IF NOT EXISTS providers (
+               id TEXT PRIMARY KEY,
+               name TEXT NOT NULL,
+               kind TEXT NOT NULL,
+               base_url TEXT NOT NULL DEFAULT '',
+               model_list_url TEXT NOT NULL DEFAULT '',
+               auth_mode TEXT NOT NULL DEFAULT 'bearer',
+               secret_ref TEXT,
+               enabled INTEGER NOT NULL DEFAULT 1,
+               last_refresh_at TEXT,
+               last_error TEXT,
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+
+             CREATE TABLE IF NOT EXISTS provider_models (
+               provider_id TEXT NOT NULL,
+               model_id TEXT NOT NULL,
+               display_name TEXT NOT NULL,
+               owned_by TEXT NOT NULL DEFAULT '',
+               available INTEGER NOT NULL DEFAULT 1,
+               discovered_capabilities TEXT NOT NULL DEFAULT '[]',
+               manual_capabilities TEXT,
+               last_seen_at TEXT,
+               PRIMARY KEY (provider_id, model_id),
+               FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+             );
+
+             CREATE INDEX IF NOT EXISTS idx_provider_models_available
+               ON provider_models(provider_id, available, model_id);",
         )?;
 
         Self::ensure_column(&conn, "media_files", "speed", "REAL NOT NULL DEFAULT 1.0")?;
@@ -288,6 +320,219 @@ impl MediaDb {
         self.get_segments(media_id)
     }
 
+    pub fn list_providers(&self) -> rusqlite::Result<Vec<ProviderConfig>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+             FROM providers ORDER BY name COLLATE NOCASE,id",
+        )?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ProviderConfig {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    base_url: row.get(3)?,
+                    model_list_url: row.get(4)?,
+                    auth_mode: row.get(5)?,
+                    secret_ref: row.get(6)?,
+                    enabled: row.get(7)?,
+                    last_refresh_at: row.get(8)?,
+                    last_error: row.get(9)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
+    pub fn get_provider(&self, id: &str) -> rusqlite::Result<Option<ProviderConfig>> {
+        self.conn
+            .query_row(
+                "SELECT id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+                 FROM providers WHERE id=?1",
+                [id],
+                |row| {
+                    Ok(ProviderConfig {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        kind: row.get(2)?,
+                        base_url: row.get(3)?,
+                        model_list_url: row.get(4)?,
+                        auth_mode: row.get(5)?,
+                        secret_ref: row.get(6)?,
+                        enabled: row.get(7)?,
+                        last_refresh_at: row.get(8)?,
+                        last_error: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn save_provider(&self, provider: &ProviderConfig) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO providers(
+                id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,
+                kind=excluded.kind,
+                base_url=excluded.base_url,
+                model_list_url=excluded.model_list_url,
+                auth_mode=excluded.auth_mode,
+                secret_ref=excluded.secret_ref,
+                enabled=excluded.enabled,
+                updated_at=datetime('now')",
+            params![
+                provider.id,
+                provider.name,
+                provider.kind,
+                provider.base_url,
+                provider.model_list_url,
+                provider.auth_mode,
+                provider.secret_ref,
+                provider.enabled,
+                provider.last_refresh_at,
+                provider.last_error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_provider(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        let secret_ref = self
+            .get_provider(id)?
+            .and_then(|provider| provider.secret_ref);
+        self.conn
+            .execute("DELETE FROM providers WHERE id=?1", [id])?;
+        Ok(secret_ref)
+    }
+
+    pub fn set_provider_refresh_status(
+        &self,
+        id: &str,
+        success: bool,
+        error: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        if success {
+            self.conn.execute(
+                "UPDATE providers
+                 SET last_refresh_at=datetime('now'),last_error=NULL,updated_at=datetime('now')
+                 WHERE id=?1",
+                [id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE providers
+                 SET last_error=?1,updated_at=datetime('now')
+                 WHERE id=?2",
+                params![error.unwrap_or("provider refresh failed"), id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn replace_discovered_models(
+        &mut self,
+        provider_id: &str,
+        models: &[DiscoveredModel],
+    ) -> rusqlite::Result<Vec<ModelDescriptor>> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE provider_models SET available=0 WHERE provider_id=?1",
+            [provider_id],
+        )?;
+
+        for model in models {
+            let capabilities =
+                serde_json::to_string(&model.capabilities).unwrap_or_else(|_| "[]".to_string());
+            tx.execute(
+                "INSERT INTO provider_models(
+                    provider_id,model_id,display_name,owned_by,available,
+                    discovered_capabilities,last_seen_at
+                 ) VALUES(?1,?2,?3,?4,1,?5,datetime('now'))
+                 ON CONFLICT(provider_id,model_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    owned_by=excluded.owned_by,
+                    available=1,
+                    discovered_capabilities=excluded.discovered_capabilities,
+                    last_seen_at=datetime('now')",
+                params![
+                    provider_id,
+                    model.model_id,
+                    model.display_name,
+                    model.owned_by,
+                    capabilities,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        self.list_provider_models(provider_id)
+    }
+
+    pub fn list_provider_models(
+        &self,
+        provider_id: &str,
+    ) -> rusqlite::Result<Vec<ModelDescriptor>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_id,model_id,display_name,owned_by,available,
+                    discovered_capabilities,manual_capabilities,last_seen_at
+             FROM provider_models
+             WHERE provider_id=?1
+             ORDER BY available DESC,model_id COLLATE NOCASE",
+        )?;
+
+        let rows = stmt
+            .query_map([provider_id], |row| {
+                let discovered_json: String = row.get(5)?;
+                let manual_json: Option<String> = row.get(6)?;
+                let discovered =
+                    serde_json::from_str::<Vec<String>>(&discovered_json).unwrap_or_default();
+                let manual = manual_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok());
+                let (effective, source) = resolve_capabilities(&discovered, manual.as_ref());
+
+                Ok(ModelDescriptor {
+                    provider_id: row.get(0)?,
+                    model_id: row.get(1)?,
+                    display_name: row.get(2)?,
+                    owned_by: row.get(3)?,
+                    available: row.get(4)?,
+                    discovered_capabilities: discovered,
+                    manual_capabilities: manual,
+                    effective_capabilities: effective,
+                    capability_source: source,
+                    last_seen_at: row.get(7)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
+    pub fn set_model_capabilities(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        capabilities: Option<&Vec<String>>,
+    ) -> rusqlite::Result<Option<ModelDescriptor>> {
+        let serialized = capabilities
+            .map(|values| serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string()));
+
+        self.conn.execute(
+            "UPDATE provider_models
+             SET manual_capabilities=?1
+             WHERE provider_id=?2 AND model_id=?3",
+            params![serialized, provider_id, model_id],
+        )?;
+
+        Ok(self
+            .list_provider_models(provider_id)?
+            .into_iter()
+            .find(|model| model.model_id == model_id))
+    }
+
     pub fn update_segment(
         &self,
         id: i64,
@@ -469,6 +714,109 @@ mod tests {
         assert!(updated.dirty_mix);
         assert!(updated.dirty_subtitle);
         assert_eq!(updated.translation_provenance, "human");
+        Ok(())
+    }
+
+    #[test]
+    fn provider_config_roundtrip_never_needs_raw_secret() -> rusqlite::Result<()> {
+        let db = MediaDb::open(Path::new(":memory:"))?;
+        let provider = ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "https://example.com/v1".into(),
+            model_list_url: "https://example.com/v1/models".into(),
+            auth_mode: "bearer".into(),
+            secret_ref: Some("tsubame/provider/provider-1/api-key".into()),
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        };
+
+        db.save_provider(&provider)?;
+        let stored = db.get_provider("provider-1")?.unwrap();
+        assert_eq!(stored, provider);
+        Ok(())
+    }
+
+    #[test]
+    fn model_refresh_preserves_manual_capability_override() -> rusqlite::Result<()> {
+        let mut db = MediaDb::open(Path::new(":memory:"))?;
+        db.save_provider(&ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "https://example.com/v1".into(),
+            model_list_url: "https://example.com/v1/models".into(),
+            auth_mode: "none".into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        })?;
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "unknown-model".into(),
+                display_name: "Unknown".into(),
+                owned_by: "example".into(),
+                capabilities: vec![],
+            }],
+        )?;
+
+        let manual = vec!["speech.asr".to_string()];
+        let updated = db
+            .set_model_capabilities("provider-1", "unknown-model", Some(&manual))?
+            .unwrap();
+        assert_eq!(updated.effective_capabilities, manual);
+        assert_eq!(updated.capability_source, "manual");
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "unknown-model".into(),
+                display_name: "Unknown v2".into(),
+                owned_by: "example".into(),
+                capabilities: vec!["text.generate".into()],
+            }],
+        )?;
+
+        let refreshed = db.list_provider_models("provider-1")?.remove(0);
+        assert_eq!(refreshed.effective_capabilities, vec!["speech.asr"]);
+        assert_eq!(refreshed.capability_source, "manual");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_models_are_retained_as_unavailable() -> rusqlite::Result<()> {
+        let mut db = MediaDb::open(Path::new(":memory:"))?;
+        db.save_provider(&ProviderConfig {
+            id: "provider-1".into(),
+            name: "Example".into(),
+            kind: "openai-compatible".into(),
+            base_url: "http://localhost/v1".into(),
+            model_list_url: "http://localhost/v1/models".into(),
+            auth_mode: "none".into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        })?;
+
+        db.replace_discovered_models(
+            "provider-1",
+            &[DiscoveredModel {
+                model_id: "model-a".into(),
+                display_name: "Model A".into(),
+                owned_by: String::new(),
+                capabilities: vec!["text.generate".into()],
+            }],
+        )?;
+        db.replace_discovered_models("provider-1", &[])?;
+
+        let model = db.list_provider_models("provider-1")?.remove(0);
+        assert!(!model.available);
         Ok(())
     }
 
