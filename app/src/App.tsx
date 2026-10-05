@@ -870,7 +870,7 @@ export default function App() {
       <video
         ref={(node) => {
           mediaRef.current = node;
-          setMediaElement(node);
+          setBoundMedia(node);
         }}
         src={sourceUrl}
         className="video-stage"
@@ -888,7 +888,7 @@ export default function App() {
       <audio
         ref={(node) => {
           mediaRef.current = node;
-          setMediaElement(node);
+          setBoundMedia(node);
         }}
         src={sourceUrl}
         className="audio-engine"
