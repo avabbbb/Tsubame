@@ -364,6 +364,37 @@ fn list_provider_models(
 }
 
 #[tauri::command]
+fn resolve_capability(
+    capability: String,
+    state: State<AppState>,
+) -> Result<Vec<ModelDescriptor>, String> {
+    let capability = capability.trim().to_ascii_lowercase();
+    if !CAPABILITY_VOCABULARY.contains(&capability.as_str()) {
+        return Err(format!("unknown capability: {capability}"));
+    }
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let providers = db.list_providers().map_err(|e| e.to_string())?;
+    let mut candidates = Vec::new();
+
+    for provider in providers.into_iter().filter(|provider| provider.enabled) {
+        let models = db
+            .list_provider_models(&provider.id)
+            .map_err(|e| e.to_string())?;
+        candidates.extend(models.into_iter().filter(|model| {
+            model.available && model.effective_capabilities.contains(&capability)
+        }));
+    }
+
+    candidates.sort_by(|a, b| {
+        a.provider_id
+            .cmp(&b.provider_id)
+            .then_with(|| a.model_id.cmp(&b.model_id))
+    });
+    Ok(candidates)
+}
+
+#[tauri::command]
 fn set_model_capabilities(
     provider_id: String,
     model_id: String,
@@ -410,6 +441,7 @@ pub fn run() {
             test_provider_connection,
             refresh_provider_models,
             list_provider_models,
+            resolve_capability,
             set_model_capabilities
         ])
         .run(tauri::generate_context!())
