@@ -3,7 +3,7 @@
 ## Top-level shape
 
 ```text
-Vue / TypeScript Workbench
+React / TypeScript Workbench
           │
         Tauri 2
           │
@@ -28,7 +28,7 @@ Adapters  providers       ASMR-Dubber adapter        providers
 
 ```text
 Tsubame/
-├─ app/                         # Tauri 2 + Vue workbench
+├─ app/                         # Tauri 2 + React workbench
 ├─ crates/
 │  ├─ tsubame-domain/
 │  ├─ tsubame-library/
@@ -99,14 +99,30 @@ Tsubame should reuse/adapt its strongest ideas:
 
 Its Gradio UI is not the user-facing Tsubame product.
 
-## ASPlayer role
+## ASPlayer boundary
 
-ASPlayer is the desktop/player lineage:
-- Tauri/Vue/Rust shell;
-- playback;
-- SQLite media state;
-- sentence subtitle timeline;
-- local transcription flow;
-- dictionary/learning utilities where still relevant.
+ASPlayer is **not** an implementation lineage or code dependency.
 
-Tsubame restructures it around the Workbench shell and modular processing architecture.
+It may be used only as a product/interaction reference for ideas such as:
+- sentence-aware playback;
+- timeline navigation;
+- subtitle ergonomics;
+- media-learning workflows.
+
+Tsubame implements these capabilities independently. No GPL-licensed ASPlayer source may be copied, adapted, vendored or linked into the MIT codebase.
+
+## Desktop stack
+
+The canonical Desktop stack is:
+
+```text
+React + TypeScript
+       ↓
+    Tauri 2
+       ↓
+      Rust
+       ↓
+SQLite / filesystem / jobs / runtime management
+```
+
+Rust owns desktop-local state and native boundaries. Python is reserved for isolated AI workers only when the Python ecosystem provides a material advantage.
