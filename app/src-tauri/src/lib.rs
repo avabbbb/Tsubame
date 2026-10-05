@@ -381,9 +381,11 @@ fn resolve_capability(
         let models = db
             .list_provider_models(&provider.id)
             .map_err(|e| e.to_string())?;
-        candidates.extend(models.into_iter().filter(|model| {
-            model.available && model.effective_capabilities.contains(&capability)
-        }));
+        candidates.extend(
+            models.into_iter().filter(|model| {
+                model.available && model.effective_capabilities.contains(&capability)
+            }),
+        );
     }
 
     candidates.sort_by(|a, b| {
