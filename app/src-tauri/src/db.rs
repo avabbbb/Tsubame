@@ -92,10 +92,7 @@ impl MediaDb {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let media_type = if matches!(
-            ext.as_str(),
-            "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi"
-        ) {
+        let media_type = if matches!(ext.as_str(), "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi") {
             "video"
         } else {
             "audio"
