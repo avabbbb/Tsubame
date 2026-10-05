@@ -349,8 +349,7 @@ async fn model_request(
     let body = response.text().await.map_err(|e| e.to_string())?;
 
     if !status.is_success() {
-        let compact = body.chars().take(300).collect::<String>();
-        return Err(format!("provider returned HTTP {status}: {compact}"));
+        return Err(format!("provider returned HTTP {status}"));
     }
 
     let value = serde_json::from_str::<Value>(&body)
