@@ -39,7 +39,7 @@ Explicitly deferred:
 
 ## PR #5 — Canonical Segment Editor
 
-**Status:** in progress.
+**Status:** complete.
 
 Goal: turn the sentence timeline into the primary editable data model.
 
