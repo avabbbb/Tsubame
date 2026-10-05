@@ -6,6 +6,8 @@ export interface MediaItem {
   duration_ms: number;
   playback_position: number;
   file_size: number;
+  speed: number;
+  volume: number;
 }
 
 export interface Segment {
@@ -18,3 +20,13 @@ export interface Segment {
   ordinal: number;
   revision: number;
 }
+
+export type RailSection =
+  | "home"
+  | "library"
+  | "discover"
+  | "downloads"
+  | "studio"
+  | "jobs";
+
+export type ThemePreference = "system" | "dark" | "light";

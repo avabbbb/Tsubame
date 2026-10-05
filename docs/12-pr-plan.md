@@ -36,6 +36,8 @@ Explicitly deferred:
 
 ## PR #3 — Workbench shell and ASPlayer playback parity
 
+**Status:** complete.
+
 Goal: make Tsubame feel like a real desktop media app before adding AI complexity.
 
 Scope:

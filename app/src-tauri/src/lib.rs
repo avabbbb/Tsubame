@@ -39,6 +39,22 @@ fn update_media_duration(id: i64, duration_ms: i64, state: State<AppState>) -> R
 }
 
 #[tauri::command]
+fn save_playback_state(
+    id: i64,
+    position_ms: i64,
+    speed: f64,
+    volume: f64,
+    state: State<AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .save_playback_state(id, position_ms, speed, volume)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_segments(media_id: i64, state: State<AppState>) -> Result<Vec<Segment>, String> {
     state
         .db
@@ -85,6 +101,7 @@ pub fn run() {
             list_media,
             import_media,
             update_media_duration,
+            save_playback_state,
             get_segments,
             update_segment
         ])
