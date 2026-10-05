@@ -1,11 +1,11 @@
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
+import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is provided by the Tauri/Vite dev environment
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [react()],
   clearScreen: false,
   server: {
     port: 1420,
