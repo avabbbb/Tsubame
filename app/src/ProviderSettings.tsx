@@ -79,8 +79,6 @@ export default function ProviderSettings() {
 
   useEffect(() => {
     if (!selectedProvider) {
-      if (selectedId) return;
-      setDraft(EMPTY_DRAFT);
       setModels([]);
       setApiKey("");
       return;
@@ -102,12 +100,12 @@ export default function ProviderSettings() {
     void loadModels(selectedProvider.id);
   }, [loadModels, selectedId, selectedProvider]);
 
-  const updateDraft = <K extends keyof ProviderInput>(
+  function updateDraft<K extends keyof ProviderInput>(
     key: K,
     value: ProviderInput[K],
-  ) => {
+  ) {
     setDraft((current) => ({ ...current, [key]: value }));
-  };
+  }
 
   const startPreset = (preset: ProviderPreset) => {
     setSelectedId(null);
@@ -218,8 +216,10 @@ export default function ProviderSettings() {
     try {
       await invoke("delete_provider", { id: selectedId });
       const next = await loadProviders();
-      setSelectedId(next[0]?.id ?? null);
+      const nextId = next[0]?.id ?? null;
+      setSelectedId(nextId);
       setModels([]);
+      if (!nextId) setDraft(EMPTY_DRAFT);
       setMessage("Provider removed. Its credential reference was deleted too.");
     } catch (error) {
       setMessage(String(error));
