@@ -317,8 +317,10 @@ impl MediaDb {
             "UPDATE segments
              SET source_text=?1,translated_text=?2,start_ms=?3,end_ms=?4,
                  revision=revision+1,
-                 translation_dirty=?5,tts_dirty=?6,mix_dirty=?7,subtitle_dirty=?8
-             WHERE id=?9 AND revision=?10",
+                 translation_dirty=?5,tts_dirty=?6,mix_dirty=?7,subtitle_dirty=?8,
+                 asr_provenance=CASE WHEN ?9 THEN 'manual' ELSE asr_provenance END,
+                 translation_provenance=CASE WHEN ?10 THEN 'manual' ELSE translation_provenance END
+             WHERE id=?11 AND revision=?12",
             params![
                 source_text,
                 translated_text,
@@ -328,6 +330,8 @@ impl MediaDb {
                 tts_dirty as i64,
                 mix_dirty as i64,
                 subtitle_dirty as i64,
+                source_changed,
+                translation_changed,
                 id,
                 expected_revision
             ],
