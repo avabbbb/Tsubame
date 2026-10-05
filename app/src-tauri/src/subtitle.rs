@@ -25,11 +25,7 @@ fn parse_timestamp(input: &str) -> Result<i64, String> {
 
     let (hours, minutes, sec_part) = match parts.as_slice() {
         [m, s] => (0_i64, *m, *s),
-        [h, m, s] => (
-            h.parse::<i64>().map_err(|_| "invalid hours")?,
-            *m,
-            *s,
-        ),
+        [h, m, s] => (h.parse::<i64>().map_err(|_| "invalid hours")?, *m, *s),
         _ => return Err(format!("invalid timestamp: {input}")),
     };
 
@@ -81,7 +77,10 @@ fn parse_timing_line(line: &str) -> Result<(i64, i64), String> {
     Ok((start_ms, end_ms))
 }
 
-pub fn parse_subtitles(contents: &str, format: SubtitleFormat) -> Result<Vec<SegmentDraft>, String> {
+pub fn parse_subtitles(
+    contents: &str,
+    format: SubtitleFormat,
+) -> Result<Vec<SegmentDraft>, String> {
     let normalized = contents
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
@@ -108,9 +107,7 @@ pub fn parse_subtitles(contents: &str, format: SubtitleFormat) -> Result<Vec<Seg
         }
 
         if format == SubtitleFormat::Vtt
-            && (line.starts_with("NOTE")
-                || line.starts_with("STYLE")
-                || line.starts_with("REGION"))
+            && (line.starts_with("NOTE") || line.starts_with("STYLE") || line.starts_with("REGION"))
         {
             while let Some(next) = lines.peek() {
                 if next.trim().is_empty() {
@@ -128,7 +125,9 @@ pub fn parse_subtitles(contents: &str, format: SubtitleFormat) -> Result<Vec<Seg
                 .next()
                 .ok_or_else(|| format!("subtitle identifier without timing: {line}"))?;
             if !next.contains("-->") {
-                return Err(format!("expected timing line after subtitle identifier {line:?}"));
+                return Err(format!(
+                    "expected timing line after subtitle identifier {line:?}"
+                ));
             }
             next.trim().to_string()
         };
@@ -143,8 +142,7 @@ pub fn parse_subtitles(contents: &str, format: SubtitleFormat) -> Result<Vec<Seg
             text_lines.push(lines.next().unwrap_or_default().trim_end().to_string());
         }
 
-        let text = text_lines.join("
-").trim().to_string();
+        let text = text_lines.join("\n").trim().to_string();
         if text.is_empty() {
             continue;
         }
