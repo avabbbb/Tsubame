@@ -1091,6 +1091,18 @@ export default function App() {
                     <strong>{segments.length} segments</strong>
                   </div>
                   <div className="timeline-actions">
+                    <button onClick={() => void importSubtitleFile("source")}>
+                      Import original
+                    </button>
+                    <button onClick={() => void importSubtitleFile("translation")}>
+                      Import translation
+                    </button>
+                    <button onClick={() => void exportSubtitleFile("bilingual", "srt")}>
+                      Export SRT
+                    </button>
+                    <button onClick={() => void exportSubtitleFile("bilingual", "vtt")}>
+                      Export VTT
+                    </button>
                     <button
                       className={sentenceLoop ? "active" : ""}
                       onClick={toggleSentenceLoop}
@@ -1114,6 +1126,24 @@ export default function App() {
                     )}
                   </div>
                 </div>
+
+                {segments.length > 0 && mediaElement && (
+                  <WaveformEditor
+                    media={mediaElement}
+                    sourceUrl={sourceUrl}
+                    segments={segments}
+                    selectedId={selected?.id ?? null}
+                    onSelect={(id) => {
+                      const segment = segments.find((row) => row.id === id);
+                      if (segment) chooseSegment(segment);
+                    }}
+                    onTimingCommit={commitWaveformTiming}
+                  />
+                )}
+
+                {editorMessage && (
+                  <div className="editor-message">{editorMessage}</div>
+                )}
 
                 <div className="segments">
                   {segments.map((segment) => (
@@ -1194,18 +1224,59 @@ export default function App() {
             <div className="time-grid">
               <label>
                 Start
-                <input value={formatTime(selected.start_ms / 1000)} readOnly />
+                <input
+                  value={draftStart}
+                  onChange={(event) => setDraftStart(event.target.value)}
+                  spellCheck={false}
+                />
               </label>
               <label>
                 End
-                <input value={formatTime(selected.end_ms / 1000)} readOnly />
+                <input
+                  value={draftEnd}
+                  onChange={(event) => setDraftEnd(event.target.value)}
+                  spellCheck={false}
+                />
               </label>
             </div>
+
+            <div className="dirty-strip">
+              <span className={selected.translation_dirty ? "dirty" : ""}>Translate</span>
+              <span className={selected.tts_dirty ? "dirty" : ""}>TTS</span>
+              <span className={selected.mix_dirty ? "dirty" : ""}>Mix</span>
+              <span className={selected.subtitle_dirty ? "dirty" : ""}>Subtitle</span>
+            </div>
+
+            <div className="provenance">
+              <div><span>ASR</span><strong>{selected.asr_provenance || "manual"}</strong></div>
+              <div><span>Refine</span><strong>{selected.refine_provenance || "—"}</strong></div>
+              <div><span>Translate</span><strong>{selected.translation_provenance || "manual"}</strong></div>
+              <div><span>TTS</span><strong>{selected.tts_provenance || "—"}</strong></div>
+              <div><span>Revision</span><strong>{selected.revision}</strong></div>
+            </div>
+
+            <div className="editor-actions">
+              <button
+                className="secondary"
+                disabled={!undoStack.length}
+                onClick={() => void undoSegment()}
+              >
+                Undo
+              </button>
+              <button
+                className="secondary"
+                disabled={!redoStack.length}
+                onClick={() => void redoSegment()}
+              >
+                Redo
+              </button>
+            </div>
+
             <button className="primary wide" onClick={() => void saveSegment()}>
               Save changes
             </button>
             <button className="secondary wide" disabled>
-              Regenerate Segment · planned
+              Regenerate Segment · PR #10
             </button>
           </>
         ) : (
