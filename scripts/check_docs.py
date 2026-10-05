@@ -51,3 +51,25 @@ for path in [ROOT / "README.md", *ROOT.glob("docs/*.md")]:
             raise SystemExit(f"{path.relative_to(ROOT)}: broken relative link: {raw}")
 
 print("docs-check: ok")
+
+
+# Architecture guardrails: keep the clean-room Desktop boundary machine-checkable.
+package_json = (ROOT / "app/package.json").read_text(encoding="utf-8")
+if '"react"' not in package_json or '"react-dom"' not in package_json:
+    raise SystemExit("desktop contract: React dependencies are required")
+if '"vue"' in package_json or "vue-tsc" in package_json:
+    raise SystemExit("desktop contract: Vue dependencies are not allowed")
+if (ROOT / "app/src/App.vue").exists():
+    raise SystemExit("desktop contract: App.vue must not exist")
+
+license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+if not license_text.startswith("MIT License"):
+    raise SystemExit("license contract: repository must remain MIT")
+
+cargo_text = (ROOT / "app/src-tauri/Cargo.toml").read_text(encoding="utf-8")
+if 'license = "MIT"' not in cargo_text:
+    raise SystemExit("license contract: Rust desktop crate must remain MIT")
+
+reference_text = (ROOT / "docs/REFERENCES.md").read_text(encoding="utf-8")
+if "ASPlayer is consulted only for product/interaction research" not in reference_text:
+    raise SystemExit("reference contract: ASPlayer must remain reference-only")
