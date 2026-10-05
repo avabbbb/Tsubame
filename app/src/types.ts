@@ -19,7 +19,20 @@ export interface Segment {
   translated_text: string;
   ordinal: number;
   revision: number;
+  asr_provenance: string | null;
+  refine_provenance: string | null;
+  translation_provenance: string | null;
+  tts_provenance: string | null;
+  translation_dirty: boolean;
+  tts_dirty: boolean;
+  mix_dirty: boolean;
+  subtitle_dirty: boolean;
 }
+
+export type SegmentDraft = Pick<
+  Segment,
+  "start_ms" | "end_ms" | "source_text" | "translated_text"
+>;
 
 export type RailSection =
   | "home"
