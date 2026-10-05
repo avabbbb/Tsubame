@@ -2,7 +2,7 @@
 name = "tsubame"
 version = "0.1.0"
 description = "Local-first ASMR library and AI dubbing workbench"
-license = "GPL-3.0"
+license = "MIT"
 edition = "2021"
 
 [lib]

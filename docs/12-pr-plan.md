@@ -1,71 +1,48 @@
 # Pull Request Plan
 
-This document turns the architecture roadmap into reviewable implementation slices. Each PR must leave `main` usable and must not smuggle the next layer into the current one.
+This document tracks the review-sized implementation sequence for Tsubame.
 
-## PR #2 — ASPlayer → Tsubame desktop baseline
+## PR #4 — React + Tauri/Rust + MIT clean-room foundation
 
 **Status:** in progress.
 
+Goal: freeze the implementation stack and license before deeper product work.
+
 Scope:
-- Tauri 2 + Vue/TypeScript application;
-- SQLite local media library;
-- local audio/video import and playback;
-- canonical `Segment` table with optimistic `revision`;
-- click-to-seek timeline;
-- Inspector edit/save path;
-- persistent player bar;
-- Codex/VS Code workbench geometry with Apple Music visual language;
-- record the exact ASPlayer upstream baseline and GPL lineage.
+- Vue → React + TypeScript;
+- keep Tauri 2 + Rust;
+- keep SQLite canonical state;
+- MIT license;
+- remove ASPlayer implementation-lineage language;
+- ASPlayer becomes reference-only;
+- replace GPL/upstream docs with explicit dependency/reference boundaries;
+- keep the already implemented Workbench/playback behavior.
 
 Acceptance:
 - frontend production build passes;
 - Rust formatting/checks pass;
 - docs check passes;
-- imported local media plays;
-- the app can read/edit persisted Segments without provider-specific code;
-- no Whisper/model-specific dependency is introduced into the product shell.
+- no Vue source/dependency remains;
+- repository license and Rust crate metadata are MIT;
+- no current source imports or links GPL ASPlayer code;
+- Workbench still builds with the same product shell.
 
 Explicitly deferred:
+- Segment Editor expansion;
+- waveform;
+- subtitle import/export;
+- Provider Registry;
 - production ASR;
-- remote providers;
-- runtime/model installer;
-- source-site downloading;
-- ASMR-Dubber worker.
+- runtime/model installer.
 
 ---
 
-## PR #3 — Workbench shell and ASPlayer playback parity
+## PR #5 — Canonical Segment Editor
 
-**Status:** complete.
-
-Goal: make Tsubame feel like a real desktop media app before adding AI complexity.
+Goal: turn the sentence timeline into the primary editable data model.
 
 Scope:
-- resizable/collapsible Context Sidebar and Inspector;
-- persistent tabs for opened Works/Tracks/search/jobs;
-- restore useful ASPlayer playback behavior: resume position, speed, volume, previous/next sentence, sentence loop and AB loop where compatible;
-- audio/video stage behavior;
-- keyboard shortcuts;
-- global bottom player;
-- cover/work header;
-- light/dark themes;
-- Apple Music-inspired artwork/material treatment;
-- cover-derived accent as an enhancement, never a readability dependency.
-
-Acceptance:
-- playback continues while switching product surfaces;
-- panel state survives restart;
-- no feature requires opening a modal “player page”;
-- Main Workspace remains the priority surface on narrow windows.
-
----
-
-## PR #4 — Canonical Segment Editor
-
-Goal: turn the subtitle timeline into the primary editable data model.
-
-Scope:
-- stable Segment IDs and revision migration;
+- stable Segment IDs/revisions;
 - source text / translation / start / end editing;
 - SRT/VTT import into Segments;
 - SRT/VTT export from Segments;
@@ -84,286 +61,180 @@ Acceptance:
 
 ---
 
-## PR #5 — Provider Registry, BYOK and model discovery
+## PR #6 — Provider Registry, BYOK and model discovery
 
 Goal: remove model/vendor assumptions from the product.
 
 Scope:
-- `ProviderConfig`, `ModelDescriptor`, capability vocabulary;
-- Provider Registry and Capability Resolver;
-- secure OS credential storage with `secret_ref`;
+- ProviderConfig, ModelDescriptor and capability vocabulary;
+- Provider Registry + Capability Resolver;
+- secure OS credential storage with secret_ref;
 - provider connection test;
 - model discovery + refresh;
 - built-in catalog + discovered metadata merge;
 - manual capability override for unknown models;
-- generic OpenAI-compatible provider;
-- first remote translation/refinement providers.
-
-Initial provider targets:
-- OpenAI-compatible;
-- Alibaba Model Studio;
-- Gemini-compatible path where appropriate;
-- local-provider registration contract.
+- generic OpenAI-compatible provider.
 
 Acceptance:
-- changing translation provider requires no feature/UI rewrite;
+- changing provider requires no feature/UI rewrite;
 - raw keys never enter SQLite/logs;
-- model discovery failure does not destroy existing configuration;
-- no product feature switches on a vendor/model-name string.
+- no feature switches on a vendor/model-name string.
 
 ---
 
-## PR #6 — Modular ASR engines
+## PR #7 — Modular ASR engines
 
-Goal: replace “transcription = Whisper” with `speech.asr`.
+Goal: make transcription a replaceable speech.asr capability.
 
-Targets:
-- Faster-Whisper as the primary Windows local candidate;
-- whisper.cpp retained as an optional lightweight/local engine from ASPlayer lineage;
+Initial targets:
+- Faster-Whisper;
+- whisper.cpp as an independent optional engine;
 - SenseVoice/FunASR;
-- Apple Speech provider contract and macOS implementation when platform support is available;
-- cloud ASR adapter path for providers such as Alibaba.
-
-Shared output:
-- canonical Segment candidates;
-- timestamps;
-- language;
-- confidence/provenance where available.
-
-Shared processing:
-- media extraction;
-- VAD/segmentation contract;
-- cancellation/progress;
-- resumability.
+- Apple Speech on supported macOS;
+- cloud ASR adapter path.
 
 Acceptance:
-- the same Track can be re-run with a different ASR provider;
+- same Track can run through different ASR providers;
 - no ASR engine writes canonical SQLite directly;
 - Japanese-language smoke fixtures exist.
 
 ---
 
-## PR #7 — Transcript refinement, review and alignment
+## PR #8 — Transcript refinement and alignment
 
-Goal: support the ASMR-specific `ASR → refine → align → human review` workflow.
+Goal: support ASMR-specific ASR → refine → align → human review.
 
 Scope:
-- optional `transcript.refine` capability;
+- transcript.refine capability;
 - glossary/proper-noun context;
-- conservative LLM correction mode;
-- candidate diff/review;
-- forced-alignment provider contract;
-- provenance and confidence display in Inspector;
-- “accept proposal / keep original” flow.
-
-Acceptance:
-- refiner cannot silently overwrite reviewed text;
-- original ASR result remains inspectable;
-- alignment can run independently from ASR.
+- conservative LLM correction proposals;
+- diff/review;
+- forced-alignment contract;
+- provenance/confidence in Inspector.
 
 ---
 
-## PR #8 — ASMR-Dubber worker integration
+## PR #9 — ASMR-Dubber worker integration
 
-Goal: reuse the mature processing lineage without embedding its Gradio product UI.
+Goal: reuse compatible MIT processing capabilities without adopting its product UI.
 
 Scope:
 - versioned worker protocol;
-- worker health/capability handshake;
-- adapt useful VAD/review/alignment/translation/TTS/timing/mix pieces;
-- job progress/cancel/retry events;
+- capability handshake;
+- VAD/review/alignment/translation/TTS/timing/mix adapters;
+- progress/cancel/retry;
 - immutable worker inputs;
-- results returned to Tsubame Operation Registry;
-- per-sentence generated audio asset contract.
-
-Acceptance:
-- worker never mutates canonical SQLite;
-- worker crash leaves a recoverable Job;
-- UI, CLI and future MCP observe the same job state.
+- per-sentence output asset contract.
 
 ---
 
-## PR #9 — Single-sentence regenerate loop
+## PR #10 — Single-sentence regenerate loop
 
-Goal: prove Tsubame’s defining editing experience.
-
-Flow:
+Goal: prove Tsubame's defining editing experience.
 
 ```text
 select Segment
- → edit translation / timing / voice setting
- → Ctrl/Cmd + Enter
+ → edit
+ → Ctrl/Cmd+Enter
  → resolve profile
  → synthesize only dirty sentence
  → update generated asset
- → local mix invalidation
  → preview immediately
 ```
 
-Scope:
-- Segment-level TTS cache key;
-- original/generated A/B preview;
-- per-segment regenerate;
-- dirty-only processing;
-- local partial re-mix strategy.
-
-Acceptance:
-- changing one translated sentence never re-runs full-track ASR/TTS;
-- generated result is immediately playable from Inspector/timeline;
-- failure preserves the previous good generated asset.
-
 ---
 
-## PR #10 — Runtime and model bootstrap
+## PR #11 — Runtime and model bootstrap
 
-Goal: make the Desktop installation self-contained for normal users.
+Goal: normal users configure no developer environment.
 
 Scope:
-- Runtime Pack / Model Pack manifests;
-- hardware/platform doctor;
+- runtime/model manifests;
+- hardware doctor;
 - install planner;
 - resumable downloads;
-- SHA-256/integrity verification;
+- integrity verification;
 - staging + atomic activation;
-- previous-known-good rollback;
-- disk-space reporting;
-- app-managed FFmpeg/media helpers;
-- GitHub Release/bootstrap metadata.
-
-Acceptance:
-- fresh Windows user does not install Python/Node/Rust manually;
-- selecting a Processing Profile produces a deterministic install plan;
-- interrupted model/runtime downloads resume safely.
+- rollback;
+- disk-space reporting.
 
 ---
 
-## PR #11 — `$tsubame` Skill, CLI and MCP control plane
+## PR #12 — $tsubame Skill, CLI and MCP
 
 Goal: let local agents operate the same Desktop without GUI automation.
 
 Scope:
-- `tsubame doctor --json`;
-- `tsubame app ensure`;
-- provider/model/profile/runtime commands;
-- library/work/track/segment/job commands;
+- doctor/app/provider/model/profile/runtime/library/segment/job commands;
 - revision-checked mutations;
-- localhost-only authenticated control channel;
-- MCP tools mapped onto the same Operation Registry;
-- Skill bootstrap/initialization instructions.
-
-Acceptance:
-- local agent can launch/connect to Tsubame and edit/regenerate a Segment;
-- CLI/UI/MCP share behavior and state;
-- secrets are redacted from agent-visible responses.
+- localhost-only control channel;
+- MCP mapped onto the same Operation Registry.
 
 ---
 
-## PR #12 — Source Registry and shared Download Manager
-
-Goal: build acquisition infrastructure once before website-specific adapters multiply.
+## PR #13 — Source Registry and shared Download Manager
 
 Scope:
-- SourceAdapter contract;
-- Local source adapter;
-- persisted download queue;
+- SourceAdapter;
+- Local adapter;
+- persisted queue;
 - concurrency/retry/backoff;
-- proxy support;
-- range/resume where available;
+- proxy;
+- range/resume;
 - duplicate handling;
-- staged/atomic finalization;
-- source-to-library mapping.
-
-Acceptance:
-- source-specific code has no direct UI/database shortcuts;
-- downloaded assets remain usable if the source later disappears.
+- staged finalization.
 
 ---
 
-## PR #13 — ASMR.one compatibility adapter
+## PR #14 — ASMR.one compatibility adapter
 
-Goal: preserve useful compatibility with the older source without making it foundational.
-
-Scope:
-- search/detail/asset probing where the service still functions;
-- metadata normalization;
-- graceful degraded/unavailable state.
-
-Acceptance:
-- adapter failure cannot break Local/Japanese ASMR/library playback.
+Compatibility only; failure must not affect other sources.
 
 ---
 
-## PR #14 — Japanese ASMR adapter
+## PR #15 — Japanese ASMR adapter
 
 Canonical target: https://japaneseasmr.com/
 
 Scope:
-- search/discovery;
+- discovery;
 - work metadata;
-- RJ code and circle/CV normalization;
-- track list/asset probing;
-- accessible audio/video/subtitle acquisition;
-- voice-actor canonical Japanese names plus romanized aliases;
-- fixtures for markup/parser changes.
-
-Acceptance:
-- at least one real work can complete `discover → inspect → acquire → library → play`;
-- no DRM/paywall/access-control bypass;
-- adapter parser changes are isolated and tested.
+- RJ/circle/CV normalization;
+- asset probing;
+- accessible media/subtitle acquisition;
+- Japanese canonical names + romanized aliases.
 
 ---
 
-## PR #15 — Library metadata and Apple Music media surfaces
-
-Goal: make the library feel like a polished media product rather than a file list.
+## PR #16 — Library metadata and Apple Music media surfaces
 
 Scope:
-- Work / Track hierarchy;
+- Work/Track hierarchy;
 - cover artwork;
-- CV / circle / RJ metadata;
-- recently added / continue listening / favorites / collections;
-- artwork-forward Work header;
-- optional cover-derived accent/material;
-- search and sorting;
-- metadata merge rules across Local/source adapters.
-
-Acceptance:
-- filename/path is no longer the main library identity;
-- missing artwork/metadata degrades cleanly;
-- media aesthetics never obscure editing readability.
+- CV/circle/RJ metadata;
+- continue listening;
+- favorites/collections;
+- artwork-led Work surfaces;
+- optional cover-derived accents.
 
 ---
 
-## PR #16 — Packaging, updater and first distributable release
+## PR #17 — Packaging, updater and first distributable release
 
-Scope:
-- Windows x64 installer;
-- application updater;
-- app/runtime/model update channels separated;
-- release notes and license/notices;
-- clean-machine smoke test;
-- runtime/model bootstrap smoke test;
-- crash/recovery and database migration checks.
+Exit criteria: a non-developer can install Tsubame, acquire/import media, choose/install an ASR profile, transcribe, edit, translate, synthesize one sentence and continue playback without configuring a development toolchain.
 
-Exit criteria:
-- a non-developer can install Tsubame, import/acquire media, choose/install an ASR profile, transcribe, edit, translate, synthesize one sentence and continue playback without configuring a development environment.
+## Parallelization
 
----
-
-## Parallelization rules
-
-After PR #4 stabilizes Segment contracts, work may proceed in parallel:
+After PR #5 stabilizes Segment contracts:
 
 ```text
-Provider Registry (#5) ─┬─ ASR (#6) ─ Refine/Align (#7)
-                        └─ Runtime Bootstrap (#10)
+Provider Registry #6 ─┬─ ASR #7 ─ Refine/Align #8
+                      └─ Runtime Bootstrap #11
 
-ASMR-Dubber Worker (#8) ─ Single-sentence Regenerate (#9)
+ASMR-Dubber #9 ─ Single Segment #10
 
-Source Registry (#12) ─┬─ ASMR.one (#13)
-                       └─ Japanese ASMR (#14)
+Source Registry #13 ─┬─ ASMR.one #14
+                     └─ Japanese ASMR #15
 
-Workbench (#3) ─ Segment Editor (#4) ─ Library polish (#15)
+Segment Editor #5 ─ Library polish #16
 ```
-
-Do not parallelize two PRs that both redefine the same persistent schema or provider contracts without a shared base PR first.

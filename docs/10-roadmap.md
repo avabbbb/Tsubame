@@ -2,126 +2,109 @@
 
 For the concrete review-sized sequence and acceptance criteria, see [Pull Request Plan](12-pr-plan.md).
 
-The roadmap is ordered to prove architecture and user value, not to maximize feature count.
+## Completed foundation
 
-## PR 0 — Product/architecture baseline
+### PR #1 — Product/architecture baseline
 
-This documentation set.
+Defined the initial product, Workbench, provider/runtime, Skill, source and rights contracts.
 
-Freeze:
-- product boundary;
-- Workbench UI;
-- canonical domain state;
-- provider/model architecture;
-- runtime/bootstrap contract;
-- agent/Skill control plane;
-- source adapter contract;
-- rights/licensing boundaries.
+### PR #2 — Runnable Desktop baseline
 
-## PR 1 — ASPlayer → Tsubame baseline migration
+Established the first working desktop prototype with local media playback, SQLite-backed Segments and the Workbench shell.
 
-Bring in the useful desktop lineage while preserving attribution/license:
-- Tauri 2 + Vue;
-- playback;
-- media import/library;
-- SQLite;
-- sentence subtitle timeline;
-- local job/event foundations.
+### PR #3 — Persistent Workbench and playback parity
 
-Do not preserve old information architecture just because it exists upstream.
+Added resizable/collapsible panes, persistent tabs, resume position, speed/volume persistence, segment navigation, looping, keyboard shortcuts, themes and a global player.
 
-## PR 2 — Workbench Shell
+## Current reset
 
-Implement:
-- Activity Rail;
-- Context Sidebar;
-- Tabs;
-- Main Workspace;
-- Inspector;
-- Bottom Player/Job Bar;
-- resize/collapse state;
-- compact Notion/Codex visual tokens.
+### PR #4 — React + Tauri/Rust + MIT clean-room foundation
 
-## PR 3 — Canonical Segment Editor
+Freeze the long-term implementation boundary:
 
-Add:
-- stable Segment IDs/revisions;
-- source/translation/timing editing;
-- waveform context;
-- dirty dependency graph;
+- React + TypeScript frontend;
+- Tauri 2 + Rust native shell;
+- SQLite canonical state;
+- MIT repository license;
+- ASPlayer becomes product/interaction reference only;
+- no GPL source is copied or linked.
+
+## Next
+
+### PR #5 — Canonical Segment Editor
+
+- editable source/translation/start/end;
+- SRT/VTT import/export;
+- waveform/timeline;
 - undo/redo;
-- sentence preview.
+- provenance;
+- dirty dependency graph;
+- revision-conflict UI.
 
-## PR 4 — Provider/Model Registry
+### PR #6 — Provider/Model Registry
 
-Separate:
-- Provider;
-- ModelDescriptor;
-- capability resolution;
-- BYOK secret references;
+- ProviderConfig / ModelDescriptor;
+- capability resolver;
+- BYOK secrets;
 - model discovery;
-- local runtime discovery.
+- generic OpenAI-compatible provider;
+- local provider contract.
 
-Keep whisper.cpp as one provider, not the architecture.
+### PR #7 — Modular ASR
 
-## PR 5 — ASMR-Dubber Worker Integration
+- Faster-Whisper;
+- whisper.cpp as an independent optional engine;
+- SenseVoice/FunASR;
+- Apple Speech on macOS;
+- cloud ASR adapters.
 
-Adapt useful processing capabilities behind worker contracts:
-- segmentation/VAD;
-- ASR families;
-- refinement/review;
-- alignment;
-- translation;
-- per-sentence TTS;
-- mix/export.
+### PR #8 — Transcript refinement and alignment
 
-## PR 6 — Single-sentence regenerate loop
+- optional LLM refinement;
+- glossary/proper nouns;
+- conservative review proposals;
+- forced alignment;
+- provenance/confidence.
 
-Prove the key experience:
+### PR #9 — ASMR-Dubber worker
+
+Integrate compatible MIT processing capabilities behind versioned worker contracts.
+
+### PR #10 — Single-sentence regenerate
+
+Prove the defining loop:
 
 ```text
-select sentence
- → edit
- → Ctrl/Cmd+Enter
- → regenerate only affected sentence
- → preview/replay immediately
+edit one Segment
+ → resolve profile
+ → regenerate only that Segment
+ → preview immediately
 ```
 
-## PR 7 — Runtime Bootstrap
+### PR #11 — Runtime/model bootstrap
 
-Windows x64:
-- app-managed runtime directory;
-- runtime/model manifests;
-- resumable verified install;
-- doctor;
-- no global environment setup.
+App-managed runtime/model packs with resumable verified installation.
 
-## PR 8 — Tsubame Skill + CLI/MCP
+### PR #12 — $tsubame Skill + CLI/MCP
 
-Implement:
-- install detection/bootstrap;
-- doctor;
-- app ensure/connect;
-- provider/model queries;
-- runtime plan/install;
-- library/segment/job operations.
+Agent-operable control plane over the same Desktop operations.
 
-## PR 9 — Source Registry + Local / ASMR.one
+### PR #13 — Source Registry + Download Manager
 
-Build shared download manager and first adapters.
+Shared source and acquisition infrastructure.
 
-## PR 10 — Japanese ASMR Adapter
+### PR #14 — ASMR.one compatibility adapter
 
-Add metadata/asset probing and lawful acquisition of accessible assets.
+Compatibility-only adapter; not a foundational dependency.
 
-## PR 11 — Packaging/Release
+### PR #15 — Japanese ASMR adapter
 
-Produce normal Windows installer + release artifacts, with heavy models/runtimes installed on demand.
+Canonical target: https://japaneseasmr.com/
 
-## Later
+### PR #16 — Library metadata and Apple Music media polish
 
-- macOS + Apple Speech provider;
-- more ASR/TTS providers;
-- advanced batch workflows;
-- optional overlay/dictionary/learning surfaces;
-- richer export presets.
+Work/Track/CV/Circle/RJ metadata, artwork-forward surfaces and collections.
+
+### PR #17 — Packaging / updater / first distributable release
+
+Windows x64 installer, updater, clean-machine validation and runtime bootstrap smoke tests.

@@ -1,7 +1,12 @@
 # app/
 
-Reserved for the Tsubame **Tauri 2 + Vue/TypeScript** desktop application.
+Tsubame Desktop uses:
 
-The first implementation PR should migrate only the useful ASPlayer desktop lineage and immediately reshape it around `docs/03-ui-system.md`.
+- **React + TypeScript**
+- **Tauri 2**
+- **Rust**
+- **SQLite**
 
-The upstream ASPlayer page structure is not canonical. The Tsubame Workbench Shell is canonical.
+The Workbench UI is implemented independently around Tsubame's own contracts in `docs/03-ui-system.md`.
+
+ASPlayer is a product/interaction reference only. Do not copy or port GPL source into this directory.

@@ -20,7 +20,7 @@
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-视觉目标：Notion × Codex × Linear。扁平、紧凑、低装饰、信息密度高。
+视觉目标：Apple Music × Codex Workbench。布局保持专业工作台，媒体视觉更强调封面、播放器质感与轻量材质。
 
 ## 最重要的数据对象：Segment
 
@@ -109,11 +109,25 @@ Agent 不通过屏幕点击来控制 Tsubame。
 
 站点解析逻辑不能进入 UI 或核心 Domain。
 
-## 上游
+## 实现与参考边界
 
-- ASPlayer：桌面壳、播放、SQLite、逐句字幕时间轴等基础。
-- ASMR-Dubber：ASR、VAD、对齐、翻译、逐句 TTS、混音和可恢复处理。
-- asmr-downloader：下载队列、重试、限流、同步等架构参考。
+Tsubame 的正式 Desktop 技术栈：
+
+```text
+React + TypeScript
+       ↓
+    Tauri 2
+       ↓
+      Rust
+       ↓
+SQLite / 本地文件 / Job / Runtime Manager
+```
+
+主项目采用 **MIT**。
+
+- ASPlayer：只参考播放、字幕时间轴等产品/交互设计，不复制、移植或链接其 GPL 源码。
+- ASMR-Dubber：MIT，可在后续 Worker 层按许可要求选择性复用处理能力。
+- asmr-downloader：MIT，主要参考下载队列、重试、同步等设计，必要时可选择性复用兼容代码。
 
 ## 名称与声优
 
@@ -126,14 +140,17 @@ Agent 不通过屏幕点击来控制 Tsubame。
 ## 开发优先级
 
 1. 文档/架构基线；
-2. ASPlayer → Tsubame baseline；
-3. Workbench Shell；
-4. Segment Editor；
+2. Desktop 原型与 Workbench；
+3. React + Tauri/Rust + MIT clean-room reset；
+4. Canonical Segment Editor；
 5. Provider / Model Registry；
-6. ASMR-Dubber Worker；
-7. 单句 Regenerate；
-8. Runtime Bootstrap；
-9. Skill + CLI/MCP；
-10. Source Registry + 下载；
-11. Japanese ASMR Adapter；
-12. Windows 安装包与 Release。
+6. 模块化 ASR；
+7. Transcript Refine / Alignment；
+8. ASMR-Dubber Worker；
+9. 单句 Regenerate；
+10. Runtime Bootstrap；
+11. Skill + CLI/MCP；
+12. Source Registry + 下载；
+13. Japanese ASMR Adapter；
+14. Apple Music 风格媒体库完善；
+15. Windows 安装包与 Release。
