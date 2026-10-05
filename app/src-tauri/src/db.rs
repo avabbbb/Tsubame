@@ -11,6 +11,8 @@ pub struct MediaItem {
     pub duration_ms: i64,
     pub playback_position: i64,
     pub file_size: i64,
+    pub speed: f64,
+    pub volume: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +44,8 @@ impl MediaDb {
                duration_ms INTEGER NOT NULL DEFAULT 0,
                playback_position INTEGER NOT NULL DEFAULT 0,
                file_size INTEGER NOT NULL DEFAULT 0,
+               speed REAL NOT NULL DEFAULT 1.0,
+               volume REAL NOT NULL DEFAULT 1.0,
                added_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
              CREATE TABLE IF NOT EXISTS segments (
@@ -58,7 +62,26 @@ impl MediaDb {
              CREATE INDEX IF NOT EXISTS idx_segments_media_time
                ON segments(media_id, start_ms, ordinal);",
         )?;
+        Self::ensure_media_column(&conn, "speed", "REAL NOT NULL DEFAULT 1.0")?;
+        Self::ensure_media_column(&conn, "volume", "REAL NOT NULL DEFAULT 1.0")?;
         Ok(Self { conn })
+    }
+
+    fn ensure_media_column(
+        conn: &Connection,
+        column: &str,
+        definition: &str,
+    ) -> rusqlite::Result<()> {
+        let mut stmt = conn.prepare("PRAGMA table_info(media_files)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|name| name == column) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE media_files ADD COLUMN {column} {definition};"
+            ))?;
+        }
+        Ok(())
     }
 
     pub fn import_media(&self, path: &str) -> rusqlite::Result<MediaItem> {
@@ -69,7 +92,10 @@ impl MediaDb {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let media_type = if matches!(ext.as_str(), "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi") {
+        let media_type = if matches!(
+            ext.as_str(),
+            "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi"
+        ) {
             "video"
         } else {
             "audio"
@@ -87,7 +113,9 @@ impl MediaDb {
     fn media_by_path(&self, path: &str) -> rusqlite::Result<Option<MediaItem>> {
         self.conn
             .query_row(
-                "SELECT id,path,title,media_type,duration_ms,playback_position,file_size FROM media_files WHERE path=?1",
+                "SELECT id,path,title,media_type,duration_ms,playback_position,file_size,
+                        COALESCE(speed,1.0),COALESCE(volume,1.0)
+                 FROM media_files WHERE path=?1",
                 [path],
                 |r| {
                     Ok(MediaItem {
@@ -98,6 +126,8 @@ impl MediaDb {
                         duration_ms: r.get(4)?,
                         playback_position: r.get(5)?,
                         file_size: r.get(6)?,
+                        speed: r.get(7)?,
+                        volume: r.get(8)?,
                     })
                 },
             )
@@ -106,7 +136,8 @@ impl MediaDb {
 
     pub fn list_media(&self) -> rusqlite::Result<Vec<MediaItem>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id,path,title,media_type,duration_ms,playback_position,file_size
+            "SELECT id,path,title,media_type,duration_ms,playback_position,file_size,
+                    COALESCE(speed,1.0),COALESCE(volume,1.0)
              FROM media_files ORDER BY added_at DESC,id DESC",
         )?;
         stmt.query_map([], |r| {
@@ -118,6 +149,8 @@ impl MediaDb {
                 duration_ms: r.get(4)?,
                 playback_position: r.get(5)?,
                 file_size: r.get(6)?,
+                speed: r.get(7)?,
+                volume: r.get(8)?,
             })
         })?
         .collect()
@@ -127,6 +160,27 @@ impl MediaDb {
         self.conn.execute(
             "UPDATE media_files SET duration_ms=?1 WHERE id=?2",
             params![duration_ms, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_playback_state(
+        &self,
+        id: i64,
+        position_ms: i64,
+        speed: f64,
+        volume: f64,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE media_files
+             SET playback_position=?1,speed=?2,volume=?3
+             WHERE id=?4",
+            params![
+                position_ms.max(0),
+                speed.clamp(0.5, 3.0),
+                volume.clamp(0.0, 1.0),
+                id
+            ],
         )?;
         Ok(())
     }
@@ -195,5 +249,22 @@ impl MediaDb {
                 },
             )
             .optional()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_state_roundtrip() -> rusqlite::Result<()> {
+        let db = MediaDb::open(Path::new(":memory:"))?;
+        let media = db.import_media("example.mp3")?;
+        db.save_playback_state(media.id, 42_000, 1.25, 0.65)?;
+        let row = db.list_media()?.remove(0);
+        assert_eq!(row.playback_position, 42_000);
+        assert!((row.speed - 1.25).abs() < f64::EPSILON);
+        assert!((row.volume - 0.65).abs() < f64::EPSILON);
+        Ok(())
     }
 }
