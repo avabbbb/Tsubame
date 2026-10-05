@@ -62,4 +62,4 @@ The core experience to prove first is:
 
 ## Initial platform
 
-Windows x64 is the first production target because the upstream player and local AI ecosystem are strongest there. macOS follows with native Apple Speech integration as a first-class provider.
+Windows x64 is the first production target because the local AI ecosystem and packaging path are strongest there. macOS follows with native Apple Speech integration as a first-class provider.
