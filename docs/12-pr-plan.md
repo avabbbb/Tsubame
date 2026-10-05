@@ -65,6 +65,8 @@ Acceptance:
 
 ## PR #6 — Provider Registry, BYOK and model discovery
 
+**Status:** in progress.
+
 Goal: remove model/vendor assumptions from the product.
 
 Scope:
