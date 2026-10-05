@@ -84,18 +84,8 @@ impl MediaDb {
                ON segments(media_id, start_ms, ordinal);",
         )?;
 
-        Self::ensure_column(
-            &conn,
-            "media_files",
-            "speed",
-            "REAL NOT NULL DEFAULT 1.0",
-        )?;
-        Self::ensure_column(
-            &conn,
-            "media_files",
-            "volume",
-            "REAL NOT NULL DEFAULT 1.0",
-        )?;
+        Self::ensure_column(&conn, "media_files", "speed", "REAL NOT NULL DEFAULT 1.0")?;
+        Self::ensure_column(&conn, "media_files", "volume", "REAL NOT NULL DEFAULT 1.0")?;
 
         for (name, definition) in [
             ("transcript_provenance", "TEXT NOT NULL DEFAULT ''"),
@@ -142,12 +132,11 @@ impl MediaDb {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let media_type =
-            if matches!(ext.as_str(), "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi") {
-                "video"
-            } else {
-                "audio"
-            };
+        let media_type = if matches!(ext.as_str(), "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi") {
+            "video"
+        } else {
+            "audio"
+        };
         let file_size = std::fs::metadata(p).map(|m| m.len() as i64).unwrap_or(0);
 
         self.conn.execute(
