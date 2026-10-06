@@ -394,40 +394,39 @@ pub fn run_whisper_cpp(
     Ok(result)
 }
 
-pub async fn run_remote_openai_compatible(
+async fn post_remote_transcription(
     provider: &ProviderConfig,
     secret: Option<&str>,
-    media_path: &str,
-    media_duration_ms: i64,
+    url: &str,
+    media_bytes: &[u8],
+    filename: &str,
     model_id: &str,
-    language: Option<String>,
-    prompt: Option<String>,
-) -> Result<AsrResult, String> {
-    let bytes = fs::read(media_path).map_err(|e| format!("cannot read media: {e}"))?;
-    let filename = Path::new(media_path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("audio.bin")
-        .to_string();
-
+    language: Option<&str>,
+    prompt: Option<&str>,
+    verbose: bool,
+) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
     let mut form = Form::new()
-        .part("file", Part::bytes(bytes).file_name(filename))
+        .part(
+            "file",
+            Part::bytes(media_bytes.to_vec()).file_name(filename.to_string()),
+        )
         .text("model", model_id.to_string());
 
-    // Request segment timing where compatible. Providers/models that only support
-    // plain JSON may ignore or reject these fields; the caller receives that error.
-    form = form
-        .text("response_format", "verbose_json")
-        .text("timestamp_granularities[]", "segment");
+    if verbose {
+        form = form
+            .text("response_format", "verbose_json")
+            .text("timestamp_granularities[]", "segment");
+    } else {
+        form = form.text("response_format", "json");
+    }
 
-    if let Some(language) = language.filter(|value| !value.is_empty() && value != "auto") {
-        form = form.text("language", language);
+    if let Some(language) = language.filter(|value| !value.is_empty() && *value != "auto") {
+        form = form.text("language", language.to_string());
     }
     if let Some(prompt) = prompt.filter(|value| !value.trim().is_empty()) {
-        form = form.text("prompt", prompt);
+        form = form.text("prompt", prompt.to_string());
     }
 
-    let url = format!("{}/audio/transcriptions", provider.base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .user_agent("Tsubame/0.1 ASR")
@@ -446,14 +445,78 @@ pub async fn run_remote_openai_compatible(
 
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status();
-    let body = response.bytes().await.map_err(|e| e.to_string())?;
+    let body = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
+    Ok((status, body))
+}
+
+pub async fn run_remote_openai_compatible(
+    provider: &ProviderConfig,
+    secret: Option<&str>,
+    media_path: &str,
+    media_duration_ms: i64,
+    model_id: &str,
+    language: Option<String>,
+    prompt: Option<String>,
+) -> Result<AsrResult, String> {
+    let media_bytes = fs::read(media_path).map_err(|e| format!("cannot read media: {e}"))?;
+    let filename = Path::new(media_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio.bin")
+        .to_string();
+    let url = format!("{}/audio/transcriptions", provider.base_url.trim_end_matches('/'));
+
+    let (status, body) = post_remote_transcription(
+        provider,
+        secret,
+        &url,
+        &media_bytes,
+        &filename,
+        model_id,
+        language.as_deref(),
+        prompt.as_deref(),
+        true,
+    )
+    .await?;
+
+    let (status, body, notes) = if status.is_success() {
+        (status, body, Vec::new())
+    } else if matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        // Some OpenAI-compatible transcription models expose only plain JSON.
+        // Negotiate down without branching on vendor/model names.
+        let (fallback_status, fallback_body) = post_remote_transcription(
+            provider,
+            secret,
+            &url,
+            &media_bytes,
+            &filename,
+            model_id,
+            language.as_deref(),
+            prompt.as_deref(),
+            false,
+        )
+        .await?;
+        (
+            fallback_status,
+            fallback_body,
+            vec!["Provider rejected timestamped verbose_json; retried plain JSON.".to_string()],
+        )
+    } else {
+        return Err(format!("ASR provider returned HTTP {status}"));
+    };
+
     if !status.is_success() {
         return Err(format!("ASR provider returned HTTP {status}"));
     }
 
-    let value: Value =
-        serde_json::from_slice(&body).map_err(|e| format!("ASR provider returned invalid JSON: {e}"))?;
-    parse_remote_response(model_id, media_duration_ms, &value)
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("ASR provider returned invalid JSON: {e}"))?;
+    let mut result = parse_remote_response(model_id, media_duration_ms, &value)?;
+    result.notes.extend(notes);
+    Ok(result)
 }
 
 pub fn parse_remote_response(
