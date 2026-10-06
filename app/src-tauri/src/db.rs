@@ -233,6 +233,30 @@ impl MediaDb {
         rows
     }
 
+    pub fn get_media(&self, id: i64) -> rusqlite::Result<Option<MediaItem>> {
+        self.conn
+            .query_row(
+                "SELECT id,path,title,media_type,duration_ms,playback_position,file_size,
+                        COALESCE(speed,1.0),COALESCE(volume,1.0)
+                 FROM media_files WHERE id=?1",
+                [id],
+                |row| {
+                    Ok(MediaItem {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        title: row.get(2)?,
+                        media_type: row.get(3)?,
+                        duration_ms: row.get(4)?,
+                        playback_position: row.get(5)?,
+                        file_size: row.get(6)?,
+                        speed: row.get(7)?,
+                        volume: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn update_media_duration(&self, id: i64, duration_ms: i64) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE media_files SET duration_ms=?1 WHERE id=?2",
@@ -316,6 +340,37 @@ impl MediaDb {
                 ],
             )?;
         }
+        tx.commit()?;
+        self.get_segments(media_id)
+    }
+
+    pub fn replace_asr_segments(
+        &mut self,
+        media_id: i64,
+        cues: &[SubtitleCue],
+        provenance: &str,
+    ) -> rusqlite::Result<Vec<Segment>> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM segments WHERE media_id=?1", [media_id])?;
+
+        for (ordinal, cue) in cues.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO segments(
+                    media_id,start_ms,end_ms,source_text,translated_text,ordinal,revision,
+                    transcript_provenance,asr_provenance,
+                    dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed
+                 ) VALUES(?1,?2,?3,?4,'',?5,0,?6,?6,1,1,1,1,0)",
+                params![
+                    media_id,
+                    cue.start_ms,
+                    cue.end_ms,
+                    cue.text,
+                    ordinal as i64,
+                    provenance
+                ],
+            )?;
+        }
+
         tx.commit()?;
         self.get_segments(media_id)
     }
