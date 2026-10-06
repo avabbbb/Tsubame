@@ -52,11 +52,15 @@ A **Model** declares:
 - feature flags such as timestamps, word timestamps, streaming, diarization or voice clone;
 - runtime requirements.
 
-## ASR candidates
+## ASR engines
+
+PR #7 implements the shared ASR result contract and execution adapters described in [Modular ASR Engines](16-modular-asr.md).
+
+### Initial engines
 
 The architecture should accommodate at least:
 
-- whisper.cpp (ASPlayer lineage);
+- whisper.cpp as an independent local engine;
 - Faster-Whisper / CTranslate2;
 - SenseVoice / FunASR;
 - Apple SpeechAnalyzer/SpeechTranscriber on supported macOS;
