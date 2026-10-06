@@ -88,7 +88,7 @@ Acceptance:
 
 ## PR #7 — Modular ASR engines
 
-**Status:** in progress.
+**Status:** complete.
 
 Goal: make transcription a replaceable speech.asr capability.
 
