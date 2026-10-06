@@ -10,6 +10,7 @@ import {
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import AsrPanel from "./AsrPanel";
 import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
 import SubtitleActions from "./SubtitleActions";
@@ -887,6 +888,16 @@ export default function App() {
 
             {current && (
               <>
+                {activeRail === "studio" && (
+                  <AsrPanel
+                    media={current}
+                    onSegments={(rows) => {
+                      setSegments(rows);
+                      setSelected(null);
+                    }}
+                  />
+                )}
+
                 <div className="timeline-head">
                   <div>
                     <p className="section-label">TIMELINE</p>

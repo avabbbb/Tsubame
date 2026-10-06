@@ -104,3 +104,36 @@ export type RailSection =
   | "settings";
 
 export type ThemePreference = "system" | "dark" | "light";
+
+
+export interface AsrEngineDescriptor {
+  id: string;
+  name: string;
+  execution: "remote" | "worker" | "cli" | "native-helper";
+  availability: "ready" | "provider-required" | "runtime-required" | "unsupported-platform";
+  message: string;
+  supports_segment_timestamps: boolean;
+  languages: string[];
+  default_model: string;
+}
+
+export interface AsrSegmentCandidate {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  confidence: number | null;
+}
+
+export interface AsrResult {
+  contract_version: number;
+  engine_id: string;
+  model_id: string;
+  language: string | null;
+  segments: AsrSegmentCandidate[];
+  notes: string[];
+}
+
+export interface AsrTranscriptionOutcome {
+  result: AsrResult;
+  segments: Segment[];
+}
