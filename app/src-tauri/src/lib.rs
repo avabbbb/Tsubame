@@ -3,7 +3,7 @@ mod db;
 mod providers;
 mod subtitle;
 
-use asr::{AsrEngineDescriptor, AsrRunInput, AsrResult};
+use asr::{AsrEngineDescriptor, AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, Segment};
 use providers::{
     delete_secret, discover_models, normalize_capabilities, presets, read_secret, secret_ref,
