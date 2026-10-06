@@ -1,13 +1,16 @@
+mod asr;
 mod db;
 mod providers;
 mod subtitle;
 
+use asr::{AsrEngineDescriptor, AsrRunInput, AsrResult};
 use db::{MediaDb, MediaItem, Segment};
 use providers::{
     delete_secret, discover_models, normalize_capabilities, presets, read_secret, secret_ref,
     store_secret, ModelDescriptor, ProviderConfig, ProviderInput, ProviderPreset,
     ProviderTestResult, CAPABILITY_VOCABULARY,
 };
+use serde::Serialize;
 use std::{fs, path::Path, sync::Mutex};
 use subtitle::{SubtitleCue, SubtitleFormat};
 use tauri::{Manager, State};
@@ -182,6 +185,190 @@ fn export_subtitles(
     let output = subtitle::serialize(&cues, format);
     fs::write(path_ref, output).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AsrTranscriptionOutcome {
+    result: AsrResult,
+    segments: Vec<Segment>,
+}
+
+#[tauri::command]
+fn list_asr_engines(state: State<AppState>) -> Result<Vec<AsrEngineDescriptor>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let remote_ready = db
+        .list_providers()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|provider| provider.enabled)
+        .any(|provider| {
+            db.list_provider_models(&provider.id)
+                .map(|models| {
+                    models.into_iter().any(|model| {
+                        model.available
+                            && model
+                                .effective_capabilities
+                                .iter()
+                                .any(|capability| capability == "speech.asr")
+                    })
+                })
+                .unwrap_or(false)
+        });
+    Ok(asr::engines(remote_ready))
+}
+
+#[tauri::command]
+async fn transcribe_media(
+    input: AsrRunInput,
+    state: State<'_, AppState>,
+) -> Result<AsrTranscriptionOutcome, String> {
+    let media = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_media(input.media_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "media not found".to_string())?
+    };
+
+    if media.media_type != "audio" {
+        return Err(
+            "ASR currently expects an audio asset; video audio extraction lands in Runtime Bootstrap"
+                .into(),
+        );
+    }
+
+    let model_id = input.model_id.clone().unwrap_or_default();
+    let result = match input.engine_id.as_str() {
+        "remote-openai-compatible" => {
+            let provider_id = input
+                .provider_id
+                .as_deref()
+                .ok_or_else(|| "remote ASR requires provider_id".to_string())?;
+            let model_id = input
+                .model_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "remote ASR requires model_id".to_string())?;
+
+            let provider = {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                let provider = db
+                    .get_provider(provider_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "ASR provider not found".to_string())?;
+                if !provider.enabled {
+                    return Err("ASR provider is disabled".into());
+                }
+                let model = db
+                    .list_provider_models(provider_id)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .find(|model| model.model_id == model_id)
+                    .ok_or_else(|| "ASR model not found in provider inventory".to_string())?;
+                if !model.available {
+                    return Err("ASR model is currently unavailable".into());
+                }
+                if !model
+                    .effective_capabilities
+                    .iter()
+                    .any(|capability| capability == "speech.asr")
+                {
+                    return Err("selected model does not resolve speech.asr".into());
+                }
+                provider
+            };
+
+            let secret = provider_secret(&provider)?;
+            asr::run_remote_openai_compatible(
+                &provider,
+                secret.as_deref(),
+                &media.path,
+                media.duration_ms,
+                model_id,
+                input.language.clone(),
+                input.prompt.clone(),
+            )
+            .await?
+        }
+        "faster-whisper" => {
+            let media_path = media.path.clone();
+            let duration_ms = media.duration_ms;
+            let model = if model_id.trim().is_empty() {
+                "large-v3".to_string()
+            } else {
+                model_id
+            };
+            let language = input.language.clone();
+            let prompt = input.prompt.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                asr::run_faster_whisper(&media_path, duration_ms, &model, language, prompt)
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        }
+        "funasr-sensevoice" => {
+            let media_path = media.path.clone();
+            let duration_ms = media.duration_ms;
+            let model = if model_id.trim().is_empty() {
+                "iic/SenseVoiceSmall".to_string()
+            } else {
+                model_id
+            };
+            let language = input.language.clone();
+            let prompt = input.prompt.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                asr::run_funasr(&media_path, duration_ms, &model, language, prompt)
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        }
+        "whisper-cpp" => {
+            let media_path = media.path.clone();
+            let model = model_id.clone();
+            let language = input.language.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                asr::run_whisper_cpp(&media_path, &model, language)
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        }
+        "apple-speech" => {
+            let media_path = media.path.clone();
+            let duration_ms = media.duration_ms;
+            let language = input.language.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                asr::run_apple_speech(&media_path, duration_ms, language)
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        }
+        other => return Err(format!("unknown ASR engine: {other}")),
+    };
+
+    asr::validate_result(&result)?;
+    let cues = result
+        .segments
+        .iter()
+        .map(|segment| SubtitleCue {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let provenance = format!(
+        "asr:{}:{}:{}",
+        result.engine_id,
+        input.provider_id.as_deref().unwrap_or("local"),
+        result.model_id
+    );
+
+    let segments = {
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        db.replace_asr_segments(media.id, &cues, &provenance)
+            .map_err(|e| e.to_string())?
+    };
+
+    Ok(AsrTranscriptionOutcome { result, segments })
 }
 
 #[tauri::command]
@@ -435,6 +622,8 @@ pub fn run() {
             update_segment,
             import_subtitles,
             export_subtitles,
+            list_asr_engines,
+            transcribe_media,
             provider_presets,
             provider_capabilities,
             list_providers,
