@@ -1131,3 +1131,115 @@ textarea:focus, input:focus, select:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+
+/* Modular ASR */
+.asr-panel {
+  margin: 18px 0 22px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-strong) 68%, transparent);
+}
+.asr-panel-head,
+.asr-run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.asr-panel-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.asr-panel-head strong { font-size: 14px; }
+.asr-panel-head small,
+.asr-run-actions span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.asr-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.asr-engine-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 10px;
+  text-align: left;
+}
+.asr-engine-card:hover,
+.asr-engine-card.active {
+  background: var(--surface-hover);
+}
+.asr-engine-card.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.asr-engine-card > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+.asr-engine-card strong { font-size: 11px; }
+.asr-engine-card em {
+  font-style: normal;
+  font-size: 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 5px;
+}
+.asr-engine-card em[data-state="ready"] {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.asr-engine-card small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+.asr-run-card {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--field);
+}
+.asr-run-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+.asr-run-card input,
+.asr-run-card select {
+  width: 100%;
+  border-radius: 7px;
+  padding: 7px 9px;
+}
+.asr-run-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, .45fr) minmax(180px, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.asr-run-actions { margin-top: 10px; }
+.asr-message {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
