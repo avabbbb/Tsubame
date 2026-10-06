@@ -3,8 +3,7 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    env,
-    fs,
+    env, fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -86,7 +85,12 @@ pub fn engines(remote_ready: bool) -> Vec<AsrEngineDescriptor> {
             id: "remote-openai-compatible".into(),
             name: "Remote ASR".into(),
             execution: "remote".into(),
-            availability: if remote_ready { "ready" } else { "provider-required" }.into(),
+            availability: if remote_ready {
+                "ready"
+            } else {
+                "provider-required"
+            }
+            .into(),
             message: if remote_ready {
                 "At least one enabled Provider model advertises speech.asr.".into()
             } else {
@@ -100,7 +104,12 @@ pub fn engines(remote_ready: bool) -> Vec<AsrEngineDescriptor> {
             id: "faster-whisper".into(),
             name: "Faster-Whisper".into(),
             execution: "worker".into(),
-            availability: if faster_python.is_some() { "ready" } else { "runtime-required" }.into(),
+            availability: if faster_python.is_some() {
+                "ready"
+            } else {
+                "runtime-required"
+            }
+            .into(),
             message: faster_python
                 .map(|_| "Python worker runtime configured.".into())
                 .unwrap_or_else(|| "Runtime pack not installed yet.".into()),
@@ -112,12 +121,24 @@ pub fn engines(remote_ready: bool) -> Vec<AsrEngineDescriptor> {
             id: "funasr-sensevoice".into(),
             name: "SenseVoice / FunASR".into(),
             execution: "worker".into(),
-            availability: if funasr_python.is_some() { "ready" } else { "runtime-required" }.into(),
+            availability: if funasr_python.is_some() {
+                "ready"
+            } else {
+                "runtime-required"
+            }
+            .into(),
             message: funasr_python
                 .map(|_| "Python worker runtime configured.".into())
                 .unwrap_or_else(|| "Runtime pack not installed yet.".into()),
             supports_segment_timestamps: true,
-            languages: vec!["auto".into(), "ja".into(), "zh".into(), "yue".into(), "en".into(), "ko".into()],
+            languages: vec![
+                "auto".into(),
+                "ja".into(),
+                "zh".into(),
+                "yue".into(),
+                "en".into(),
+                "ko".into(),
+            ],
             default_model: "iic/SenseVoiceSmall".into(),
         },
         AsrEngineDescriptor {
@@ -176,11 +197,15 @@ fn run_json_worker(
     script_name: &str,
     request: &WorkerRequest,
 ) -> Result<AsrResult, String> {
-    let python = env::var(python_env)
-        .map_err(|_| format!("{python_env} is not configured; install the matching runtime pack"))?;
+    let python = env::var(python_env).map_err(|_| {
+        format!("{python_env} is not configured; install the matching runtime pack")
+    })?;
     let script = worker_script(script_name);
     if !script.exists() {
-        return Err(format!("ASR worker script is missing: {}", script.display()));
+        return Err(format!(
+            "ASR worker script is missing: {}",
+            script.display()
+        ));
     }
 
     let mut child = Command::new(python)
@@ -205,8 +230,8 @@ fn run_json_worker(
         return Err(format!("ASR worker failed: {}", stderr.trim()));
     }
 
-    let result: AsrResult =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid ASR worker JSON: {e}"))?;
+    let result: AsrResult = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("invalid ASR worker JSON: {e}"))?;
     validate_result(&result)?;
     Ok(result)
 }
@@ -295,8 +320,8 @@ pub fn run_apple_speech(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let result: AsrResult =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid Apple Speech JSON: {e}"))?;
+    let result: AsrResult = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("invalid Apple Speech JSON: {e}"))?;
     validate_result(&result)?;
     Ok(result)
 }
@@ -464,7 +489,10 @@ pub async fn run_remote_openai_compatible(
         .and_then(|value| value.to_str())
         .unwrap_or("audio.bin")
         .to_string();
-    let url = format!("{}/audio/transcriptions", provider.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/audio/transcriptions",
+        provider.base_url.trim_end_matches('/')
+    );
 
     let (status, body) = post_remote_transcription(
         provider,
@@ -532,8 +560,8 @@ pub fn parse_remote_response(
     let mut segments = Vec::new();
     if let Some(rows) = value.get("segments").and_then(Value::as_array) {
         for row in rows {
-            let parsed: RemoteSegment =
-                serde_json::from_value(row.clone()).map_err(|e| format!("invalid ASR segment: {e}"))?;
+            let parsed: RemoteSegment = serde_json::from_value(row.clone())
+                .map_err(|e| format!("invalid ASR segment: {e}"))?;
             segments.push(AsrSegmentCandidate {
                 start_ms: (parsed.start * 1000.0).round() as i64,
                 end_ms: (parsed.end * 1000.0).round() as i64,
@@ -552,7 +580,9 @@ pub fn parse_remote_response(
             .ok_or_else(|| "ASR response contains neither segments nor text".to_string())?;
 
         if media_duration_ms <= 0 {
-            return Err("ASR returned text without timestamps and media duration is unknown".into());
+            return Err(
+                "ASR returned text without timestamps and media duration is unknown".into(),
+            );
         }
         segments.push(AsrSegmentCandidate {
             start_ms: 0,
@@ -635,6 +665,9 @@ mod tests {
         let result: AsrResult = serde_json::from_str(fixture).unwrap();
         validate_result(&result).unwrap();
         assert_eq!(result.language.as_deref(), Some("ja"));
-        assert!(result.segments.iter().any(|segment| segment.text.contains("おやすみ")));
+        assert!(result
+            .segments
+            .iter()
+            .any(|segment| segment.text.contains("おやすみ")));
     }
 }
