@@ -8,8 +8,8 @@ use db::{MediaDb, MediaItem, Segment};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
     discover_models, normalize_capabilities, presets, provider_target, read_secret, secret_ref,
-    store_secret, CapabilityTarget, ModelDescriptor, ProviderConfig, ProviderInput,
-    ProviderPreset, ProviderTestResult, CAPABILITY_VOCABULARY,
+    store_secret, CapabilityTarget, ModelDescriptor, ProviderConfig, ProviderInput, ProviderPreset,
+    ProviderTestResult, CAPABILITY_VOCABULARY,
 };
 use serde::Serialize;
 use std::{fs, path::Path, sync::Mutex};
@@ -268,13 +268,7 @@ async fn transcribe_media(
                 let language = input.language.clone();
                 let prompt = input.prompt.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_funasr(
-                        &media_path,
-                        duration_ms,
-                        &resolved_model,
-                        language,
-                        prompt,
-                    )
+                    asr::run_funasr(&media_path, duration_ms, &resolved_model, language, prompt)
                 })
                 .await
                 .map_err(|e| e.to_string())??
@@ -422,12 +416,18 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
         return Err("provider name is required".into());
     }
     if input.kind != "openai-compatible" {
-        return Err("user-configured providers currently require the openai-compatible adapter".into());
+        return Err(
+            "user-configured providers currently require the openai-compatible adapter".into(),
+        );
     }
     if !matches!(input.execution.as_str(), "remote_api" | "local_server") {
         return Err("user-configured provider execution must be remote_api or local_server".into());
     }
-    if input.id.as_deref().is_some_and(|id| id.starts_with("local.")) {
+    if input
+        .id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("local."))
+    {
         return Err("system-managed local providers cannot be overwritten".into());
     }
     if !matches!(input.auth_mode.as_str(), "bearer" | "none") {
