@@ -5,7 +5,7 @@
       "name": "Japanese · Best Quality",
       "capabilities": {
         "speech.asr": {
-          "provider": "faster-whisper",
+          "provider": "local.faster-whisper",
           "model": "large-v3"
         },
         "transcript.refine": {
@@ -31,11 +31,11 @@
       "name": "Japanese · Mac Local",
       "capabilities": {
         "speech.asr": {
-          "provider": "apple-speech",
-          "model": "system"
+          "provider": "local.apple-speech",
+          "model": "speech-transcriber"
         },
         "transcript.refine": {
-          "provider": "local-llm",
+          "provider": "lm-studio-local",
           "model": "auto"
         },
         "text.translate": {
