@@ -9,7 +9,7 @@ Every Provider adapter receives a media/request description and returns **candid
 \`\`\`json
 {
   "contract_version": 1,
-  "engine_id": "faster-whisper",
+  "adapter_id": "faster-whisper",
   "model_id": "large-v3",
   "language": "ja",
   "segments": [
