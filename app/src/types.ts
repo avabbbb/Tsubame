@@ -72,7 +72,7 @@ export interface ProviderInput {
   id: string | null;
   name: string;
   kind: string;
-  execution: "remote_api" | "local_server";
+  execution: "remote_api" | "local_server" | "local_runtime" | "native_os";
   base_url: string;
   model_list_url: string;
   auth_mode: "bearer" | "none";
