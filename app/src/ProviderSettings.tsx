@@ -151,6 +151,7 @@ export default function ProviderSettings() {
           id: latest.id,
           name: latest.name,
           kind: latest.kind,
+          execution: latest.execution,
           base_url: latest.base_url,
           model_list_url: latest.model_list_url,
           auth_mode: latest.auth_mode,
@@ -460,11 +461,15 @@ export default function ProviderSettings() {
                 <p className="section-label">CONNECTION & DISCOVERY</p>
                 <div className="provider-health-copy">
                   <strong>
-                    {selectedProvider?.last_error
-                      ? "Needs attention"
-                      : selectedProvider?.last_refresh_at
+                    {selectedProvider?.system_managed
+                      ? selectedProvider.availability === "ready"
                         ? "Ready"
-                        : "Not tested yet"}
+                        : "Runtime status"
+                      : selectedProvider?.last_error
+                        ? "Needs attention"
+                        : selectedProvider?.last_refresh_at
+                          ? "Ready"
+                          : "Not tested yet"}
                   </strong>
                   <small>
                     {selectedProvider?.system_managed
@@ -559,7 +564,7 @@ export default function ProviderSettings() {
                       </span>
                     </button>
 
-                    {expandedModel === model.model_id && (
+                    {expandedModel === model.model_id && !selectedProvider?.system_managed && (
                       <div className="provider-capability-editor">
                         <p>
                           Runtime features query these capabilities; they never branch
@@ -595,7 +600,9 @@ export default function ProviderSettings() {
 
                 {!models.length && (
                   <div className="provider-model-empty">
-                    No model inventory yet. Save, test, then refresh this provider.
+                    {selectedProvider?.system_managed
+                      ? "No model catalog is available for this local Provider."
+                      : "No model inventory yet. Save, test, then refresh this provider."}
                   </div>
                 )}
               </div>
