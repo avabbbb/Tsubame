@@ -31,7 +31,7 @@ Before changing contracts or implementation, read:
 ## Non-negotiable rules
 
 1. **Capability first.** Product features never depend directly on a concrete model/provider name.
-2. **Provider != model.** Providers own authentication, discovery and transport. Models declare capabilities.
+2. **Provider != model, and local != special-case.** Providers own execution/auth/discovery/transport; Models declare capabilities. Local runtime, native OS, local server and remote API all live in the same Provider Registry.
 3. **Desktop is canonical.** Tsubame SQLite owns product state. Worker caches/manifests are execution state.
 4. **Segment is first-class.** One sentence can be edited, regenerated and invalidated independently.
 5. **No environment setup for end users.** Do not require global Python, Node, Rust, FFmpeg or CUDA tooling.
