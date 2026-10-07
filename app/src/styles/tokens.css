@@ -1233,6 +1233,46 @@ textarea:focus, input:focus, select:focus {
   margin-top: 8px;
 }
 .asr-run-actions { margin-top: 10px; }
+.asr-provider-summary {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.asr-provider-summary > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.asr-provider-summary strong { font-size: 11px; }
+.asr-provider-summary small,
+.asr-provider-summary p {
+  color: var(--muted);
+  font-size: 9px;
+}
+.asr-provider-summary p {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  line-height: 1.4;
+}
+.asr-provider-summary em {
+  font-style: normal;
+  font-size: 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.asr-provider-summary em[data-state="ready"] {
+  color: var(--text);
+  background: var(--accent-soft);
+}
 .asr-message {
   margin-top: 9px;
   padding: 8px 10px;
