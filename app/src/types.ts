@@ -135,7 +135,7 @@ export interface AsrSegmentCandidate {
 
 export interface AsrResult {
   contract_version: number;
-  engine_id: string;
+  adapter_id: string;
   model_id: string;
   language: string | null;
   segments: AsrSegmentCandidate[];
