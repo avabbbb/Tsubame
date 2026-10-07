@@ -176,7 +176,7 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
     let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
 
     vec![
-        builtin_provider(
+        make_builtin_provider(
             "local.faster-whisper",
             "Faster-Whisper",
             "faster-whisper",
@@ -188,7 +188,7 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
                 "Runtime/model pack is not installed yet."
             },
         ),
-        builtin_provider(
+        make_builtin_provider(
             "local.sensevoice",
             "SenseVoice / FunASR",
             "funasr-sensevoice",
@@ -200,7 +200,7 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
                 "Runtime/model pack is not installed yet."
             },
         ),
-        builtin_provider(
+        make_builtin_provider(
             "local.whisper-cpp",
             "whisper.cpp",
             "whisper-cpp",
@@ -245,7 +245,7 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
     ]
 }
 
-fn builtin_provider(
+fn make_builtin_provider(
     id: &str,
     name: &str,
     kind: &str,
