@@ -68,6 +68,34 @@ ASR 可以来自 Whisper.cpp、Faster-Whisper、SenseVoice、Apple Speech、阿�
 
 Key 不存 SQLite，只存系统凭据管理器，数据库只保存 `secret_ref`。
 
+### 本地与远端 Provider
+
+**本地和远端不是两套模型体系。**
+
+统一抽象为：
+
+```text
+Capability
+  ↓
+Provider
+  ↓
+Model
+  ↓
+Adapter
+  ↓
+Runtime / Transport
+```
+
+Provider 的执行方式可以是：
+
+- `remote_api`：OpenAI、阿里等付费/BYOK API；
+- `local_server`：LM Studio、Ollama、llama.cpp server 等 localhost/LAN 服务；
+- `local_runtime`：Faster-Whisper、SenseVoice、whisper.cpp 等 Tsubame 本地 Runtime；
+- `native_os`：Apple SpeechAnalyzer 等系统原生能力。
+
+因此 ASR、翻译、精修、TTS 都可以在同一个能力选择器中同时出现“本地模型”和“远端 API”。功能代码不能写 `if local` / `if online` 两套逻辑，而是解析满足 Capability 的 Provider + Model。
+
+
 ## Desktop 与模型安装
 
 普通用户只安装 Tsubame Desktop。

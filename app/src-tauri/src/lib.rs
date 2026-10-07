@@ -3,11 +3,12 @@ mod db;
 mod providers;
 mod subtitle;
 
-use asr::{AsrEngineDescriptor, AsrResult, AsrRunInput};
+use asr::{AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, Segment};
 use providers::{
-    delete_secret, discover_models, normalize_capabilities, presets, read_secret, secret_ref,
-    store_secret, ModelDescriptor, ProviderConfig, ProviderInput, ProviderPreset,
+    builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
+    discover_models, normalize_capabilities, presets, provider_target, read_secret, secret_ref,
+    store_secret, CapabilityTarget, ModelDescriptor, ProviderConfig, ProviderInput, ProviderPreset,
     ProviderTestResult, CAPABILITY_VOCABULARY,
 };
 use serde::Serialize;
@@ -194,30 +195,6 @@ struct AsrTranscriptionOutcome {
 }
 
 #[tauri::command]
-fn list_asr_engines(state: State<AppState>) -> Result<Vec<AsrEngineDescriptor>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let remote_ready = db
-        .list_providers()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|provider| provider.enabled)
-        .any(|provider| {
-            db.list_provider_models(&provider.id)
-                .map(|models| {
-                    models.into_iter().any(|model| {
-                        model.available
-                            && model
-                                .effective_capabilities
-                                .iter()
-                                .any(|capability| capability == "speech.asr")
-                    })
-                })
-                .unwrap_or(false)
-        });
-    Ok(asr::engines(remote_ready))
-}
-
-#[tauri::command]
 async fn transcribe_media(
     input: AsrRunInput,
     state: State<'_, AppState>,
@@ -236,112 +213,148 @@ async fn transcribe_media(
         );
     }
 
+    let provider_id = input.provider_id.trim().to_string();
+    if provider_id.is_empty() {
+        return Err("ASR requires provider_id".into());
+    }
     let model_id = input.model_id.clone().unwrap_or_default();
-    let result = match input.engine_id.as_str() {
-        "remote-openai-compatible" => {
-            let provider_id = input
-                .provider_id
-                .as_deref()
-                .ok_or_else(|| "remote ASR requires provider_id".to_string())?;
-            let model_id = input
-                .model_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "remote ASR requires model_id".to_string())?;
 
-            let provider = {
-                let db = state.db.lock().map_err(|e| e.to_string())?;
-                let provider = db
-                    .get_provider(provider_id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| "ASR provider not found".to_string())?;
-                if !provider.enabled {
-                    return Err("ASR provider is disabled".into());
-                }
-                let model = db
-                    .list_provider_models(provider_id)
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .find(|model| model.model_id == model_id)
-                    .ok_or_else(|| "ASR model not found in provider inventory".to_string())?;
-                if !model.available {
-                    return Err("ASR model is currently unavailable".into());
-                }
-                if !model
-                    .effective_capabilities
-                    .iter()
-                    .any(|capability| capability == "speech.asr")
-                {
-                    return Err("selected model does not resolve speech.asr".into());
-                }
-                provider
-            };
+    let result = if let Some(provider) = builtin_provider(&provider_id) {
+        if !provider.enabled {
+            return Err("selected local provider is disabled on this platform".into());
+        }
+        if provider.availability != "ready" {
+            return Err(provider.message);
+        }
 
-            let secret = provider_secret(&provider)?;
-            asr::run_remote_openai_compatible(
-                &provider,
-                secret.as_deref(),
-                &media.path,
-                media.duration_ms,
-                model_id,
-                input.language.clone(),
-                input.prompt.clone(),
-            )
-            .await?
+        let allowed_models = builtin_provider_models(&provider_id);
+        let default_model = allowed_models
+            .first()
+            .map(|model| model.model_id.clone())
+            .unwrap_or_default();
+        let resolved_model = if model_id.trim().is_empty() {
+            default_model
+        } else {
+            model_id.clone()
+        };
+        if !allowed_models
+            .iter()
+            .any(|model| model.model_id == resolved_model)
+        {
+            return Err("model is not registered under the selected local provider".into());
         }
-        "faster-whisper" => {
-            let media_path = media.path.clone();
-            let duration_ms = media.duration_ms;
-            let model = if model_id.trim().is_empty() {
-                "large-v3".to_string()
-            } else {
-                model_id
-            };
-            let language = input.language.clone();
-            let prompt = input.prompt.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                asr::run_faster_whisper(&media_path, duration_ms, &model, language, prompt)
-            })
-            .await
-            .map_err(|e| e.to_string())??
+
+        match provider.kind.as_str() {
+            "faster-whisper" => {
+                let media_path = media.path.clone();
+                let duration_ms = media.duration_ms;
+                let language = input.language.clone();
+                let prompt = input.prompt.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    asr::run_faster_whisper(
+                        &media_path,
+                        duration_ms,
+                        &resolved_model,
+                        language,
+                        prompt,
+                    )
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            }
+            "funasr-sensevoice" => {
+                let media_path = media.path.clone();
+                let duration_ms = media.duration_ms;
+                let language = input.language.clone();
+                let prompt = input.prompt.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    asr::run_funasr(&media_path, duration_ms, &resolved_model, language, prompt)
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            }
+            "whisper-cpp" => {
+                let media_path = media.path.clone();
+                let language = input.language.clone();
+                let logical_model = resolved_model.clone();
+                let adapter_model = if logical_model == "runtime-model" {
+                    String::new()
+                } else {
+                    logical_model.clone()
+                };
+                let mut result = tauri::async_runtime::spawn_blocking(move || {
+                    asr::run_whisper_cpp(&media_path, &adapter_model, language)
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                result.model_id = logical_model;
+                result
+            }
+            "apple-speech" => {
+                let media_path = media.path.clone();
+                let duration_ms = media.duration_ms;
+                let language = input.language.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    asr::run_apple_speech(&media_path, duration_ms, language)
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            }
+            other => return Err(format!("unsupported local provider adapter: {other}")),
         }
-        "funasr-sensevoice" => {
-            let media_path = media.path.clone();
-            let duration_ms = media.duration_ms;
-            let model = if model_id.trim().is_empty() {
-                "iic/SenseVoiceSmall".to_string()
-            } else {
-                model_id
-            };
-            let language = input.language.clone();
-            let prompt = input.prompt.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                asr::run_funasr(&media_path, duration_ms, &model, language, prompt)
-            })
-            .await
-            .map_err(|e| e.to_string())??
+    } else {
+        let model_id = input
+            .model_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "remote/local-server ASR requires model_id".to_string())?;
+
+        let provider = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            let provider = db
+                .get_provider(&provider_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "ASR provider not found".to_string())?;
+            if !provider.enabled {
+                return Err("ASR provider is disabled".into());
+            }
+            let model = db
+                .list_provider_models(&provider_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|model| model.model_id == model_id)
+                .ok_or_else(|| "ASR model not found in provider inventory".to_string())?;
+            if !model.available {
+                return Err("ASR model is currently unavailable".into());
+            }
+            if !model
+                .effective_capabilities
+                .iter()
+                .any(|capability| capability == "speech.asr")
+            {
+                return Err("selected model does not resolve speech.asr".into());
+            }
+            provider
+        };
+
+        if provider.kind != "openai-compatible" {
+            return Err(format!(
+                "provider adapter {} does not implement speech.asr yet",
+                provider.kind
+            ));
         }
-        "whisper-cpp" => {
-            let media_path = media.path.clone();
-            let model = model_id.clone();
-            let language = input.language.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                asr::run_whisper_cpp(&media_path, &model, language)
-            })
-            .await
-            .map_err(|e| e.to_string())??
-        }
-        "apple-speech" => {
-            let media_path = media.path.clone();
-            let duration_ms = media.duration_ms;
-            let language = input.language.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                asr::run_apple_speech(&media_path, duration_ms, language)
-            })
-            .await
-            .map_err(|e| e.to_string())??
-        }
-        other => return Err(format!("unknown ASR engine: {other}")),
+
+        let secret = provider_secret(&provider)?;
+        asr::run_remote_openai_compatible(
+            &provider,
+            secret.as_deref(),
+            &media.path,
+            media.duration_ms,
+            model_id,
+            input.language.clone(),
+            input.prompt.clone(),
+        )
+        .await?
     };
 
     asr::validate_result(&result)?;
@@ -355,12 +368,7 @@ async fn transcribe_media(
         })
         .collect::<Vec<_>>();
 
-    let provenance = format!(
-        "asr:{}:{}:{}",
-        result.engine_id,
-        input.provider_id.as_deref().unwrap_or("local"),
-        result.model_id
-    );
+    let provenance = format!("asr:{}:{}", provider_id, result.model_id);
 
     let segments = {
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
@@ -386,12 +394,19 @@ fn provider_capabilities() -> Vec<String> {
 
 #[tauri::command]
 fn list_providers(state: State<AppState>) -> Result<Vec<ProviderConfig>, String> {
-    state
+    let mut providers = state
         .db
         .lock()
         .map_err(|e| e.to_string())?
         .list_providers()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    providers.extend(builtin_local_providers());
+    providers.sort_by(|a, b| {
+        b.system_managed
+            .cmp(&a.system_managed)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(providers)
 }
 
 #[tauri::command]
@@ -401,7 +416,19 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
         return Err("provider name is required".into());
     }
     if input.kind != "openai-compatible" {
-        return Err("only openai-compatible remote providers are supported in this PR".into());
+        return Err(
+            "user-configured providers currently require the openai-compatible adapter".into(),
+        );
+    }
+    if !matches!(input.execution.as_str(), "remote_api" | "local_server") {
+        return Err("user-configured provider execution must be remote_api or local_server".into());
+    }
+    if input
+        .id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("local."))
+    {
+        return Err("system-managed local providers cannot be overwritten".into());
     }
     if !matches!(input.auth_mode.as_str(), "bearer" | "none") {
         return Err("provider auth_mode must be bearer or none".into());
@@ -442,6 +469,10 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
         id: id.clone(),
         name: name.to_string(),
         kind: input.kind,
+        execution: input.execution,
+        system_managed: false,
+        availability: "ready".into(),
+        message: String::new(),
         base_url: input.base_url.trim().trim_end_matches('/').to_string(),
         model_list_url: input.model_list_url.trim().to_string(),
         auth_mode: input.auth_mode,
@@ -465,6 +496,9 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
 
 #[tauri::command]
 fn delete_provider(id: String, state: State<AppState>) -> Result<(), String> {
+    if builtin_provider(&id).is_some() {
+        return Err("system-managed local providers cannot be deleted".into());
+    }
     let secret = state
         .db
         .lock()
@@ -542,6 +576,9 @@ fn list_provider_models(
     provider_id: String,
     state: State<AppState>,
 ) -> Result<Vec<ModelDescriptor>, String> {
+    if builtin_provider(&provider_id).is_some() {
+        return Ok(builtin_provider_models(&provider_id));
+    }
     state
         .db
         .lock()
@@ -575,12 +612,74 @@ fn resolve_capability(
         );
     }
 
+    for provider in builtin_local_providers()
+        .into_iter()
+        .filter(|provider| provider.enabled)
+    {
+        candidates.extend(
+            builtin_provider_models(&provider.id)
+                .into_iter()
+                .filter(|model| {
+                    model.available && model.effective_capabilities.contains(&capability)
+                }),
+        );
+    }
+
     candidates.sort_by(|a, b| {
         a.provider_id
             .cmp(&b.provider_id)
             .then_with(|| a.model_id.cmp(&b.model_id))
     });
     Ok(candidates)
+}
+
+#[tauri::command]
+fn resolve_capability_targets(
+    capability: String,
+    state: State<AppState>,
+) -> Result<Vec<CapabilityTarget>, String> {
+    let capability = capability.trim().to_ascii_lowercase();
+    if !CAPABILITY_VOCABULARY.contains(&capability.as_str()) {
+        return Err(format!("unknown capability: {capability}"));
+    }
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut targets = Vec::new();
+
+    for provider in db
+        .list_providers()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|provider| provider.enabled)
+    {
+        for model in db
+            .list_provider_models(&provider.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|model| model.effective_capabilities.contains(&capability))
+        {
+            targets.push(provider_target(&provider, &model));
+        }
+    }
+
+    for provider in builtin_local_providers()
+        .into_iter()
+        .filter(|provider| provider.enabled)
+    {
+        for model in builtin_provider_models(&provider.id)
+            .into_iter()
+            .filter(|model| model.effective_capabilities.contains(&capability))
+        {
+            targets.push(provider_target(&provider, &model));
+        }
+    }
+
+    targets.sort_by(|a, b| {
+        a.provider_name
+            .cmp(&b.provider_name)
+            .then_with(|| a.model_id.cmp(&b.model_id))
+    });
+    Ok(targets)
 }
 
 #[tauri::command]
@@ -622,7 +721,6 @@ pub fn run() {
             update_segment,
             import_subtitles,
             export_subtitles,
-            list_asr_engines,
             transcribe_media,
             provider_presets,
             provider_capabilities,
@@ -633,6 +731,7 @@ pub fn run() {
             refresh_provider_models,
             list_provider_models,
             resolve_capability,
+            resolve_capability_targets,
             set_model_capabilities
         ])
         .run(tauri::generate_context!())

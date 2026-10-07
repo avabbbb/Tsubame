@@ -27,6 +27,10 @@ pub struct ProviderConfig {
     pub id: String,
     pub name: String,
     pub kind: String,
+    pub execution: String,
+    pub system_managed: bool,
+    pub availability: String,
+    pub message: String,
     pub base_url: String,
     pub model_list_url: String,
     pub auth_mode: String,
@@ -41,6 +45,7 @@ pub struct ProviderInput {
     pub id: Option<String>,
     pub name: String,
     pub kind: String,
+    pub execution: String,
     pub base_url: String,
     pub model_list_url: String,
     pub auth_mode: String,
@@ -75,6 +80,7 @@ pub struct ProviderPreset {
     pub id: &'static str,
     pub name: &'static str,
     pub kind: &'static str,
+    pub execution: &'static str,
     pub base_url: &'static str,
     pub model_list_url: &'static str,
     pub auth_mode: &'static str,
@@ -89,12 +95,28 @@ pub struct ProviderTestResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilityTarget {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub provider_kind: String,
+    pub execution: String,
+    pub system_managed: bool,
+    pub provider_availability: String,
+    pub provider_message: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub available: bool,
+    pub effective_capabilities: Vec<String>,
+}
+
 pub fn presets() -> Vec<ProviderPreset> {
     vec![
         ProviderPreset {
             id: "openai",
             name: "OpenAI",
             kind: "openai-compatible",
+            execution: "remote_api",
             base_url: "https://api.openai.com/v1",
             model_list_url: "https://api.openai.com/v1/models",
             auth_mode: "bearer",
@@ -104,6 +126,7 @@ pub fn presets() -> Vec<ProviderPreset> {
             id: "alibaba-model-studio-sg",
             name: "Alibaba Model Studio · Singapore",
             kind: "openai-compatible",
+            execution: "remote_api",
             base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             model_list_url: "https://dashscope-intl.aliyuncs.com/api/v1/models",
             auth_mode: "bearer",
@@ -113,21 +136,196 @@ pub fn presets() -> Vec<ProviderPreset> {
             id: "custom-openai-compatible",
             name: "Custom OpenAI-compatible",
             kind: "openai-compatible",
+            execution: "remote_api",
             base_url: "",
             model_list_url: "",
             auth_mode: "bearer",
             note: "Use any compatible endpoint. Model discovery URL can differ from inference base URL.",
         },
         ProviderPreset {
+            id: "lm-studio-local",
+            name: "LM Studio · Local",
+            kind: "openai-compatible",
+            execution: "local_server",
+            base_url: "http://127.0.0.1:1234/v1",
+            model_list_url: "http://127.0.0.1:1234/v1/models",
+            auth_mode: "none",
+            note: "Local OpenAI-compatible server. Models remain on this machine.",
+        },
+        ProviderPreset {
             id: "local-openai-compatible",
             name: "Local OpenAI-compatible",
             kind: "openai-compatible",
-            base_url: "http://127.0.0.1:11434/v1",
-            model_list_url: "http://127.0.0.1:11434/v1/models",
+            execution: "local_server",
+            base_url: "",
+            model_list_url: "",
             auth_mode: "none",
-            note: "Convenience preset for local servers that expose OpenAI-compatible model listing.",
+            note: "Any localhost/LAN OpenAI-compatible server such as Ollama or llama.cpp server.",
         },
     ]
+}
+
+pub fn builtin_local_providers() -> Vec<ProviderConfig> {
+    use std::env;
+
+    let faster_ready = env::var("TSUBAME_FASTER_WHISPER_PYTHON").is_ok();
+    let funasr_ready = env::var("TSUBAME_FUNASR_PYTHON").is_ok();
+    let whisper_ready = env::var("TSUBAME_WHISPER_CPP_BIN").is_ok()
+        && env::var("TSUBAME_WHISPER_CPP_MODEL").is_ok();
+    let apple_supported = cfg!(target_os = "macos");
+    let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
+
+    vec![
+        make_builtin_provider(
+            "local.faster-whisper",
+            "Faster-Whisper",
+            "faster-whisper",
+            "local_runtime",
+            faster_ready,
+            if faster_ready {
+                "Local Faster-Whisper runtime is ready."
+            } else {
+                "Runtime/model pack is not installed yet."
+            },
+        ),
+        make_builtin_provider(
+            "local.sensevoice",
+            "SenseVoice / FunASR",
+            "funasr-sensevoice",
+            "local_runtime",
+            funasr_ready,
+            if funasr_ready {
+                "Local SenseVoice/FunASR runtime is ready."
+            } else {
+                "Runtime/model pack is not installed yet."
+            },
+        ),
+        make_builtin_provider(
+            "local.whisper-cpp",
+            "whisper.cpp",
+            "whisper-cpp",
+            "local_runtime",
+            whisper_ready,
+            if whisper_ready {
+                "Local whisper.cpp runtime and model are ready."
+            } else {
+                "Runtime/model pack is not installed yet."
+            },
+        ),
+        ProviderConfig {
+            id: "local.apple-speech".into(),
+            name: "Apple Speech".into(),
+            kind: "apple-speech".into(),
+            execution: "native_os".into(),
+            system_managed: true,
+            availability: if !apple_supported {
+                "unsupported-platform"
+            } else if apple_ready {
+                "ready"
+            } else {
+                "runtime-required"
+            }
+            .into(),
+            message: if !apple_supported {
+                "Apple SpeechAnalyzer is only available on supported Apple platforms."
+            } else if apple_ready {
+                "Apple SpeechAnalyzer helper is ready."
+            } else {
+                "Native helper/runtime pack is not installed yet."
+            }
+            .into(),
+            base_url: String::new(),
+            model_list_url: String::new(),
+            auth_mode: "none".into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        },
+    ]
+}
+
+fn make_builtin_provider(
+    id: &str,
+    name: &str,
+    kind: &str,
+    execution: &str,
+    ready: bool,
+    message: &str,
+) -> ProviderConfig {
+    ProviderConfig {
+        id: id.into(),
+        name: name.into(),
+        kind: kind.into(),
+        execution: execution.into(),
+        system_managed: true,
+        availability: if ready { "ready" } else { "runtime-required" }.into(),
+        message: message.into(),
+        base_url: String::new(),
+        model_list_url: String::new(),
+        auth_mode: "none".into(),
+        secret_ref: None,
+        enabled: true,
+        last_refresh_at: None,
+        last_error: None,
+    }
+}
+
+pub fn builtin_provider(provider_id: &str) -> Option<ProviderConfig> {
+    builtin_local_providers()
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
+}
+
+pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
+    let provider = builtin_provider(provider_id);
+    let ready = provider
+        .as_ref()
+        .is_some_and(|provider| provider.availability == "ready");
+    let model_ids: Vec<(&str, &str)> = match provider_id {
+        "local.faster-whisper" => vec![
+            ("large-v3", "Whisper Large v3"),
+            ("large-v3-turbo", "Whisper Large v3 Turbo"),
+            ("medium", "Whisper Medium"),
+            ("small", "Whisper Small"),
+        ],
+        "local.sensevoice" => vec![("iic/SenseVoiceSmall", "SenseVoice Small")],
+        "local.whisper-cpp" => vec![("runtime-model", "Configured whisper.cpp model")],
+        "local.apple-speech" => vec![("speech-transcriber", "Apple SpeechTranscriber")],
+        _ => vec![],
+    };
+
+    model_ids
+        .into_iter()
+        .map(|(model_id, display_name)| ModelDescriptor {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            display_name: display_name.into(),
+            owned_by: "local".into(),
+            available: ready,
+            discovered_capabilities: vec!["speech.asr".into()],
+            manual_capabilities: None,
+            effective_capabilities: vec!["speech.asr".into()],
+            capability_source: "catalog".into(),
+            last_seen_at: None,
+        })
+        .collect()
+}
+
+pub fn provider_target(provider: &ProviderConfig, model: &ModelDescriptor) -> CapabilityTarget {
+    CapabilityTarget {
+        provider_id: provider.id.clone(),
+        provider_name: provider.name.clone(),
+        provider_kind: provider.kind.clone(),
+        execution: provider.execution.clone(),
+        system_managed: provider.system_managed,
+        provider_availability: provider.availability.clone(),
+        provider_message: provider.message.clone(),
+        model_id: model.model_id.clone(),
+        display_name: model.display_name.clone(),
+        available: model.available,
+        effective_capabilities: model.effective_capabilities.clone(),
+    }
 }
 
 pub fn secret_ref(provider_id: &str) -> String {
@@ -440,5 +638,44 @@ mod tests {
         let (resolved, source) = resolve_capabilities(&discovered, Some(&manual));
         assert_eq!(resolved, vec!["speech.asr"]);
         assert_eq!(source, "manual");
+    }
+
+    #[test]
+    fn builtin_asr_runtimes_are_providers() {
+        let providers = builtin_local_providers();
+        let faster = providers
+            .iter()
+            .find(|provider| provider.id == "local.faster-whisper")
+            .unwrap();
+        assert!(faster.system_managed);
+        assert_eq!(faster.execution, "local_runtime");
+        assert_eq!(faster.kind, "faster-whisper");
+
+        let apple = providers
+            .iter()
+            .find(|provider| provider.id == "local.apple-speech")
+            .unwrap();
+        assert!(apple.system_managed);
+        assert_eq!(apple.execution, "native_os");
+    }
+
+    #[test]
+    fn builtin_local_models_resolve_capabilities() {
+        let models = builtin_provider_models("local.faster-whisper");
+        assert!(models.iter().any(|model| model.model_id == "large-v3"));
+        assert!(models.iter().all(|model| model
+            .effective_capabilities
+            .contains(&"speech.asr".to_string())));
+    }
+
+    #[test]
+    fn local_server_preset_uses_same_provider_contract() {
+        let lm_studio = presets()
+            .into_iter()
+            .find(|preset| preset.id == "lm-studio-local")
+            .unwrap();
+        assert_eq!(lm_studio.execution, "local_server");
+        assert_eq!(lm_studio.kind, "openai-compatible");
+        assert_eq!(lm_studio.auth_mode, "none");
     }
 }

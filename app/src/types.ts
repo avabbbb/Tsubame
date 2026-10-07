@@ -44,6 +44,10 @@ export interface ProviderConfig {
   id: string;
   name: string;
   kind: string;
+  execution: "remote_api" | "local_server" | "local_runtime" | "native_os";
+  system_managed: boolean;
+  availability: "ready" | "runtime-required" | "unsupported-platform" | "error";
+  message: string;
   base_url: string;
   model_list_url: string;
   auth_mode: "bearer" | "none";
@@ -57,6 +61,7 @@ export interface ProviderPreset {
   id: string;
   name: string;
   kind: string;
+  execution: "remote_api" | "local_server";
   base_url: string;
   model_list_url: string;
   auth_mode: "bearer" | "none";
@@ -67,6 +72,7 @@ export interface ProviderInput {
   id: string | null;
   name: string;
   kind: string;
+  execution: "remote_api" | "local_server" | "local_runtime" | "native_os";
   base_url: string;
   model_list_url: string;
   auth_mode: "bearer" | "none";
@@ -106,15 +112,18 @@ export type RailSection =
 export type ThemePreference = "system" | "dark" | "light";
 
 
-export interface AsrEngineDescriptor {
-  id: string;
-  name: string;
-  execution: "remote" | "worker" | "cli" | "native-helper";
-  availability: "ready" | "provider-required" | "runtime-required" | "unsupported-platform";
-  message: string;
-  supports_segment_timestamps: boolean;
-  languages: string[];
-  default_model: string;
+export interface CapabilityTarget {
+  provider_id: string;
+  provider_name: string;
+  provider_kind: string;
+  execution: "remote_api" | "local_server" | "local_runtime" | "native_os";
+  system_managed: boolean;
+  provider_availability: "ready" | "runtime-required" | "unsupported-platform" | "error";
+  provider_message: string;
+  model_id: string;
+  display_name: string;
+  available: boolean;
+  effective_capabilities: string[];
 }
 
 export interface AsrSegmentCandidate {
@@ -126,7 +135,7 @@ export interface AsrSegmentCandidate {
 
 export interface AsrResult {
   contract_version: number;
-  engine_id: string;
+  adapter_id: string;
   model_id: string;
   language: string | null;
   segments: AsrSegmentCandidate[];

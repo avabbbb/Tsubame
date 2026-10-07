@@ -66,7 +66,7 @@ def main() -> None:
 
     result = {
         "contract_version": 1,
-        "engine_id": "faster-whisper",
+        "adapter_id": "faster-whisper",
         "model_id": model_id,
         "language": getattr(info, "language", None),
         "segments": rows,

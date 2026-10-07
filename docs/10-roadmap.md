@@ -50,15 +50,23 @@ Freeze the long-term implementation boundary:
 - generic OpenAI-compatible provider;
 - local provider contract.
 
-### PR #7 — Modular ASR
+### PR #7 — Modular ASR adapters
 
 - Faster-Whisper;
-- whisper.cpp as an independent optional engine;
+- whisper.cpp;
 - SenseVoice/FunASR;
 - Apple Speech on macOS;
 - cloud ASR adapters.
 
-### PR #8 — Transcript refinement and alignment
+### PR #8 — Unified local/remote Provider execution
+
+- remote API / local server / local runtime / native OS execution modes;
+- Faster-Whisper / SenseVoice / whisper.cpp / Apple Speech become Providers;
+- LM Studio/local OpenAI-compatible models use the same registry;
+- ASR Studio selects Provider + Model;
+- translation/refinement can choose paid APIs or local models without a separate branch.
+
+### PR #9 — Transcript refinement and alignment
 
 - optional LLM refinement;
 - glossary/proper nouns;
@@ -66,11 +74,11 @@ Freeze the long-term implementation boundary:
 - forced alignment;
 - provenance/confidence.
 
-### PR #9 — ASMR-Dubber worker
+### PR #10 — ASMR-Dubber worker
 
 Integrate compatible MIT processing capabilities behind versioned worker contracts.
 
-### PR #10 — Single-sentence regenerate
+### PR #11 — Single-sentence regenerate
 
 Prove the defining loop:
 
@@ -81,30 +89,30 @@ edit one Segment
  → preview immediately
 ```
 
-### PR #11 — Runtime/model bootstrap
+### PR #12 — Runtime/model bootstrap
 
 App-managed runtime/model packs with resumable verified installation.
 
-### PR #12 — $tsubame Skill + CLI/MCP
+### PR #13 — $tsubame Skill + CLI/MCP
 
 Agent-operable control plane over the same Desktop operations.
 
-### PR #13 — Source Registry + Download Manager
+### PR #14 — Source Registry + Download Manager
 
 Shared source and acquisition infrastructure.
 
-### PR #14 — ASMR.one compatibility adapter
+### PR #15 — ASMR.one compatibility adapter
 
 Compatibility-only adapter; not a foundational dependency.
 
-### PR #15 — Japanese ASMR adapter
+### PR #16 — Japanese ASMR adapter
 
 Canonical target: https://japaneseasmr.com/
 
-### PR #16 — Library metadata and Apple Music media polish
+### PR #17 — Library metadata and Apple Music media polish
 
 Work/Track/CV/Circle/RJ metadata, artwork-forward surfaces and collections.
 
-### PR #17 — Packaging / updater / first distributable release
+### PR #18 — Packaging / updater / first distributable release
 
 Windows x64 installer, updater, clean-machine validation and runtime bootstrap smoke tests.

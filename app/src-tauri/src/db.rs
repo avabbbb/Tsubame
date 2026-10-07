@@ -88,6 +88,7 @@ impl MediaDb {
                id TEXT PRIMARY KEY,
                name TEXT NOT NULL,
                kind TEXT NOT NULL,
+               execution TEXT NOT NULL DEFAULT 'remote_api',
                base_url TEXT NOT NULL DEFAULT '',
                model_list_url TEXT NOT NULL DEFAULT '',
                auth_mode TEXT NOT NULL DEFAULT 'bearer',
@@ -118,6 +119,12 @@ impl MediaDb {
 
         Self::ensure_column(&conn, "media_files", "speed", "REAL NOT NULL DEFAULT 1.0")?;
         Self::ensure_column(&conn, "media_files", "volume", "REAL NOT NULL DEFAULT 1.0")?;
+        Self::ensure_column(
+            &conn,
+            "providers",
+            "execution",
+            "TEXT NOT NULL DEFAULT 'remote_api'",
+        )?;
 
         for (name, definition) in [
             ("transcript_provenance", "TEXT NOT NULL DEFAULT ''"),
@@ -377,7 +384,7 @@ impl MediaDb {
 
     pub fn list_providers(&self) -> rusqlite::Result<Vec<ProviderConfig>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+            "SELECT id,name,kind,execution,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
              FROM providers ORDER BY name COLLATE NOCASE,id",
         )?;
 
@@ -387,13 +394,17 @@ impl MediaDb {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     kind: row.get(2)?,
-                    base_url: row.get(3)?,
-                    model_list_url: row.get(4)?,
-                    auth_mode: row.get(5)?,
-                    secret_ref: row.get(6)?,
-                    enabled: row.get(7)?,
-                    last_refresh_at: row.get(8)?,
-                    last_error: row.get(9)?,
+                    execution: row.get(3)?,
+                    system_managed: false,
+                    availability: "ready".into(),
+                    message: String::new(),
+                    base_url: row.get(4)?,
+                    model_list_url: row.get(5)?,
+                    auth_mode: row.get(6)?,
+                    secret_ref: row.get(7)?,
+                    enabled: row.get(8)?,
+                    last_refresh_at: row.get(9)?,
+                    last_error: row.get(10)?,
                 })
             })?
             .collect();
@@ -403,7 +414,7 @@ impl MediaDb {
     pub fn get_provider(&self, id: &str) -> rusqlite::Result<Option<ProviderConfig>> {
         self.conn
             .query_row(
-                "SELECT id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+                "SELECT id,name,kind,execution,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
                  FROM providers WHERE id=?1",
                 [id],
                 |row| {
@@ -411,13 +422,17 @@ impl MediaDb {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         kind: row.get(2)?,
-                        base_url: row.get(3)?,
-                        model_list_url: row.get(4)?,
-                        auth_mode: row.get(5)?,
-                        secret_ref: row.get(6)?,
-                        enabled: row.get(7)?,
-                        last_refresh_at: row.get(8)?,
-                        last_error: row.get(9)?,
+                        execution: row.get(3)?,
+                        system_managed: false,
+                        availability: "ready".into(),
+                        message: String::new(),
+                        base_url: row.get(4)?,
+                        model_list_url: row.get(5)?,
+                        auth_mode: row.get(6)?,
+                        secret_ref: row.get(7)?,
+                        enabled: row.get(8)?,
+                        last_refresh_at: row.get(9)?,
+                        last_error: row.get(10)?,
                     })
                 },
             )
@@ -427,11 +442,12 @@ impl MediaDb {
     pub fn save_provider(&self, provider: &ProviderConfig) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO providers(
-                id,name,kind,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                id,name,kind,execution,base_url,model_list_url,auth_mode,secret_ref,enabled,last_refresh_at,last_error
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 kind=excluded.kind,
+                execution=excluded.execution,
                 base_url=excluded.base_url,
                 model_list_url=excluded.model_list_url,
                 auth_mode=excluded.auth_mode,
@@ -442,6 +458,7 @@ impl MediaDb {
                 provider.id,
                 provider.name,
                 provider.kind,
+                provider.execution,
                 provider.base_url,
                 provider.model_list_url,
                 provider.auth_mode,
@@ -779,6 +796,10 @@ mod tests {
             id: "provider-1".into(),
             name: "Example".into(),
             kind: "openai-compatible".into(),
+            execution: "remote_api".into(),
+            system_managed: false,
+            availability: "ready".into(),
+            message: String::new(),
             base_url: "https://example.com/v1".into(),
             model_list_url: "https://example.com/v1/models".into(),
             auth_mode: "bearer".into(),
@@ -801,6 +822,10 @@ mod tests {
             id: "provider-1".into(),
             name: "Example".into(),
             kind: "openai-compatible".into(),
+            execution: "remote_api".into(),
+            system_managed: false,
+            availability: "ready".into(),
+            message: String::new(),
             base_url: "https://example.com/v1".into(),
             model_list_url: "https://example.com/v1/models".into(),
             auth_mode: "none".into(),
@@ -850,6 +875,10 @@ mod tests {
             id: "provider-1".into(),
             name: "Example".into(),
             kind: "openai-compatible".into(),
+            execution: "remote_api".into(),
+            system_managed: false,
+            availability: "ready".into(),
+            message: String::new(),
             base_url: "http://localhost/v1".into(),
             model_list_url: "http://localhost/v1/models".into(),
             auth_mode: "none".into(),

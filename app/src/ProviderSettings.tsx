@@ -12,6 +12,7 @@ const EMPTY_DRAFT: ProviderInput = {
   id: null,
   name: "",
   kind: "openai-compatible",
+  execution: "remote_api",
   base_url: "",
   model_list_url: "",
   auth_mode: "bearer",
@@ -88,6 +89,7 @@ export default function ProviderSettings() {
       id: selectedProvider.id,
       name: selectedProvider.name,
       kind: selectedProvider.kind,
+      execution: selectedProvider.execution,
       base_url: selectedProvider.base_url,
       model_list_url: selectedProvider.model_list_url,
       auth_mode: selectedProvider.auth_mode,
@@ -117,6 +119,7 @@ export default function ProviderSettings() {
       id: null,
       name: preset.name,
       kind: preset.kind,
+      execution: preset.execution,
       base_url: preset.base_url,
       model_list_url: preset.model_list_url,
       auth_mode: preset.auth_mode,
@@ -148,6 +151,7 @@ export default function ProviderSettings() {
           id: latest.id,
           name: latest.name,
           kind: latest.kind,
+          execution: latest.execution,
           base_url: latest.base_url,
           model_list_url: latest.model_list_url,
           auth_mode: latest.auth_mode,
@@ -262,10 +266,10 @@ export default function ProviderSettings() {
       <header className="provider-settings-head">
         <div>
           <p className="eyebrow">MODEL & PROVIDER REGISTRY</p>
-          <h2>Bring your own models.</h2>
+          <h2>Local and remote, one registry.</h2>
           <p>
-            Credentials stay outside SQLite. Tsubame discovers models, stores only
-            redacted references, and resolves features by capability.
+            Tsubame resolves capabilities across local runtimes, native OS models,
+            localhost servers and BYOK APIs. Remote credentials stay outside SQLite.
           </p>
         </div>
         <select
@@ -298,18 +302,20 @@ export default function ProviderSettings() {
               <span>
                 <strong>{provider.name}</strong>
                 <small>
-                  {provider.secret_ref
-                    ? "Key secured"
-                    : provider.auth_mode === "none"
-                      ? "No auth"
-                      : "Key missing"}
+                  {provider.system_managed
+                    ? `${provider.execution.replace("_", " ")} · ${provider.availability}`
+                    : provider.secret_ref
+                      ? `${provider.execution.replace("_", " ")} · Key secured`
+                      : provider.auth_mode === "none"
+                        ? `${provider.execution.replace("_", " ")} · No auth`
+                        : `${provider.execution.replace("_", " ")} · Key missing`}
                 </small>
               </span>
             </button>
           ))}
           {!providers.length && (
             <div className="provider-list-empty">
-              Add OpenAI, Alibaba Model Studio, or any compatible endpoint.
+              Built-in local Providers appear here automatically. Add remote or local-server endpoints from the menu above.
             </div>
           )}
         </aside>
@@ -331,13 +337,37 @@ export default function ProviderSettings() {
                 Name
                 <input
                   value={draft.name}
+                  disabled={selectedProvider?.system_managed}
                   onChange={(event) => updateDraft("name", event.target.value)}
                   placeholder="My provider"
                 />
               </label>
               <label>
+                Execution
+                <select
+                  value={draft.execution}
+                  disabled={selectedProvider?.system_managed}
+                  onChange={(event) =>
+                    updateDraft(
+                      "execution",
+                      event.target.value as ProviderInput["execution"],
+                    )
+                  }
+                >
+                  <option value="remote_api">Remote API</option>
+                  <option value="local_server">Local server</option>
+                  {selectedProvider?.system_managed && (
+                    <>
+                      <option value="local_runtime">Local runtime</option>
+                      <option value="native_os">Native OS</option>
+                    </>
+                  )}
+                </select>
+              </label>
+              <label>
                 Auth
                 <select
+                  disabled={selectedProvider?.system_managed}
                   value={draft.auth_mode}
                   onChange={(event) =>
                     updateDraft(
@@ -354,6 +384,7 @@ export default function ProviderSettings() {
                 Inference base URL
                 <input
                   value={draft.base_url}
+                  disabled={selectedProvider?.system_managed}
                   onChange={(event) => updateDraft("base_url", event.target.value)}
                   placeholder="https://api.example.com/v1"
                   spellCheck={false}
@@ -363,6 +394,7 @@ export default function ProviderSettings() {
                 Model discovery URL
                 <input
                   value={draft.model_list_url}
+                  disabled={selectedProvider?.system_managed}
                   onChange={(event) =>
                     updateDraft("model_list_url", event.target.value)
                   }
@@ -370,7 +402,7 @@ export default function ProviderSettings() {
                   spellCheck={false}
                 />
               </label>
-              {draft.auth_mode === "bearer" && (
+              {draft.auth_mode === "bearer" && !selectedProvider?.system_managed && (
                 <label className="provider-span-two">
                   API key
                   <input
@@ -393,6 +425,7 @@ export default function ProviderSettings() {
                 <input
                   type="checkbox"
                   checked={draft.enabled}
+                  disabled={selectedProvider?.system_managed}
                   onChange={(event) =>
                     updateDraft("enabled", event.target.checked)
                   }
@@ -400,7 +433,7 @@ export default function ProviderSettings() {
                 Enabled
               </label>
               <div>
-                {draft.id && (
+                {draft.id && !selectedProvider?.system_managed && (
                   <button
                     className="secondary"
                     disabled={busy}
@@ -409,13 +442,15 @@ export default function ProviderSettings() {
                     Delete
                   </button>
                 )}
-                <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void saveProvider()}
-                >
-                  {busy ? "Working…" : "Save provider"}
-                </button>
+                {!selectedProvider?.system_managed && (
+                  <button
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => void saveProvider()}
+                  >
+                    {busy ? "Working…" : "Save provider"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -426,35 +461,49 @@ export default function ProviderSettings() {
                 <p className="section-label">CONNECTION & DISCOVERY</p>
                 <div className="provider-health-copy">
                   <strong>
-                    {selectedProvider?.last_error
-                      ? "Needs attention"
-                      : selectedProvider?.last_refresh_at
+                    {selectedProvider?.system_managed
+                      ? selectedProvider.availability === "ready"
                         ? "Ready"
-                        : "Not tested yet"}
+                        : "Runtime status"
+                      : selectedProvider?.last_error
+                        ? "Needs attention"
+                        : selectedProvider?.last_refresh_at
+                          ? "Ready"
+                          : "Not tested yet"}
                   </strong>
                   <small>
-                    {selectedProvider?.last_error ||
-                      (selectedProvider?.last_refresh_at
-                        ? `Last refresh · ${selectedProvider.last_refresh_at}`
-                        : "Test the credential, then discover visible models.")}
+                    {selectedProvider?.system_managed
+                      ? selectedProvider.message
+                      : selectedProvider?.last_error ||
+                        (selectedProvider?.last_refresh_at
+                          ? `Last refresh · ${selectedProvider.last_refresh_at}`
+                          : "Test the credential, then discover visible models.")}
                   </small>
                 </div>
               </div>
               <div className="provider-health-actions">
-                <button
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => void testProvider()}
-                >
-                  Test
-                </button>
-                <button
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => void refreshModels()}
-                >
-                  Refresh models
-                </button>
+                {selectedProvider?.system_managed ? (
+                  <span className="provider-id-chip">
+                    {selectedProvider.availability}
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void testProvider()}
+                    >
+                      Test
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void refreshModels()}
+                    >
+                      Refresh models
+                    </button>
+                  </>
+                )}
               </div>
               {testResult && (
                 <div
@@ -515,7 +564,7 @@ export default function ProviderSettings() {
                       </span>
                     </button>
 
-                    {expandedModel === model.model_id && (
+                    {expandedModel === model.model_id && !selectedProvider?.system_managed && (
                       <div className="provider-capability-editor">
                         <p>
                           Runtime features query these capabilities; they never branch
@@ -551,7 +600,9 @@ export default function ProviderSettings() {
 
                 {!models.length && (
                   <div className="provider-model-empty">
-                    No model inventory yet. Save, test, then refresh this provider.
+                    {selectedProvider?.system_managed
+                      ? "No model catalog is available for this local Provider."
+                      : "No model inventory yet. Save, test, then refresh this provider."}
                   </div>
                 )}
               </div>

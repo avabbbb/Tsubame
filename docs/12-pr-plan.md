@@ -86,41 +86,67 @@ Acceptance:
 
 ---
 
-## PR #7 — Modular ASR engines
+## PR #7 — Modular ASR adapters
 
 **Status:** complete.
 
-Goal: make transcription a replaceable speech.asr capability.
+Goal: make transcription execution replaceable behind one canonical ASR result contract.
 
-Initial targets:
+Initial adapters:
 - Faster-Whisper;
-- whisper.cpp as an independent optional engine;
+- whisper.cpp;
 - SenseVoice/FunASR;
-- Apple Speech on supported macOS;
-- cloud ASR adapter path.
+- Apple Speech;
+- OpenAI-compatible transcription.
 
 Acceptance:
-- same Track can run through different ASR providers;
-- no ASR engine writes canonical SQLite directly;
-- Japanese-language smoke fixtures exist.
+- no ASR adapter writes canonical SQLite directly;
+- Japanese-language smoke fixtures exist;
+- invalid/failed ASR never deletes the current transcript.
 
 ---
 
-## PR #8 — Transcript refinement and alignment
+## PR #8 — Unified local/remote Provider execution
+
+**Status:** complete.
+
+Goal: remove the accidental second “ASR Engine Registry” and make local + remote execution first-class Providers.
+
+Scope:
+- Provider execution modes: remote_api / local_server / local_runtime / native_os;
+- system-managed local Providers;
+- Provider + Model selection in Studio;
+- ASR adapters become internal Provider implementation details;
+- local Provider models resolve through the same Capability Resolver;
+- LM Studio/local OpenAI-compatible preset;
+- provenance records Provider + Model;
+- translation/refinement architecture explicitly supports both paid APIs and local LLMs.
+
+Acceptance:
+- Faster-Whisper, SenseVoice, whisper.cpp and Apple Speech appear as Providers;
+- Studio selects Provider + Model, never Engine + Model;
+- local server models and remote API models can satisfy the same capability;
+- system-managed local Providers cannot be deleted/overwritten;
+- no feature needs an “online vs local” branch.
+
+---
+
+## PR #9 — Transcript refinement and alignment
 
 Goal: support ASMR-specific ASR → refine → align → human review.
 
 Scope:
 - transcript.refine capability;
+- local or remote LLM Provider;
 - glossary/proper-noun context;
-- conservative LLM correction proposals;
+- conservative correction proposals;
 - diff/review;
 - forced-alignment contract;
 - provenance/confidence in Inspector.
 
 ---
 
-## PR #9 — ASMR-Dubber worker integration
+## PR #10 — ASMR-Dubber worker integration
 
 Goal: reuse compatible MIT processing capabilities without adopting its product UI.
 
@@ -134,7 +160,7 @@ Scope:
 
 ---
 
-## PR #10 — Single-sentence regenerate loop
+## PR #11 — Single-sentence regenerate loop
 
 Goal: prove Tsubame's defining editing experience.
 
@@ -150,7 +176,7 @@ select Segment
 
 ---
 
-## PR #11 — Runtime and model bootstrap
+## PR #12 — Runtime and model bootstrap
 
 Goal: normal users configure no developer environment.
 
@@ -166,7 +192,7 @@ Scope:
 
 ---
 
-## PR #12 — $tsubame Skill, CLI and MCP
+## PR #13 — $tsubame Skill, CLI and MCP
 
 Goal: let local agents operate the same Desktop without GUI automation.
 
@@ -178,7 +204,7 @@ Scope:
 
 ---
 
-## PR #13 — Source Registry and shared Download Manager
+## PR #14 — Source Registry and shared Download Manager
 
 Scope:
 - SourceAdapter;
@@ -192,13 +218,13 @@ Scope:
 
 ---
 
-## PR #14 — ASMR.one compatibility adapter
+## PR #15 — ASMR.one compatibility adapter
 
 Compatibility only; failure must not affect other sources.
 
 ---
 
-## PR #15 — Japanese ASMR adapter
+## PR #16 — Japanese ASMR adapter
 
 Canonical target: https://japaneseasmr.com/
 
@@ -212,7 +238,7 @@ Scope:
 
 ---
 
-## PR #16 — Library metadata and Apple Music media surfaces
+## PR #17 — Library metadata and Apple Music media surfaces
 
 Scope:
 - Work/Track hierarchy;
@@ -225,22 +251,22 @@ Scope:
 
 ---
 
-## PR #17 — Packaging, updater and first distributable release
+## PR #18 — Packaging, updater and first distributable release
 
 Exit criteria: a non-developer can install Tsubame, acquire/import media, choose/install an ASR profile, transcribe, edit, translate, synthesize one sentence and continue playback without configuring a development toolchain.
 
 ## Parallelization
 
-After PR #5 stabilizes Segment contracts:
+After PR #8 unifies Provider execution:
 
 ```text
-Provider Registry #6 ─┬─ ASR #7 ─ Refine/Align #8
-                      └─ Runtime Bootstrap #11
+Unified Providers #8 ─┬─ Refine/Align #9
+                      └─ Runtime Bootstrap #12
 
-ASMR-Dubber #9 ─ Single Segment #10
+ASMR-Dubber #10 ─ Single Segment #11
 
-Source Registry #13 ─┬─ ASMR.one #14
-                     └─ Japanese ASMR #15
+Source Registry #14 ─┬─ ASMR.one #15
+                     └─ Japanese ASMR #16
 
-Segment Editor #5 ─ Library polish #16
+Segment Editor #5 ─ Library polish #17
 ```
