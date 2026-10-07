@@ -19,17 +19,20 @@ A feature must never branch on a vendor or model ID.
 
 ## ProviderConfig
 
-A Provider owns connection-level concerns:
+A Provider owns execution-level concerns:
 
 - stable provider ID;
 - human-readable name;
-- provider kind;
-- inference base URL;
-- model-discovery URL;
-- auth mode;
-- `secret_ref`;
+- adapter kind;
+- execution mode;
+- endpoint/base URL when applicable;
+- model-discovery URL when applicable;
+- auth mode / `secret_ref` when applicable;
+- local runtime/native availability when applicable;
 - enabled state;
 - last refresh/error state.
+
+Execution modes are `remote_api`, `local_server`, `local_runtime`, and `native_os`.
 
 The inference URL and discovery URL are separate on purpose.
 
@@ -151,6 +154,17 @@ The parser extracts model identity/metadata but does not log the credential or r
 
 Successful discovery proves only that the model is visible to the credential. It does not prove that Tsubame has an execution adapter for every advertised capability.
 
+## Built-in local Providers
+
+System-managed Providers are present in the same registry:
+
+- `local.faster-whisper`;
+- `local.sensevoice`;
+- `local.whisper-cpp`;
+- `local.apple-speech`.
+
+They cannot be deleted or overwritten from the connection form. Their readiness is supplied by Runtime/OS state.
+
 ## Presets
 
 PR #6 ships editable presets for:
@@ -158,7 +172,8 @@ PR #6 ships editable presets for:
 - OpenAI;
 - Alibaba Cloud Model Studio (Singapore defaults);
 - custom OpenAI-compatible provider;
-- local OpenAI-compatible endpoint.
+- LM Studio local server;
+- generic local OpenAI-compatible endpoint.
 
 Presets are convenience defaults, not special branches in feature code.
 
@@ -176,6 +191,8 @@ The following are forbidden:
 
 ## Follow-up
 
-PR #7 will consume this registry for modular ASR engines.
+PR #7 originally introduced ASR adapters. PR #8 removes the second product-level engine registry and makes those adapters internal to Providers.
+
+See [Unified Provider Execution](17-unified-provider-execution.md).
 
 It will add actual execution adapters for Faster-Whisper, whisper.cpp, SenseVoice/FunASR, Apple Speech and remote ASR providers. Those adapters must resolve through capability/provider contracts established here.
