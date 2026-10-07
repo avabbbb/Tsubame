@@ -643,4 +643,43 @@ mod tests {
         assert_eq!(resolved, vec!["speech.asr"]);
         assert_eq!(source, "manual");
     }
+
+    #[test]
+    fn builtin_asr_runtimes_are_providers() {
+        let providers = builtin_local_providers();
+        let faster = providers
+            .iter()
+            .find(|provider| provider.id == "local.faster-whisper")
+            .unwrap();
+        assert!(faster.system_managed);
+        assert_eq!(faster.execution, "local_runtime");
+        assert_eq!(faster.kind, "faster-whisper");
+
+        let apple = providers
+            .iter()
+            .find(|provider| provider.id == "local.apple-speech")
+            .unwrap();
+        assert!(apple.system_managed);
+        assert_eq!(apple.execution, "native_os");
+    }
+
+    #[test]
+    fn builtin_local_models_resolve_capabilities() {
+        let models = builtin_provider_models("local.faster-whisper");
+        assert!(models.iter().any(|model| model.model_id == "large-v3"));
+        assert!(models
+            .iter()
+            .all(|model| model.effective_capabilities.contains(&"speech.asr".to_string())));
+    }
+
+    #[test]
+    fn local_server_preset_uses_same_provider_contract() {
+        let lm_studio = presets()
+            .into_iter()
+            .find(|preset| preset.id == "lm-studio-local")
+            .unwrap();
+        assert_eq!(lm_studio.execution, "local_server");
+        assert_eq!(lm_studio.kind, "openai-compatible");
+        assert_eq!(lm_studio.auth_mode, "none");
+    }
 }
