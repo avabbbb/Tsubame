@@ -108,3 +108,29 @@ Inference base URL and model-discovery URL are independent because compatible pr
 Accepted.
 
 Provider rows store only a `secret_ref`. The Desktop resolves the actual credential through the OS credential store. UI, CLI and MCP surfaces expose redacted state/reference metadata only.
+
+
+## ADR-015 — Local and remote inference share one Provider Registry
+
+Accepted.
+
+Tsubame does not maintain separate product-level registries for “local engines” and “API providers”.
+
+The canonical chain is:
+
+```text
+Capability → Provider → Model → Adapter → Runtime/Transport
+```
+
+Provider execution is one of:
+
+- `remote_api`
+- `local_server`
+- `local_runtime`
+- `native_os`
+
+Faster-Whisper, SenseVoice/FunASR, whisper.cpp and Apple Speech are system-managed Providers. LM Studio and other localhost OpenAI-compatible servers are user-configured local-server Providers.
+
+Feature code, Processing Profiles, provenance, CLI and MCP identify **Provider + Model**. Adapter identity is internal execution metadata.
+
+This applies equally to ASR, translation, transcript refinement, TTS and future capabilities.
