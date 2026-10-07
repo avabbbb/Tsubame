@@ -282,11 +282,19 @@ async fn transcribe_media(
             "whisper-cpp" => {
                 let media_path = media.path.clone();
                 let language = input.language.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_whisper_cpp(&media_path, &resolved_model, language)
+                let logical_model = resolved_model.clone();
+                let adapter_model = if logical_model == "runtime-model" {
+                    String::new()
+                } else {
+                    logical_model.clone()
+                };
+                let mut result = tauri::async_runtime::spawn_blocking(move || {
+                    asr::run_whisper_cpp(&media_path, &adapter_model, language)
                 })
                 .await
-                .map_err(|e| e.to_string())??
+                .map_err(|e| e.to_string())??;
+                result.model_id = logical_model;
+                result
             }
             "apple-speech" => {
                 let media_path = media.path.clone();
