@@ -5,7 +5,7 @@ import Speech
 
 struct WorkerRequest: Decodable {
     let contract_version: Int
-    let engine_id: String
+    let adapter_id: String
     let media_path: String
     let media_duration_ms: Int64
     let model_id: String
@@ -22,7 +22,7 @@ struct Segment: Encodable {
 
 struct WorkerResult: Encodable {
     let contract_version: Int
-    let engine_id: String
+    let adapter_id: String
     let model_id: String
     let language: String?
     let segments: [Segment]
@@ -162,7 +162,7 @@ struct TsubameAppleSpeechHelper {
 
         return WorkerResult(
             contract_version: 1,
-            engine_id: "apple-speech",
+            adapter_id: "apple-speech",
             model_id: "speech-transcriber",
             language: locale.identifier(.bcp47),
             segments: segments,
