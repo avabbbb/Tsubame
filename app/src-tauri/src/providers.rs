@@ -239,7 +239,7 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
             model_list_url: String::new(),
             auth_mode: "none".into(),
             secret_ref: None,
-            enabled: apple_supported,
+            enabled: true,
             last_refresh_at: None,
             last_error: None,
         },
