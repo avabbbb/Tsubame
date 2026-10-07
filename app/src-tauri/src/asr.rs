@@ -23,7 +23,7 @@ pub struct AsrSegmentCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AsrResult {
     pub contract_version: u32,
-    pub engine_id: String,
+    pub adapter_id: String,
     pub model_id: String,
     pub language: Option<String>,
     pub segments: Vec<AsrSegmentCandidate>,
@@ -43,7 +43,7 @@ pub struct AsrRunInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkerRequest {
     contract_version: u32,
-    engine_id: String,
+    adapter_id: String,
     media_path: String,
     media_duration_ms: i64,
     model_id: String,
@@ -122,7 +122,7 @@ pub fn run_faster_whisper(
         "faster_whisper_worker.py",
         &WorkerRequest {
             contract_version: ASR_CONTRACT_VERSION,
-            engine_id: "faster-whisper".into(),
+            adapter_id: "faster-whisper".into(),
             media_path: media_path.into(),
             media_duration_ms: duration_ms,
             model_id: model_id.into(),
@@ -144,7 +144,7 @@ pub fn run_funasr(
         "funasr_worker.py",
         &WorkerRequest {
             contract_version: ASR_CONTRACT_VERSION,
-            engine_id: "funasr-sensevoice".into(),
+            adapter_id: "funasr-sensevoice".into(),
             media_path: media_path.into(),
             media_duration_ms: duration_ms,
             model_id: model_id.into(),
@@ -167,7 +167,7 @@ pub fn run_apple_speech(
         .map_err(|_| "TSUBAME_APPLE_SPEECH_HELPER is not configured".to_string())?;
     let request = WorkerRequest {
         contract_version: ASR_CONTRACT_VERSION,
-        engine_id: "apple-speech".into(),
+        adapter_id: "apple-speech".into(),
         media_path: media_path.into(),
         media_duration_ms: duration_ms,
         model_id: "speech-transcriber".into(),
@@ -283,7 +283,7 @@ pub fn run_whisper_cpp(
 
     let result = AsrResult {
         contract_version: ASR_CONTRACT_VERSION,
-        engine_id: "whisper-cpp".into(),
+        adapter_id: "whisper-cpp".into(),
         model_id: model,
         language,
         segments,
@@ -468,7 +468,7 @@ pub fn parse_remote_response(
 
     let result = AsrResult {
         contract_version: ASR_CONTRACT_VERSION,
-        engine_id: "remote-openai-compatible".into(),
+        adapter_id: "remote-openai-compatible".into(),
         model_id: model_id.into(),
         language,
         segments,
