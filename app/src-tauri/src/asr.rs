@@ -31,23 +31,10 @@ pub struct AsrResult {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct AsrEngineDescriptor {
-    pub id: String,
-    pub name: String,
-    pub execution: String,
-    pub availability: String,
-    pub message: String,
-    pub supports_segment_timestamps: bool,
-    pub languages: Vec<String>,
-    pub default_model: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct AsrRunInput {
     pub media_id: i64,
-    pub engine_id: String,
-    pub provider_id: Option<String>,
+    pub provider_id: String,
     pub model_id: Option<String>,
     pub language: Option<String>,
     pub prompt: Option<String>,
@@ -71,119 +58,6 @@ struct RemoteSegment {
     text: String,
     #[serde(default)]
     avg_logprob: Option<f64>,
-}
-
-pub fn engines(remote_ready: bool) -> Vec<AsrEngineDescriptor> {
-    let faster_python = env::var("TSUBAME_FASTER_WHISPER_PYTHON").ok();
-    let funasr_python = env::var("TSUBAME_FUNASR_PYTHON").ok();
-    let whisper_bin = env::var("TSUBAME_WHISPER_CPP_BIN").ok();
-    let whisper_model = env::var("TSUBAME_WHISPER_CPP_MODEL").ok();
-    let apple_helper = env::var("TSUBAME_APPLE_SPEECH_HELPER").ok();
-
-    vec![
-        AsrEngineDescriptor {
-            id: "remote-openai-compatible".into(),
-            name: "Remote ASR".into(),
-            execution: "remote".into(),
-            availability: if remote_ready {
-                "ready"
-            } else {
-                "provider-required"
-            }
-            .into(),
-            message: if remote_ready {
-                "At least one enabled Provider model advertises speech.asr.".into()
-            } else {
-                "Tag or discover a remote Provider model with speech.asr.".into()
-            },
-            supports_segment_timestamps: true,
-            languages: vec!["auto".into()],
-            default_model: "".into(),
-        },
-        AsrEngineDescriptor {
-            id: "faster-whisper".into(),
-            name: "Faster-Whisper".into(),
-            execution: "worker".into(),
-            availability: if faster_python.is_some() {
-                "ready"
-            } else {
-                "runtime-required"
-            }
-            .into(),
-            message: faster_python
-                .map(|_| "Python worker runtime configured.".into())
-                .unwrap_or_else(|| "Runtime pack not installed yet.".into()),
-            supports_segment_timestamps: true,
-            languages: vec!["auto".into(), "ja".into(), "zh".into(), "en".into()],
-            default_model: "large-v3".into(),
-        },
-        AsrEngineDescriptor {
-            id: "funasr-sensevoice".into(),
-            name: "SenseVoice / FunASR".into(),
-            execution: "worker".into(),
-            availability: if funasr_python.is_some() {
-                "ready"
-            } else {
-                "runtime-required"
-            }
-            .into(),
-            message: funasr_python
-                .map(|_| "Python worker runtime configured.".into())
-                .unwrap_or_else(|| "Runtime pack not installed yet.".into()),
-            supports_segment_timestamps: true,
-            languages: vec![
-                "auto".into(),
-                "ja".into(),
-                "zh".into(),
-                "yue".into(),
-                "en".into(),
-                "ko".into(),
-            ],
-            default_model: "iic/SenseVoiceSmall".into(),
-        },
-        AsrEngineDescriptor {
-            id: "whisper-cpp".into(),
-            name: "whisper.cpp".into(),
-            execution: "cli".into(),
-            availability: if whisper_bin.is_some() && whisper_model.is_some() {
-                "ready"
-            } else {
-                "runtime-required"
-            }
-            .into(),
-            message: if whisper_bin.is_some() && whisper_model.is_some() {
-                "CLI and model configured.".into()
-            } else {
-                "Set runtime-managed whisper-cli and model paths.".into()
-            },
-            supports_segment_timestamps: true,
-            languages: vec!["auto".into(), "ja".into(), "zh".into(), "en".into()],
-            default_model: whisper_model.unwrap_or_default(),
-        },
-        AsrEngineDescriptor {
-            id: "apple-speech".into(),
-            name: "Apple SpeechAnalyzer".into(),
-            execution: "native-helper".into(),
-            availability: if !cfg!(target_os = "macos") {
-                "unsupported-platform"
-            } else if apple_helper.is_some() {
-                "ready"
-            } else {
-                "runtime-required"
-            }
-            .into(),
-            message: if !cfg!(target_os = "macos") {
-                "Available only on supported Apple platforms.".into()
-            } else if apple_helper.is_some() {
-                "Native SpeechAnalyzer helper configured.".into()
-            } else {
-                "Native helper/runtime pack not installed yet.".into()
-            },
-            supports_segment_timestamps: true,
-            languages: vec!["auto".into()],
-            default_model: "speech-transcriber".into(),
-        },
-    ]
 }
 
 fn worker_script(name: &str) -> PathBuf {
