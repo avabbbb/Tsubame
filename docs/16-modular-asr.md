@@ -1,10 +1,10 @@
-# Modular ASR Engines
+# Modular ASR Providers
 
 PR #7 makes transcription a replaceable \`speech.asr\` capability.
 
 ## Contract
 
-Every engine receives a media/request description and returns **candidate Segments**:
+Every Provider adapter receives a media/request description and returns **candidate Segments**:
 
 \`\`\`json
 {
@@ -24,7 +24,7 @@ Every engine receives a media/request description and returns **candidate Segmen
 }
 \`\`\`
 
-Engines do **not** own Tsubame state and do not write SQLite.
+Provider adapters do **not** own Tsubame state and do not write SQLite.
 
 The Desktop validates the result, converts it to canonical Segment rows, records ASR provenance, and invalidates only downstream work.
 
@@ -42,11 +42,11 @@ Tsubame Desktop
 canonical SQLite Segment[]
 \`\`\`
 
-## Engines
+## Providers and internal adapters
 
 ### Faster-Whisper
 
-Execution: isolated Python worker.
+Provider: `local.faster-whisper` · execution: `local_runtime` · adapter: isolated Python worker.
 
 Reference:
 - https://github.com/SYSTRAN/faster-whisper
@@ -75,7 +75,7 @@ Default model hint: \`iic/SenseVoiceSmall\`.
 
 ### whisper.cpp
 
-Execution: native CLI adapter.
+Provider: `local.whisper-cpp` · execution: `local_runtime` · adapter: native CLI.
 
 Reference:
 - https://github.com/ggml-org/whisper.cpp
@@ -90,7 +90,7 @@ This PR accepts 16-bit WAV input for whisper.cpp. General media extraction/norma
 
 ### Apple SpeechAnalyzer
 
-Execution: macOS native-helper boundary.
+Provider: `local.apple-speech` · execution: `native_os` · adapter: macOS native helper.
 
 Reference:
 - https://developer.apple.com/videos/play/wwdc2025/277/
@@ -133,7 +133,7 @@ Normal users must not need environment variables in release builds. The environm
 
 ## Provider Registry relationship
 
-Remote ASR reuses PR #6:
+All ASR reuses the same Provider Registry:
 
 \`\`\`text
 resolve("speech.asr")
@@ -154,7 +154,7 @@ A successful ASR run replaces the Track's canonical source transcript.
 Each new Segment records:
 
 \`\`\`text
-transcript_provenance = asr:<engine>:<provider/local>:<model>
+transcript_provenance = asr:<provider>:<model>
 asr_provenance        = same value
 reviewed              = false
 dirty_translation     = true
