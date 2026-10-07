@@ -266,10 +266,10 @@ export default function ProviderSettings() {
       <header className="provider-settings-head">
         <div>
           <p className="eyebrow">MODEL & PROVIDER REGISTRY</p>
-          <h2>Bring your own models.</h2>
+          <h2>Local and remote, one registry.</h2>
           <p>
-            Credentials stay outside SQLite. Tsubame discovers models, stores only
-            redacted references, and resolves features by capability.
+            Tsubame resolves capabilities across local runtimes, native OS models,
+            localhost servers and BYOK APIs. Remote credentials stay outside SQLite.
           </p>
         </div>
         <select
@@ -315,7 +315,7 @@ export default function ProviderSettings() {
           ))}
           {!providers.length && (
             <div className="provider-list-empty">
-              Add OpenAI, Alibaba Model Studio, or any compatible endpoint.
+              Built-in local Providers appear here automatically. Add remote or local-server endpoints from the menu above.
             </div>
           )}
         </aside>
