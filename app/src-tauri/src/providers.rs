@@ -165,14 +165,13 @@ pub fn presets() -> Vec<ProviderPreset> {
     ]
 }
 
-
 pub fn builtin_local_providers() -> Vec<ProviderConfig> {
     use std::env;
 
     let faster_ready = env::var("TSUBAME_FASTER_WHISPER_PYTHON").is_ok();
     let funasr_ready = env::var("TSUBAME_FUNASR_PYTHON").is_ok();
-    let whisper_ready =
-        env::var("TSUBAME_WHISPER_CPP_BIN").is_ok() && env::var("TSUBAME_WHISPER_CPP_MODEL").is_ok();
+    let whisper_ready = env::var("TSUBAME_WHISPER_CPP_BIN").is_ok()
+        && env::var("TSUBAME_WHISPER_CPP_MODEL").is_ok();
     let apple_supported = cfg!(target_os = "macos");
     let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
 
@@ -313,10 +312,7 @@ pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
         .collect()
 }
 
-pub fn provider_target(
-    provider: &ProviderConfig,
-    model: &ModelDescriptor,
-) -> CapabilityTarget {
+pub fn provider_target(provider: &ProviderConfig, model: &ModelDescriptor) -> CapabilityTarget {
     CapabilityTarget {
         provider_id: provider.id.clone(),
         provider_name: provider.name.clone(),
@@ -667,9 +663,9 @@ mod tests {
     fn builtin_local_models_resolve_capabilities() {
         let models = builtin_provider_models("local.faster-whisper");
         assert!(models.iter().any(|model| model.model_id == "large-v3"));
-        assert!(models
-            .iter()
-            .all(|model| model.effective_capabilities.contains(&"speech.asr".to_string())));
+        assert!(models.iter().all(|model| model
+            .effective_capabilities
+            .contains(&"speech.asr".to_string())));
     }
 
     #[test]
