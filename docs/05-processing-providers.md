@@ -52,15 +52,15 @@ A **Model** declares:
 - feature flags such as timestamps, word timestamps, streaming, diarization or voice clone;
 - runtime requirements.
 
-## ASR engines
+## ASR Providers
 
-PR #7 implements the shared ASR result contract and execution adapters described in [Modular ASR Engines](16-modular-asr.md).
+PR #7 implements the shared ASR result contract and internal adapters described in [Modular ASR Engines](16-modular-asr.md). PR #8 unifies those adapters under the same Provider Registry in [Unified Provider Execution](17-unified-provider-execution.md).
 
-### Initial engines
+### Initial Providers
 
 The architecture should accommodate at least:
 
-- whisper.cpp as an independent local engine;
+- whisper.cpp as a system-managed local Provider;
 - Faster-Whisper / CTranslate2;
 - SenseVoice / FunASR;
 - Apple SpeechAnalyzer/SpeechTranscriber on supported macOS;
@@ -68,7 +68,7 @@ The architecture should accommodate at least:
 - OpenAI or compatible transcription endpoints;
 - future Japanese-specialized engines.
 
-Whisper is one implementation, not the definition of transcription.
+Whisper is one Provider/model family, not the definition of transcription.
 
 ## Transcript refinement
 
@@ -90,9 +90,9 @@ This is important for ASMR where whispering, breath sounds, elongated speech, na
 
 ## BYOK model discovery
 
-PR #6 implements the remote Provider Registry described in [Provider / Model Registry](15-provider-registry.md).
+PR #6 implements the Provider Registry described in [Provider / Model Registry](15-provider-registry.md).
 
-After a user connects a remote Provider:
+After a user connects a user-configured Provider:
 
 1. validate credentials;
 2. call provider model-list API when available;
@@ -119,7 +119,14 @@ Model discovery mode
 
 This enables compatible gateways/self-hosted services without creating a new settings UI for each vendor.
 
-## Local runtimes
+## Local and remote execution coexist
+
+Provider execution mode is explicit:
+
+- `remote_api` — paid/hosted API;
+- `local_server` — localhost/LAN API such as LM Studio;
+- `local_runtime` — Tsubame-managed worker/CLI runtime;
+- `native_os` — OS-provided model/runtime such as Apple Speech.
 
 Local provider examples:
 
@@ -129,7 +136,7 @@ Local provider examples:
 - Apple Speech native provider;
 - future ONNX/CoreML/CUDA workers.
 
-Each runtime advertises capabilities to the same Registry.
+Each local runtime advertises Provider + Model capabilities to the same Registry. Features never branch on online/offline mode.
 
 ## Processing profiles
 
