@@ -67,7 +67,7 @@ def main() -> None:
     )
     output = {
         "contract_version": 1,
-        "engine_id": "funasr-sensevoice",
+        "adapter_id": "funasr-sensevoice",
         "model_id": model_id,
         "language": language if language not in (None, "", "auto") else None,
         "segments": [
