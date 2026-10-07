@@ -108,7 +108,7 @@ Acceptance:
 
 ## PR #8 — Unified local/remote Provider execution
 
-**Status:** in progress.
+**Status:** complete.
 
 Goal: remove the accidental second “ASR Engine Registry” and make local + remote execution first-class Providers.
 
