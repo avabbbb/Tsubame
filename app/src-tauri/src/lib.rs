@@ -619,7 +619,9 @@ fn resolve_capability(
         candidates.extend(
             builtin_provider_models(&provider.id)
                 .into_iter()
-                .filter(|model| model.effective_capabilities.contains(&capability)),
+                .filter(|model| {
+                    model.available && model.effective_capabilities.contains(&capability)
+                }),
         );
     }
 
