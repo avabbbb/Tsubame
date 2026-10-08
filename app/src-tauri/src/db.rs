@@ -1,4 +1,6 @@
+use crate::alignment::AlignmentResult;
 use crate::providers::{resolve_capabilities, DiscoveredModel, ModelDescriptor, ProviderConfig};
+use crate::refine::{char_diff, DiffOp, GlossaryTerm, ValidatedProposal};
 use crate::subtitle::SubtitleCue;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -37,6 +39,46 @@ pub struct Segment {
     pub dirty_mix: bool,
     pub dirty_subtitle: bool,
     pub reviewed: bool,
+    pub asr_confidence: Option<f64>,
+    pub refine_confidence: Option<f64>,
+    pub align_provenance: String,
+    pub align_confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RefineProposal {
+    pub id: i64,
+    pub media_id: i64,
+    pub segment_id: i64,
+    pub base_revision: i64,
+    pub original_text: String,
+    pub proposed_text: String,
+    pub reason: String,
+    pub confidence: Option<f64>,
+    pub edit_ratio: f64,
+    pub provenance: String,
+    /// `pending`, `accepted`, `rejected`, `stale` or `superseded`.
+    pub status: String,
+    pub created_at: String,
+    pub diff: Vec<DiffOp>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ProposalDecision {
+    Applied {
+        segment: Segment,
+    },
+    Rejected,
+    /// The Segment changed after the proposal was made; nothing was written
+    /// to the Segment and the proposal is now `stale`.
+    Stale {
+        segment: Option<Segment>,
+    },
+    NotPending {
+        status: String,
+    },
+    NotFound,
 }
 
 pub struct MediaDb {
@@ -114,7 +156,34 @@ impl MediaDb {
              );
 
              CREATE INDEX IF NOT EXISTS idx_provider_models_available
-               ON provider_models(provider_id, available, model_id);",
+               ON provider_models(provider_id, available, model_id);
+
+             CREATE TABLE IF NOT EXISTS glossary_terms (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               term TEXT NOT NULL UNIQUE,
+               aliases TEXT NOT NULL DEFAULT '[]',
+               note TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+
+             CREATE TABLE IF NOT EXISTS refine_proposals (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               media_id INTEGER NOT NULL,
+               segment_id INTEGER NOT NULL,
+               base_revision INTEGER NOT NULL,
+               original_text TEXT NOT NULL,
+               proposed_text TEXT NOT NULL,
+               reason TEXT NOT NULL DEFAULT '',
+               confidence REAL,
+               edit_ratio REAL NOT NULL DEFAULT 0,
+               provenance TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'pending',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               FOREIGN KEY (media_id) REFERENCES media_files(id) ON DELETE CASCADE,
+               FOREIGN KEY (segment_id) REFERENCES segments(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_refine_proposals_media
+               ON refine_proposals(media_id, status, segment_id);",
         )?;
 
         Self::ensure_column(&conn, "media_files", "speed", "REAL NOT NULL DEFAULT 1.0")?;
@@ -137,6 +206,10 @@ impl MediaDb {
             ("dirty_mix", "INTEGER NOT NULL DEFAULT 0"),
             ("dirty_subtitle", "INTEGER NOT NULL DEFAULT 0"),
             ("reviewed", "INTEGER NOT NULL DEFAULT 0"),
+            ("asr_confidence", "REAL"),
+            ("refine_confidence", "REAL"),
+            ("align_provenance", "TEXT NOT NULL DEFAULT ''"),
+            ("align_confidence", "REAL"),
         ] {
             Self::ensure_column(&conn, "segments", name, definition)?;
         }
@@ -298,7 +371,8 @@ impl MediaDb {
             "SELECT id,media_id,start_ms,end_ms,source_text,translated_text,ordinal,revision,
                     transcript_provenance,asr_provenance,refine_provenance,
                     translation_provenance,tts_provenance,
-                    dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed
+                    dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
+                    asr_confidence,refine_confidence,align_provenance,align_confidence
              FROM segments
              WHERE media_id=?1
              ORDER BY start_ms,ordinal,id",
@@ -314,7 +388,8 @@ impl MediaDb {
                 "SELECT id,media_id,start_ms,end_ms,source_text,translated_text,ordinal,revision,
                         transcript_provenance,asr_provenance,refine_provenance,
                         translation_provenance,tts_provenance,
-                        dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed
+                        dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
+                        asr_confidence,refine_confidence,align_provenance,align_confidence
                  FROM segments WHERE id=?1",
                 [id],
                 row_to_segment,
@@ -355,6 +430,7 @@ impl MediaDb {
         &mut self,
         media_id: i64,
         cues: &[SubtitleCue],
+        confidences: &[Option<f64>],
         provenance: &str,
     ) -> rusqlite::Result<Vec<Segment>> {
         let tx = self.conn.transaction()?;
@@ -365,15 +441,22 @@ impl MediaDb {
                 "INSERT INTO segments(
                     media_id,start_ms,end_ms,source_text,translated_text,ordinal,revision,
                     transcript_provenance,asr_provenance,
-                    dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed
-                 ) VALUES(?1,?2,?3,?4,'',?5,0,?6,?6,1,1,1,1,0)",
+                    dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
+                    asr_confidence
+                 ) VALUES(?1,?2,?3,?4,'',?5,0,?6,?6,1,1,1,1,0,?7)",
                 params![
                     media_id,
                     cue.start_ms,
                     cue.end_ms,
                     cue.text,
                     ordinal as i64,
-                    provenance
+                    provenance,
+                    confidences
+                        .get(ordinal)
+                        .copied()
+                        .flatten()
+                        .filter(|value| value.is_finite())
+                        .map(|value| value.clamp(0.0, 1.0))
                 ],
             )?;
         }
@@ -687,6 +770,290 @@ impl MediaDb {
         }
         self.get_segment(id)
     }
+
+    // ----- glossary -----
+
+    pub fn list_glossary(&self) -> rusqlite::Result<Vec<GlossaryTerm>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id,term,aliases,note FROM glossary_terms ORDER BY term COLLATE NOCASE",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let aliases: String = row.get(2)?;
+                Ok(GlossaryTerm {
+                    id: row.get(0)?,
+                    term: row.get(1)?,
+                    aliases: serde_json::from_str(&aliases).unwrap_or_default(),
+                    note: row.get(3)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
+    pub fn save_glossary_term(
+        &self,
+        id: Option<i64>,
+        term: &str,
+        aliases: &[String],
+        note: &str,
+    ) -> rusqlite::Result<GlossaryTerm> {
+        let term = term.trim();
+        let mut clean: Vec<String> = Vec::new();
+        for alias in aliases {
+            let alias = alias.trim();
+            if !alias.is_empty() && alias != term && !clean.iter().any(|a| a == alias) {
+                clean.push(alias.to_string());
+            }
+        }
+        let aliases_json = serde_json::to_string(&clean).unwrap_or_else(|_| "[]".into());
+        let id = match id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE glossary_terms SET term=?1,aliases=?2,note=?3 WHERE id=?4",
+                    params![term, aliases_json, note.trim(), id],
+                )?;
+                id
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO glossary_terms(term,aliases,note) VALUES(?1,?2,?3)",
+                    params![term, aliases_json, note.trim()],
+                )?;
+                self.conn.last_insert_rowid()
+            }
+        };
+        Ok(GlossaryTerm {
+            id,
+            term: term.to_string(),
+            aliases: clean,
+            note: note.trim().to_string(),
+        })
+    }
+
+    pub fn delete_glossary_term(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM glossary_terms WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    // ----- refinement proposals -----
+
+    /// Stores validated proposals for review. Older pending proposals for the
+    /// same Segments are superseded, so each Segment has at most one pending
+    /// proposal. Canonical Segments are not touched.
+    pub fn insert_refine_proposals(
+        &mut self,
+        media_id: i64,
+        provenance: &str,
+        proposals: &[ValidatedProposal],
+    ) -> rusqlite::Result<Vec<RefineProposal>> {
+        let tx = self.conn.transaction()?;
+        for proposal in proposals {
+            tx.execute(
+                "UPDATE refine_proposals SET status='superseded'
+                 WHERE segment_id=?1 AND status='pending'",
+                [proposal.segment_id],
+            )?;
+            tx.execute(
+                "INSERT INTO refine_proposals(
+                    media_id,segment_id,base_revision,original_text,proposed_text,
+                    reason,confidence,edit_ratio,provenance,status
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'pending')",
+                params![
+                    media_id,
+                    proposal.segment_id,
+                    proposal.base_revision,
+                    proposal.original_text,
+                    proposal.proposed_text,
+                    proposal.reason,
+                    proposal.confidence,
+                    proposal.edit_ratio,
+                    provenance
+                ],
+            )?;
+        }
+        tx.commit()?;
+        self.list_refine_proposals(media_id, false)
+    }
+
+    pub fn list_refine_proposals(
+        &self,
+        media_id: i64,
+        include_resolved: bool,
+    ) -> rusqlite::Result<Vec<RefineProposal>> {
+        let sql = if include_resolved {
+            "SELECT p.id,p.media_id,p.segment_id,p.base_revision,p.original_text,p.proposed_text,
+                    p.reason,p.confidence,p.edit_ratio,p.provenance,p.status,p.created_at
+             FROM refine_proposals p JOIN segments s ON s.id=p.segment_id
+             WHERE p.media_id=?1 ORDER BY s.start_ms,s.ordinal,p.id"
+        } else {
+            "SELECT p.id,p.media_id,p.segment_id,p.base_revision,p.original_text,p.proposed_text,
+                    p.reason,p.confidence,p.edit_ratio,p.provenance,p.status,p.created_at
+             FROM refine_proposals p JOIN segments s ON s.id=p.segment_id
+             WHERE p.media_id=?1 AND p.status='pending' ORDER BY s.start_ms,s.ordinal,p.id"
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([media_id], row_to_proposal)?.collect();
+        rows
+    }
+
+    fn get_refine_proposal(&self, id: i64) -> rusqlite::Result<Option<RefineProposal>> {
+        self.conn
+            .query_row(
+                "SELECT id,media_id,segment_id,base_revision,original_text,proposed_text,
+                        reason,confidence,edit_ratio,provenance,status,created_at
+                 FROM refine_proposals WHERE id=?1",
+                [id],
+                row_to_proposal,
+            )
+            .optional()
+    }
+
+    /// Applies a pending proposal as a revision-checked source edit.
+    pub fn accept_refine_proposal(&mut self, id: i64) -> rusqlite::Result<ProposalDecision> {
+        let Some(proposal) = self.get_refine_proposal(id)? else {
+            return Ok(ProposalDecision::NotFound);
+        };
+        if proposal.status != "pending" {
+            return Ok(ProposalDecision::NotPending {
+                status: proposal.status,
+            });
+        }
+        let current = self.get_segment(proposal.segment_id)?;
+        let fresh = current.as_ref().is_some_and(|segment| {
+            segment.revision == proposal.base_revision
+                && segment.source_text == proposal.original_text
+        });
+        if !fresh {
+            self.conn.execute(
+                "UPDATE refine_proposals SET status='stale' WHERE id=?1",
+                [id],
+            )?;
+            return Ok(ProposalDecision::Stale { segment: current });
+        }
+
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE segments
+             SET source_text=?1,
+                 revision=revision+1,
+                 transcript_provenance=?2,
+                 refine_provenance=?2,
+                 refine_confidence=?3,
+                 dirty_translation=1,
+                 dirty_tts=1,
+                 dirty_mix=1,
+                 dirty_subtitle=1,
+                 reviewed=1
+             WHERE id=?4 AND revision=?5",
+            params![
+                proposal.proposed_text,
+                proposal.provenance,
+                proposal.confidence,
+                proposal.segment_id,
+                proposal.base_revision
+            ],
+        )?;
+        if changed == 0 {
+            tx.execute(
+                "UPDATE refine_proposals SET status='stale' WHERE id=?1",
+                [id],
+            )?;
+            tx.commit()?;
+            return Ok(ProposalDecision::Stale {
+                segment: self.get_segment(proposal.segment_id)?,
+            });
+        }
+        tx.execute(
+            "UPDATE refine_proposals SET status='accepted' WHERE id=?1",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(match self.get_segment(proposal.segment_id)? {
+            Some(segment) => ProposalDecision::Applied { segment },
+            None => ProposalDecision::NotFound,
+        })
+    }
+
+    pub fn reject_refine_proposal(&self, id: i64) -> rusqlite::Result<ProposalDecision> {
+        let Some(proposal) = self.get_refine_proposal(id)? else {
+            return Ok(ProposalDecision::NotFound);
+        };
+        if proposal.status != "pending" {
+            return Ok(ProposalDecision::NotPending {
+                status: proposal.status,
+            });
+        }
+        self.conn.execute(
+            "UPDATE refine_proposals SET status='rejected' WHERE id=?1",
+            [id],
+        )?;
+        Ok(ProposalDecision::Rejected)
+    }
+
+    // ----- alignment -----
+
+    /// Applies a validated alignment as one timing-only transaction. Any
+    /// revision mismatch rolls back the whole result.
+    pub fn apply_alignment(&mut self, result: &AlignmentResult) -> Result<Vec<Segment>, String> {
+        let provenance = format!("align:{}:{}", result.provider_id, result.model_id);
+        let tx = self.conn.transaction().map_err(|e| e.to_string())?;
+        for segment in &result.segments {
+            let changed = tx
+                .execute(
+                    "UPDATE segments
+                     SET start_ms=?1,
+                         end_ms=?2,
+                         revision=revision+1,
+                         align_provenance=?3,
+                         align_confidence=?4,
+                         dirty_mix=1,
+                         dirty_subtitle=1
+                     WHERE id=?5 AND media_id=?6 AND revision=?7",
+                    params![
+                        segment.start_ms,
+                        segment.end_ms,
+                        provenance,
+                        segment.confidence,
+                        segment.segment_id,
+                        result.media_id,
+                        segment.base_revision
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err(format!(
+                    "segment {} changed while alignment was applied; nothing was written",
+                    segment.segment_id
+                ));
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.get_segments(result.media_id)
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn row_to_proposal(row: &Row<'_>) -> rusqlite::Result<RefineProposal> {
+    let original_text: String = row.get(4)?;
+    let proposed_text: String = row.get(5)?;
+    let diff = char_diff(&original_text, &proposed_text);
+    Ok(RefineProposal {
+        id: row.get(0)?,
+        media_id: row.get(1)?,
+        segment_id: row.get(2)?,
+        base_revision: row.get(3)?,
+        original_text,
+        proposed_text,
+        reason: row.get(6)?,
+        confidence: row.get(7)?,
+        edit_ratio: row.get(8)?,
+        provenance: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+        diff,
+    })
 }
 
 fn row_to_segment(row: &Row<'_>) -> rusqlite::Result<Segment> {
@@ -709,6 +1076,10 @@ fn row_to_segment(row: &Row<'_>) -> rusqlite::Result<Segment> {
         dirty_mix: row.get(15)?,
         dirty_subtitle: row.get(16)?,
         reviewed: row.get(17)?,
+        asr_confidence: row.get(18)?,
+        refine_confidence: row.get(19)?,
+        align_provenance: row.get(20)?,
+        align_confidence: row.get(21)?,
     })
 }
 
@@ -935,6 +1306,274 @@ mod tests {
         assert!(!updated.dirty_tts);
         assert!(updated.dirty_mix);
         assert!(updated.dirty_subtitle);
+        Ok(())
+    }
+
+    fn asr_rows(db: &mut MediaDb, media_id: i64) -> rusqlite::Result<Vec<Segment>> {
+        db.replace_asr_segments(
+            media_id,
+            &[
+                SubtitleCue {
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    text: "こんばんわ".into(),
+                },
+                SubtitleCue {
+                    start_ms: 1_500,
+                    end_ms: 3_000,
+                    text: "あきやまはるるです".into(),
+                },
+            ],
+            &[Some(0.82), None],
+            "asr:local.faster-whisper:large-v3",
+        )
+    }
+
+    fn proposal(segment: &Segment, text: &str) -> ValidatedProposal {
+        ValidatedProposal {
+            segment_id: segment.id,
+            base_revision: segment.revision,
+            original_text: segment.source_text.clone(),
+            proposed_text: text.into(),
+            reason: "recognition error".into(),
+            confidence: Some(0.9),
+            edit_ratio: 0.2,
+        }
+    }
+
+    const REFINE: &str = "refine:lm-studio-local:qwen3-local";
+
+    #[test]
+    fn asr_confidence_is_persisted() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        assert_eq!(rows[0].asr_confidence, Some(0.82));
+        assert_eq!(rows[1].asr_confidence, None);
+        assert_eq!(rows[0].align_provenance, "");
+        Ok(())
+    }
+
+    #[test]
+    fn proposals_do_not_touch_canonical_segments_until_accepted() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        let stored =
+            db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[0], "こんばんは")])?;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, "pending");
+        assert!(stored[0]
+            .diff
+            .iter()
+            .any(|op| op.kind == "insert" && op.text == "は"));
+        assert_eq!(db.get_segment(rows[0].id)?.unwrap(), rows[0]);
+
+        let decision = db.accept_refine_proposal(stored[0].id)?;
+        let ProposalDecision::Applied { segment } = decision else {
+            panic!("expected applied, got {decision:?}");
+        };
+        assert_eq!(segment.source_text, "こんばんは");
+        assert_eq!(segment.revision, rows[0].revision + 1);
+        assert_eq!(segment.refine_provenance, REFINE);
+        assert_eq!(segment.transcript_provenance, REFINE);
+        assert_eq!(segment.asr_provenance, rows[0].asr_provenance);
+        assert_eq!(segment.refine_confidence, Some(0.9));
+        assert!(segment.dirty_translation && segment.dirty_tts && segment.dirty_mix);
+        assert!(segment.reviewed);
+        assert!(db.list_refine_proposals(media.id, false)?.is_empty());
+        assert_eq!(
+            db.list_refine_proposals(media.id, true)?[0].status,
+            "accepted"
+        );
+
+        assert!(matches!(
+            db.accept_refine_proposal(stored[0].id)?,
+            ProposalDecision::NotPending { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stale_proposal_never_overwrites_a_human_edit() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        let stored =
+            db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[1], "秋山はるるです")])?;
+        let edited = db
+            .update_segment(
+                rows[1].id,
+                rows[1].revision,
+                "秋山はるるだよ",
+                "",
+                rows[1].start_ms,
+                rows[1].end_ms,
+            )?
+            .unwrap();
+
+        let decision = db.accept_refine_proposal(stored[0].id)?;
+        assert!(matches!(decision, ProposalDecision::Stale { .. }));
+        assert_eq!(db.get_segment(rows[1].id)?.unwrap(), edited);
+        assert_eq!(db.list_refine_proposals(media.id, true)?[0].status, "stale");
+        Ok(())
+    }
+
+    #[test]
+    fn new_run_supersedes_pending_and_reject_is_final() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[0], "こんばんは")])?;
+        let second =
+            db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[0], "こんばんは。")])?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].proposed_text, "こんばんは。");
+        let all = db.list_refine_proposals(media.id, true)?;
+        assert_eq!(all.iter().filter(|p| p.status == "superseded").count(), 1);
+
+        assert_eq!(
+            db.reject_refine_proposal(second[0].id)?,
+            ProposalDecision::Rejected
+        );
+        assert_eq!(db.get_segment(rows[0].id)?.unwrap(), rows[0]);
+        assert_eq!(
+            db.reject_refine_proposal(9_999)?,
+            ProposalDecision::NotFound
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn re_transcribing_drops_old_proposals() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[0], "こんばんは")])?;
+        asr_rows(&mut db, media.id)?;
+        assert!(db.list_refine_proposals(media.id, true)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn glossary_roundtrip_cleans_aliases() -> rusqlite::Result<()> {
+        let db = MediaDb::open(Path::new(":memory:"))?;
+        let saved = db.save_glossary_term(
+            None,
+            " 秋山はるる ",
+            &[
+                "Haruru Akiyama".into(),
+                " ".into(),
+                "秋山はるる".into(),
+                "Haruru Akiyama".into(),
+            ],
+            "CV",
+        )?;
+        assert_eq!(saved.term, "秋山はるる");
+        assert_eq!(saved.aliases, vec!["Haruru Akiyama".to_string()]);
+        db.save_glossary_term(Some(saved.id), "秋山はるる", &["あきやまはるる".into()], "")?;
+        let all = db.list_glossary()?;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].aliases, vec!["あきやまはるる".to_string()]);
+        db.delete_glossary_term(saved.id)?;
+        assert!(db.list_glossary()?.is_empty());
+        Ok(())
+    }
+
+    fn alignment(rows: &[Segment], media_id: i64) -> AlignmentResult {
+        use crate::alignment::AlignedSegment;
+        AlignmentResult {
+            contract_version: 1,
+            provider_id: "local.aligner".into(),
+            model_id: "fa-1".into(),
+            media_id,
+            segments: rows
+                .iter()
+                .map(|row| AlignedSegment {
+                    segment_id: row.id,
+                    base_revision: row.revision,
+                    start_ms: row.start_ms + 40,
+                    end_ms: row.end_ms - 40,
+                    confidence: Some(0.8),
+                    words: vec![],
+                })
+                .collect(),
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn alignment_is_timing_only_and_keeps_tts_reusable() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        db.conn.execute(
+            "UPDATE segments SET dirty_tts=0, dirty_mix=0, dirty_subtitle=0 WHERE media_id=?1",
+            [media.id],
+        )?;
+        let rows = db.get_segments(media.id)?;
+        let aligned = db.apply_alignment(&alignment(&rows, media.id)).unwrap();
+        assert_eq!(aligned[0].start_ms, 40);
+        assert_eq!(aligned[0].source_text, rows[0].source_text);
+        assert_eq!(aligned[0].align_provenance, "align:local.aligner:fa-1");
+        assert_eq!(aligned[0].align_confidence, Some(0.8));
+        assert!(!aligned[0].dirty_tts);
+        assert!(aligned[0].dirty_mix && aligned[0].dirty_subtitle);
+        Ok(())
+    }
+
+    #[test]
+    fn alignment_rolls_back_entirely_on_stale_segment() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        let result = alignment(&rows, media.id);
+        db.update_segment(
+            rows[1].id,
+            rows[1].revision,
+            "変更",
+            "",
+            rows[1].start_ms,
+            rows[1].end_ms,
+        )?;
+        assert!(db.apply_alignment(&result).is_err());
+        assert_eq!(db.get_segment(rows[0].id)?.unwrap(), rows[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn migration_adds_refine_and_alignment_columns() -> rusqlite::Result<()> {
+        let path =
+            std::env::temp_dir().join(format!("tsubame-migration-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path)?;
+            conn.execute_batch(
+                "CREATE TABLE media_files (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   path TEXT NOT NULL UNIQUE,
+                   title TEXT NOT NULL,
+                   media_type TEXT NOT NULL,
+                   duration_ms INTEGER NOT NULL DEFAULT 0,
+                   playback_position INTEGER NOT NULL DEFAULT 0,
+                   file_size INTEGER NOT NULL DEFAULT 0,
+                   added_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE segments (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   media_id INTEGER NOT NULL,
+                   start_ms INTEGER NOT NULL,
+                   end_ms INTEGER NOT NULL,
+                   source_text TEXT NOT NULL DEFAULT '',
+                   translated_text TEXT NOT NULL DEFAULT '',
+                   ordinal INTEGER NOT NULL DEFAULT 0,
+                   revision INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO media_files(path,title,media_type) VALUES('old.mp3','old','audio');
+                 INSERT INTO segments(media_id,start_ms,end_ms,source_text) VALUES(1,0,900,'古い行');",
+            )?;
+        }
+        let db = MediaDb::open(&path)?;
+        let rows = db.get_segments(1)?;
+        assert_eq!(rows[0].source_text, "古い行");
+        assert_eq!(rows[0].refine_confidence, None);
+        assert_eq!(rows[0].align_provenance, "");
+        assert!(db.list_glossary()?.is_empty());
+        assert!(db.list_refine_proposals(1, true)?.is_empty());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
         Ok(())
     }
 }
