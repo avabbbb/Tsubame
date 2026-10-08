@@ -133,6 +133,8 @@ Acceptance:
 
 ## PR #9 — Transcript refinement and alignment
 
+**Status:** complete. See [Transcript Refinement and Alignment](18-transcript-refinement.md).
+
 Goal: support ASMR-specific ASR → refine → align → human review.
 
 Scope:
