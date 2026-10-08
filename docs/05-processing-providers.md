@@ -88,6 +88,8 @@ Audio
 
 This is important for ASMR where whispering, breath sounds, elongated speech, names and niche vocabulary can challenge a single ASR model.
 
+PR #9 implements refinement proposals, glossary context, human review and the forced-alignment contract described in [Transcript Refinement and Alignment](18-transcript-refinement.md).
+
 ## BYOK model discovery
 
 PR #6 implements the Provider Registry described in [Provider / Model Registry](15-provider-registry.md).

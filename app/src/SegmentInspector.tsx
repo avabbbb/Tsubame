@@ -12,6 +12,17 @@ type Props = {
   onUpdated: (segment: Segment) => void;
 };
 
+function confidenceLabel(value: number | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const percent = Math.round(value * 100);
+  return (
+    <em className={percent < 60 ? "confidence low" : "confidence"}>
+      {" "}
+      · {percent}%
+    </em>
+  );
+}
+
 function sameDraft(left: SegmentDraft, right: SegmentDraft) {
   return (
     left.source_text === right.source_text &&
@@ -272,8 +283,27 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
       <div className="provenance-list">
         <p className="section-label">PROVENANCE</p>
         <div><span>Transcript</span><strong>{segment.transcript_provenance || "Unknown"}</strong></div>
-        <div><span>ASR</span><strong>{segment.asr_provenance || "—"}</strong></div>
-        <div><span>Refine</span><strong>{segment.refine_provenance || "—"}</strong></div>
+        <div>
+          <span>ASR</span>
+          <strong>
+            {segment.asr_provenance || "—"}
+            {confidenceLabel(segment.asr_confidence)}
+          </strong>
+        </div>
+        <div>
+          <span>Refine</span>
+          <strong>
+            {segment.refine_provenance || "—"}
+            {confidenceLabel(segment.refine_confidence)}
+          </strong>
+        </div>
+        <div>
+          <span>Timing</span>
+          <strong>
+            {segment.align_provenance || "—"}
+            {confidenceLabel(segment.align_confidence)}
+          </strong>
+        </div>
         <div><span>Translation</span><strong>{segment.translation_provenance || "—"}</strong></div>
         <div><span>TTS</span><strong>{segment.tts_provenance || "—"}</strong></div>
       </div>

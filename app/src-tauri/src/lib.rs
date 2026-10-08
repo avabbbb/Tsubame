@@ -1,17 +1,21 @@
+mod alignment;
 mod asr;
 mod db;
 mod providers;
+mod refine;
 mod subtitle;
 
+use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
-use db::{MediaDb, MediaItem, Segment};
+use db::{MediaDb, MediaItem, ProposalDecision, RefineProposal, Segment};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
     discover_models, normalize_capabilities, presets, provider_target, read_secret, secret_ref,
     store_secret, CapabilityTarget, ModelDescriptor, ProviderConfig, ProviderInput, ProviderPreset,
     ProviderTestResult, CAPABILITY_VOCABULARY,
 };
-use serde::Serialize;
+use refine::{GlossaryTerm, RefineSegmentInput, MAX_BATCH_SEGMENTS};
+use serde::{Deserialize, Serialize};
 use std::{fs, path::Path, sync::Mutex};
 use subtitle::{SubtitleCue, SubtitleFormat};
 use tauri::{Manager, State};
@@ -372,7 +376,12 @@ async fn transcribe_media(
 
     let segments = {
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
-        db.replace_asr_segments(media.id, &cues, &provenance)
+        let confidences = result
+            .segments
+            .iter()
+            .map(|segment| segment.confidence)
+            .collect::<Vec<_>>();
+        db.replace_asr_segments(media.id, &cues, &confidences, &provenance)
             .map_err(|e| e.to_string())?
     };
 
@@ -701,6 +710,251 @@ fn set_model_capabilities(
         .ok_or_else(|| "provider model not found".to_string())
 }
 
+// ----- transcript refinement / glossary / alignment (PR #9) -----
+
+#[derive(Debug, Clone, Deserialize)]
+struct GlossaryInput {
+    id: Option<i64>,
+    term: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    note: String,
+}
+
+#[tauri::command]
+fn list_glossary(state: State<AppState>) -> Result<Vec<GlossaryTerm>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_glossary()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_glossary_term(
+    input: GlossaryInput,
+    state: State<AppState>,
+) -> Result<GlossaryTerm, String> {
+    if input.term.trim().is_empty() {
+        return Err("glossary term cannot be empty".into());
+    }
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .save_glossary_term(input.id, &input.term, &input.aliases, &input.note)
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                "this term is already in the glossary".to_string()
+            } else {
+                e.to_string()
+            }
+        })
+}
+
+#[tauri::command]
+fn delete_glossary_term(id: i64, state: State<AppState>) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_glossary_term(id)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RefineRunInput {
+    media_id: i64,
+    provider_id: String,
+    model_id: String,
+    /// Limit the run to these Segments; all Segments of the media otherwise.
+    segment_ids: Option<Vec<i64>>,
+    language: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RefineOutcome {
+    provenance: String,
+    proposals: Vec<RefineProposal>,
+    new_proposals: usize,
+    checked_segments: usize,
+    notes: Vec<String>,
+}
+
+#[tauri::command]
+async fn refine_transcript(
+    input: RefineRunInput,
+    state: State<'_, AppState>,
+) -> Result<RefineOutcome, String> {
+    let provider_id = input.provider_id.trim().to_string();
+    let model_id = input.model_id.trim().to_string();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err("refinement requires a Provider and a Model".into());
+    }
+
+    let (provider, segments, glossary) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let provider = db
+            .get_provider(&provider_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "refine Provider not found".to_string())?;
+        if !provider.enabled {
+            return Err("refine Provider is disabled".into());
+        }
+        let model = db
+            .list_provider_models(&provider_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|model| model.model_id == model_id)
+            .ok_or_else(|| "model not found in Provider inventory".to_string())?;
+        if !model.available {
+            return Err("model is currently unavailable".into());
+        }
+        if !model
+            .effective_capabilities
+            .iter()
+            .any(|capability| capability == "transcript.refine")
+        {
+            return Err("selected model does not resolve transcript.refine".into());
+        }
+        let segments = db.get_segments(input.media_id).map_err(|e| e.to_string())?;
+        let glossary = db.list_glossary().map_err(|e| e.to_string())?;
+        (provider, segments, glossary)
+    };
+
+    if provider.kind != "openai-compatible" {
+        return Err(format!(
+            "provider adapter {} does not implement transcript.refine yet",
+            provider.kind
+        ));
+    }
+
+    let wanted = input.segment_ids.as_ref();
+    let inputs = segments
+        .iter()
+        .filter(|segment| wanted.is_none_or(|ids| ids.contains(&segment.id)))
+        .filter(|segment| !segment.source_text.trim().is_empty())
+        .map(|segment| RefineSegmentInput {
+            segment_id: segment.id,
+            revision: segment.revision,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.source_text.clone(),
+        })
+        .collect::<Vec<_>>();
+    if inputs.is_empty() {
+        return Err("there is no transcript to refine".into());
+    }
+
+    let secret = provider_secret(&provider)?;
+    let mut accepted = Vec::new();
+    let mut notes = Vec::new();
+    let mut succeeded = 0usize;
+    let mut last_error = None;
+    let checked_segments = inputs.len();
+
+    for batch in inputs.chunks(MAX_BATCH_SEGMENTS) {
+        let request =
+            refine::build_request(input.language.clone(), batch.to_vec(), glossary.clone());
+        match refine::run_openai_compatible(&provider, secret.as_deref(), &model_id, &request).await
+        {
+            Ok(result) => {
+                succeeded += 1;
+                let report = refine::validate_proposals(&request, &result);
+                accepted.extend(report.accepted);
+                notes.extend(report.notes);
+            }
+            Err(error) => {
+                notes.push(format!(
+                    "A batch of {} lines failed and was left unchanged: {error}",
+                    batch.len()
+                ));
+                last_error = Some(error);
+            }
+        }
+    }
+    if succeeded == 0 {
+        return Err(last_error.unwrap_or_else(|| "refinement failed".into()));
+    }
+
+    let provenance = format!("refine:{provider_id}:{model_id}");
+    let new_proposals = accepted.len();
+    let proposals = {
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        db.insert_refine_proposals(input.media_id, &provenance, &accepted)
+            .map_err(|e| e.to_string())?
+    };
+
+    Ok(RefineOutcome {
+        provenance,
+        proposals,
+        new_proposals,
+        checked_segments,
+        notes,
+    })
+}
+
+#[tauri::command]
+fn list_refine_proposals(
+    media_id: i64,
+    include_resolved: Option<bool>,
+    state: State<AppState>,
+) -> Result<Vec<RefineProposal>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_refine_proposals(media_id, include_resolved.unwrap_or(false))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn accept_refine_proposal(id: i64, state: State<AppState>) -> Result<ProposalDecision, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .accept_refine_proposal(id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reject_refine_proposal(id: i64, state: State<AppState>) -> Result<ProposalDecision, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reject_refine_proposal(id)
+        .map_err(|e| e.to_string())
+}
+
+/// Applies a forced-alignment result produced by an aligner worker or agent.
+/// The result is validated against current Segment revisions first.
+#[tauri::command]
+fn apply_alignment_result(
+    result: AlignmentResult,
+    state: State<AppState>,
+) -> Result<Vec<Segment>, String> {
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    let media = db
+        .get_media(result.media_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "media not found".to_string())?;
+    let targets = db
+        .get_segments(media.id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|segment| AlignmentTarget {
+            segment_id: segment.id,
+            revision: segment.revision,
+        })
+        .collect::<Vec<_>>();
+    alignment::validate(&result, media.id, media.duration_ms, &targets)?;
+    db.apply_alignment(&result)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -732,7 +986,15 @@ pub fn run() {
             list_provider_models,
             resolve_capability,
             resolve_capability_targets,
-            set_model_capabilities
+            set_model_capabilities,
+            list_glossary,
+            save_glossary_term,
+            delete_glossary_term,
+            refine_transcript,
+            list_refine_proposals,
+            accept_refine_proposal,
+            reject_refine_proposal,
+            apply_alignment_result
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tsubame");

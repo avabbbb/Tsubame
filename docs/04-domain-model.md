@@ -43,8 +43,13 @@ revision
 
 asr_provenance
 refine_provenance
+align_provenance
 translation_provenance
 tts_provenance
+
+asr_confidence?
+refine_confidence?
+align_confidence?
 
 source_hash
 translation_hash
