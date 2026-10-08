@@ -11,6 +11,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AsrPanel from "./AsrPanel";
+import RefinePanel from "./RefinePanel";
 import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
 import SubtitleActions from "./SubtitleActions";
@@ -889,13 +890,24 @@ export default function App() {
             {current && (
               <>
                 {activeRail === "studio" && (
-                  <AsrPanel
-                    media={current}
-                    onSegments={(rows) => {
-                      setSegments(rows);
-                      setSelected(null);
-                    }}
-                  />
+                  <>
+                    <AsrPanel
+                      media={current}
+                      onSegments={(rows) => {
+                        setSegments(rows);
+                        setSelected(null);
+                      }}
+                    />
+                    <RefinePanel
+                      media={current}
+                      segments={segments}
+                      onSegmentUpdated={handleSegmentUpdated}
+                      onSelectSegment={(segmentId) => {
+                        const target = segments.find((row) => row.id === segmentId);
+                        if (target) chooseSegment(target);
+                      }}
+                    />
+                  </>
                 )}
 
                 <div className="timeline-head">

@@ -1283,3 +1283,82 @@ textarea:focus, input:focus, select:focus {
   font-size: 10px;
   line-height: 1.45;
 }
+
+
+/* ----- Transcript review (PR #9) ----- */
+.refine-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel, transparent);
+}
+.refine-head strong { display: block; font-size: 14px; }
+.refine-head small,
+.glossary-help { color: var(--muted); font-size: 12px; }
+.refine-run { display: flex; gap: 8px; }
+.refine-run select { flex: 1; min-width: 0; }
+.refine-empty,
+.refine-message {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 12px;
+}
+.glossary-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.glossary-toggle span {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.glossary-body { display: grid; gap: 6px; margin-top: 8px; }
+.glossary-term {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.glossary-term small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.glossary-add { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; }
+.proposal-list { display: grid; gap: 8px; }
+.proposal-list-head { display: flex; justify-content: space-between; align-items: center; }
+.proposal {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.proposal:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); transform: translateY(-1px); }
+.proposal time { color: var(--muted); font: 11px ui-monospace, monospace; }
+.proposal-diff { margin: 0; font-size: 15px; line-height: 1.5; }
+.proposal-diff del { color: var(--accent); text-decoration: line-through; opacity: 0.75; }
+.proposal-diff ins { color: #34c759; text-decoration: none; background: rgba(52, 199, 89, 0.14); border-radius: 3px; }
+.proposal footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.proposal footer small { color: var(--muted); font-size: 12px; }
+.proposal-actions { display: inline-flex; gap: 6px; }
+.confidence { font-style: normal; color: var(--muted); }
+.confidence.low { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .proposal { transition: none; }
+  .proposal:hover { transform: none; }
+}

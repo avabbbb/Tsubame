@@ -29,6 +29,10 @@ export interface Segment {
   dirty_mix: boolean;
   dirty_subtitle: boolean;
   reviewed: boolean;
+  asr_confidence: number | null;
+  refine_confidence: number | null;
+  align_provenance: string;
+  align_confidence: number | null;
 }
 
 export interface SegmentDraft {
@@ -146,3 +150,53 @@ export interface AsrTranscriptionOutcome {
   result: AsrResult;
   segments: Segment[];
 }
+
+export interface GlossaryTerm {
+  id: number;
+  term: string;
+  aliases: string[];
+  note: string;
+}
+
+export interface DiffOp {
+  kind: "equal" | "insert" | "delete";
+  text: string;
+}
+
+export type RefineProposalStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "stale"
+  | "superseded";
+
+export interface RefineProposal {
+  id: number;
+  media_id: number;
+  segment_id: number;
+  base_revision: number;
+  original_text: string;
+  proposed_text: string;
+  reason: string;
+  confidence: number | null;
+  edit_ratio: number;
+  provenance: string;
+  status: RefineProposalStatus;
+  created_at: string;
+  diff: DiffOp[];
+}
+
+export interface RefineOutcome {
+  provenance: string;
+  proposals: RefineProposal[];
+  new_proposals: number;
+  checked_segments: number;
+  notes: string[];
+}
+
+export type ProposalDecision =
+  | { outcome: "applied"; segment: Segment }
+  | { outcome: "rejected" }
+  | { outcome: "stale"; segment: Segment | null }
+  | { outcome: "not_pending"; status: RefineProposalStatus }
+  | { outcome: "not_found" };
