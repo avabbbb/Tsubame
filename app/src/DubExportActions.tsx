@@ -17,6 +17,7 @@ type Props = {
 export default function DubExportActions({ media, plan, onRefreshPlan }: Props) {
   const [kind, setKind] = useState<DubExportKind>("mix");
   const [limiter, setLimiter] = useState(true);
+  const [spatial, setSpatial] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const { jobs, cancel } = useJobs({ media_id: media.id, kind: "mix" });
@@ -39,11 +40,13 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
       const report = await invoke<DubMixReport>("export_dub_mix", {
         mediaId: media.id,
         outputPath: path,
-        options: { kind, limiter },
+        options: { kind, limiter, use_spatial: spatial },
       });
       const limited =
         report.limited_frames > 0 ? `, limiter touched ${report.limited_frames} frames` : "";
-      setMessage(`Exported ${report.clips.length} dub clips${limited}.`);
+      const spatialized =
+        report.spatial_clips > 0 ? `, ${report.spatial_clips} spatialized` : "";
+      setMessage(`Exported ${report.clips.length} dub clips${spatialized}${limited}.`);
       onRefreshPlan();
     } catch (errorValue) {
       setMessage(String(errorValue));
@@ -88,6 +91,17 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
           onChange={(event) => setLimiter(event.target.checked)}
         />
         Limiter
+      </label>
+      <label
+        className="dub-limiter-toggle"
+        title="Use each sentence's spatial render when one is current"
+      >
+        <input
+          type="checkbox"
+          checked={spatial}
+          onChange={(event) => setSpatial(event.target.checked)}
+        />
+        Spatial follow
       </label>
       <button disabled={busy || placed === 0} onClick={() => void exportAudio()}>
         {busy

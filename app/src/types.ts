@@ -325,4 +325,24 @@ export interface DubMixReport {
   output_frames: number;
   limited_frames: number;
   clips: { segment_id: number; start_frame: number; frames: number; gain_db: number }[];
+  /** Clips that used an `audio.spatialize` render instead of the raw TTS clip. */
+  spatial_clips: number;
+}
+
+/** `audio.spatialize` render mode (default `source_trajectory`). */
+export type SpatialMode = "source_trajectory" | "concurrent";
+
+/** `spatialize_segment` result (mirrors `spatial::RenderOutcome`). */
+export interface SpatialRenderOutcome {
+  segment_id: number;
+  media_id: number;
+  mode: SpatialMode;
+  render_key: string;
+  spatial_track_key: string;
+  tts_asset_key: string;
+  /** Absolute path of the stereo render (use `convertFileSrc`). */
+  path: string;
+  cache_hit: boolean;
+  analysis_cache_hit: boolean;
+  report: unknown | null;
 }

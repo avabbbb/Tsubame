@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { canCancel, jobProgress, useJobs } from "./jobs";
 import type {
   ResolvedTtsAsset,
   Segment,
+  SpatialRenderOutcome,
   SynthesisOutcome,
   VoiceProfile,
 } from "./types";
@@ -25,6 +27,11 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
   const [asset, setAsset] = useState<ResolvedTtsAsset | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [spatialBusy, setSpatialBusy] = useState(false);
+  const [render, setRender] = useState<SpatialRenderOutcome | null>(null);
+  const { jobs: spatialJobs, cancel } = useJobs({ segment_id: segment.id, kind: "spatial" });
+  const spatialJob = spatialJobs.find(canCancel) ?? null;
+  const spatialFraction = spatialJob ? jobProgress(spatialJob) : null;
 
   useEffect(() => {
     void invoke<VoiceProfile[]>("list_voice_profiles")
@@ -46,6 +53,36 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
         setNote(String(error));
       });
   }, [segment.id, segment.revision]);
+
+  // A render belongs to one TTS clip; drop the preview when the clip changes.
+  useEffect(() => {
+    setRender((current) => (current && current.tts_asset_key === asset?.key ? current : null));
+  }, [segment.id, asset?.key]);
+
+  async function spatialize() {
+    setSpatialBusy(true);
+    setNote(null);
+    try {
+      const outcome = await invoke<SpatialRenderOutcome>("spatialize_segment", {
+        segmentId: segment.id,
+      });
+      setRender(outcome);
+      setNote(outcome.cache_hit ? "Reused a cached spatial render." : "Spatialized.");
+    } catch (error) {
+      setNote(String(error));
+    } finally {
+      setSpatialBusy(false);
+    }
+  }
+
+  async function stopSpatial() {
+    if (!spatialJob) return;
+    try {
+      await cancel(spatialJob.id);
+    } catch (error) {
+      setNote(String(error));
+    }
+  }
 
   function chooseVoice(id: string) {
     setVoiceId(id);
@@ -121,6 +158,40 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
             {asset.channels === 1 ? "mono" : `${asset.channels} ch`}
             {segment.dirty_tts ? " · out of date" : ""}
           </p>
+          <button
+            className="secondary wide"
+            disabled={spatialBusy || unsaved || segment.dirty_tts}
+            title={
+              unsaved
+                ? "Save changes first"
+                : segment.dirty_tts
+                  ? "Synthesize the current translation first"
+                  : "Follow the original sentence's position in the stereo field"
+            }
+            onClick={() => void spatialize()}
+          >
+            {spatialBusy
+              ? spatialFraction !== null
+                ? `Spatializing ${Math.round(spatialFraction * 100)}%…`
+                : "Spatializing…"
+              : render
+                ? "Spatialize again"
+                : "Spatialize"}
+          </button>
+          {spatialJob && (
+            <button className="secondary wide" onClick={() => void stopSpatial()}>
+              Cancel
+            </button>
+          )}
+          {render && (
+            <audio
+              key={render.render_key}
+              controls
+              preload="none"
+              src={convertFileSrc(render.path)}
+              style={{ width: "100%" }}
+            />
+          )}
         </>
       )}
       {note && <p className="inspector-help">{note}</p>}
