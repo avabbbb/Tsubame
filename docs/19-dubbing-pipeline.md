@@ -182,6 +182,29 @@ Two layers, ported from Dubber `spatial_cues.py` / `spatial_rtf.py`:
    Low-confidence frames hold the last reliable position. Key `sha256(tts_asset_key ‖
    spatial_track_key ‖ mode ‖ window ‖ strengths ‖ renderer_version)`.
 
+### Host side (`spatial.rs`)
+
+- Job kind `spatial`, registered at startup. Commands `analyze_spatial(media_id)` and
+  `spatialize_segment(segment_id, mode?)` (mode defaults to `source_trajectory`) run
+  through the job runner; progress/cancel via `job://update` / `cancel_job`.
+- The reference is the media file itself (`reference_kind: mix`, default analysis
+  params); the host hashes it to derive `spatial_track_key`. Analysis is cached once per
+  media by that key, renders per clip by `render_key`. A worker result whose key differs
+  from the host's fails with `spatial_key_mismatch`.
+- Outputs are promoted into the asset store at `spatial/tracks/<key[0..2]>/<key>.npz`
+  (+ `.json` summary) and `spatial/renders/<key[0..2]>/<key>.wav` and recorded in
+  `spatial_assets`; a verified cache row (row + file + sha256) skips the worker.
+- Worker process: `TSUBAME_PYTHON` or `python3`; script `TSUBAME_SPATIAL_WORKER` or
+  `workers/dubber/spatial/worker.py` relative to `CARGO_MANIFEST_DIR` (dev-time path;
+  packaging belongs to the runtime bootstrap, PR plan #12).
+- Mix lookup: `MixOptions.use_spatial` (default on) with `spatial_mode` (default
+  `source_trajectory`). For each clip the mixer computes the clip's *current* render key
+  (its TTS asset key, the media's current track key, the mode, its window, default
+  strengths); when a verified render exists it is mixed instead of the raw TTS clip,
+  otherwise the raw clip is used. The report carries `spatial_clips`.
+- `concurrent` renders are planned with the default placement params, so the mix only
+  finds them when it is exported with default placement params too.
+
 ## audio.mix
 
 Offline export renders `original + Σ placed (spatialized) dub clips`. Original samples
@@ -225,12 +248,46 @@ Deviations / limits of this implementation (PR #10):
   m4a, flac…) fail with `unsupported_source_format`; decoding them needs the app-managed
   FFmpeg runtime or a permissively licensed decoder (Symphonia is MPL-2.0 and was not
   added). FLAC output is not implemented. RIFF limits a file to 4 GiB.
-- Spatialized clips are not looked up yet: the mixer takes each Segment's TTS asset path.
-  Once `audio.spatialize` assets exist the integrator passes their paths in `MixClip`.
+- Spatialized clips are looked up by render key (see audio.spatialize § Host side); a
+  clip without a current render is mixed from its raw TTS asset.
 - Export does not clear `dirty_mix`.
 
-## Defaults pending user confirmation
+## Defaults (confirmed by product owner 2026-10-09)
 
-anchor `end` + `beat_ms` 300; drift limit 4000 ms → flag only; spatial mode
-`source_trajectory`; Chinese target `zh-Hans` by default with `zh-Hant` available;
-first remote TTS = OpenAI-compatible adapter (provider-agnostic).
+- Placement: the dub starts at the original sentence's end + 300 ms (`anchor: end`,
+  `beat_ms: 300`).
+- Spatial follow: default mode `source_trajectory` (`concurrent` available).
+- Drift: cumulative drift > 4000 ms is **flagged only** (`drift_exceeded`); the user
+  chooses to shorten the translation or skip the sentence. Nothing is cut or sped up.
+- Chinese target: `zh-Hans` by default, `zh-Hant` available.
+- First remote TTS: the OpenAI-compatible adapter (provider-agnostic).
+
+## Implementation deviations (PR #10)
+
+Where the implementation refines or departs from the frozen text above:
+
+- **Translate context is batch-level.** `context_before` / `context_after` are the 4
+  non-empty source lines (`CONTEXT_LINES`) just outside each batch, not per sentence.
+- **Empty translation = intentional filler.** A Segment whose machine translation came
+  back empty (`translate:*` provenance, empty text) is a deliberate filler: it is not
+  re-selected for translation and TTS skips it.
+- **TTS refuses dirty translations** (`dirty_translation=1`), empty text and `dub_skip`
+  sentences; it never falls back to source text.
+- **TTS cache key encoding**: length-prefixed fields after a domain tag, NFC text, canonical
+  params (see speech.tts implementation notes).
+- **Worker output paths** are found by key convention: `path` / `*_path` (string) and
+  `paths` / `*_paths` (list) at any depth of `output`; each must resolve to an existing
+  regular file inside `out_dir`.
+- **`out_dir` is host-set**: the host creates it and overwrites any caller value in
+  `input`.
+- **Interrupted jobs**: on startup every `queued` / `running` row is marked `failed` with
+  `interrupted` (retryable), instead of resuming.
+- **Cancelled translation** surfaces as an error (`cancelled`, retryable); batches applied
+  before the cancel are kept.
+- **Limiter tail**: the limiter acts only where a clip contributes plus its release tail;
+  elsewhere the original is copied bit-identically.
+- **WAV only** for mix input/output and spatial reference/clips; compressed sources fail
+  with `unsupported_source_format`; FLAC output is not implemented.
+- **Spatial reference hashing cost**: the host sha256-hashes the whole media file to
+  derive the track key, about three full reads per render (analysis check, render, mix
+  lookup). Follow-up: cache the hash by path + size + mtime.
