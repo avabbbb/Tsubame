@@ -22,3 +22,5 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 keyring = "4.2"
 uuid = { version = "1", features = ["v4"] }
+# PR #10 jobs/worker host: input-file immutability (sha256).
+sha2 = "0.10"

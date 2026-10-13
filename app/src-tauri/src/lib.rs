@@ -4,6 +4,7 @@ mod db;
 mod providers;
 mod refine;
 mod subtitle;
+mod worker; // PR #10: worker protocol v1 host
 
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
