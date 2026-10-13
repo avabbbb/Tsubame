@@ -12,6 +12,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AsrPanel from "./AsrPanel";
 import RefinePanel from "./RefinePanel";
+import TranslatePanel from "./TranslatePanel";
 import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
 import SubtitleActions from "./SubtitleActions";
@@ -905,6 +906,18 @@ export default function App() {
                       onSelectSegment={(segmentId) => {
                         const target = segments.find((row) => row.id === segmentId);
                         if (target) chooseSegment(target);
+                      }}
+                    />
+                    <TranslatePanel
+                      media={current}
+                      segments={segments}
+                      onSegments={(rows) => {
+                        setSegments(rows);
+                        setSelected((currentSelection) =>
+                          currentSelection
+                            ? (rows.find((row) => row.id === currentSelection.id) ?? null)
+                            : null,
+                        );
                       }}
                     />
                   </>

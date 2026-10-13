@@ -194,6 +194,36 @@ export interface RefineOutcome {
   notes: string[];
 }
 
+export type TranslateTargetLanguage = "en" | "zh-Hans" | "zh-Hant";
+
+export interface TranslateBatchFailure {
+  segment_ids: number[];
+  error: string;
+}
+
+/** Result of the `translate_segments` command (text.translate). */
+export interface TranslateOutcome {
+  provenance: string;
+  target_language: TranslateTargetLanguage;
+  requested: number;
+  translated: number[];
+  unchanged: number[];
+  stale: number[];
+  protected: number[];
+  failed_batches: TranslateBatchFailure[];
+  cancelled: boolean;
+  notes: string[];
+  segments: Segment[];
+}
+
+/** Payload of the `translate://progress` event. */
+export interface TranslateProgress {
+  media_id: number;
+  done: number;
+  total: number;
+  stage: string;
+}
+
 export type ProposalDecision =
   | { outcome: "applied"; segment: Segment }
   | { outcome: "rejected" }
