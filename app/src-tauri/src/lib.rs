@@ -2,6 +2,7 @@ mod alignment;
 mod asr;
 mod db;
 mod jobs; // PR #10: jobs table + runner
+mod placement;
 mod providers;
 mod refine;
 mod subtitle;
@@ -13,6 +14,7 @@ mod worker; // PR #10: worker protocol v1 host
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, ProposalDecision, RefineProposal, Segment};
+use placement::{DubPlan, PlacementParams};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
     discover_models, normalize_capabilities, presets, provider_target, read_secret, secret_ref,
@@ -1165,6 +1167,18 @@ async fn translate_segments(
     })
 }
 
+/// `dub.place` for one media item. The plan is derived (not persisted): it is
+/// recomputed from canonical Segments + TTS assets on every call.
+#[tauri::command]
+fn plan_dub(
+    media_id: i64,
+    params: Option<PlacementParams>,
+    state: State<AppState>,
+) -> Result<DubPlan, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    placement::plan_dub(db.connection(), media_id, params)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1213,6 +1227,7 @@ pub fn run() {
             tts::synthesize_segment,
             tts::get_tts_asset,
             tts::set_segment_dub_skip,
+            plan_dub,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,

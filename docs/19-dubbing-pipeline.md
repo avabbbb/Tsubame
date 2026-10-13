@@ -152,6 +152,23 @@ shorter translation or skip). Output per sentence `{segment_id, dub_start_ms,
 dub_end_ms, drift_ms, flags[]}`. Incremental: after one clip changes, recompute from
 that sentence until drift returns to the previous plan.
 
+Implementation (`placement.rs`):
+- `planned` is clamped at 0 (a negative `beat_ms` with `anchor=start` near t=0).
+  `beat_ms` ∈ ±30 000, `min_gap_ms` ∈ 0..60 000, `max_drift_ms` ≥ 0; drift exactly
+  equal to `max_drift_ms` is not flagged.
+- Sentences with `dub_skip=1` get flag `skipped`; sentences without a TTS asset (or a
+  zero-length one) get `no_clip`. Neither occupies time. Their row keeps the contract
+  shape with `dub_start_ms = dub_end_ms = planned`, `drift_ms = 0`; consumers test the
+  flags (`Placement::is_placed`).
+- `replan(previous_plan, sentences, params, changed_index, new_duration)` recomputes
+  from the changed sentence and stops when the chain carry (end of the last placed dub)
+  equals the previous plan's carry; it returns the plan plus the recomputed index range
+  and always equals a full `place()`.
+- The plan is derived, not persisted: `plan_dub(media_id, params?)` recomputes it from
+  Segments (`start_ms`, `end_ms`, `dub_skip`) joined to `tts_assets.duration_ms` via
+  `tts_asset_key`, in `start_ms, ordinal, id` order. A key without an asset row reads as
+  `no_clip`. Before the TTS migration exists the reader treats every Segment as `no_clip`.
+
 ## audio.spatialize
 
 Two layers, ported from Dubber `spatial_cues.py` / `spatial_rtf.py`:

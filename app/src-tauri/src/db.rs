@@ -231,6 +231,12 @@ impl MediaDb {
         &self.conn
     }
 
+    /// Read access for pure modules that query the contract schema directly
+    /// (`placement::load_dub_sentences`, `mix::export_inputs`).
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     fn ensure_column(
         conn: &Connection,
         table: &str,
