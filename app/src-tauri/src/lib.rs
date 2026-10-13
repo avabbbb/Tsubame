@@ -2,6 +2,7 @@ mod alignment;
 mod asr;
 mod db;
 mod jobs; // PR #10: jobs table + runner
+mod mix;
 mod placement;
 mod providers;
 mod refine;
@@ -14,6 +15,7 @@ mod worker; // PR #10: worker protocol v1 host
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, ProposalDecision, RefineProposal, Segment};
+use mix::{MixOptions, MixReport, ProgressSink};
 use placement::{DubPlan, PlacementParams};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
@@ -1179,6 +1181,72 @@ fn plan_dub(
     placement::plan_dub(db.connection(), media_id, params)
 }
 
+#[derive(Clone, Serialize)]
+struct MixProgressEvent {
+    media_id: i64,
+    stage: String,
+    done: u64,
+    total: u64,
+}
+
+/// Temporary progress sink until `jobs.rs` adapts its job handle to
+/// `mix::ProgressSink`: emits `mix://progress`, never cancels.
+struct EventProgress {
+    app: AppHandle,
+    media_id: i64,
+}
+
+impl ProgressSink for EventProgress {
+    fn progress(&self, stage: &str, done: u64, total: u64) {
+        let _ = self.app.emit(
+            "mix://progress",
+            MixProgressEvent {
+                media_id: self.media_id,
+                stage: stage.to_string(),
+                done,
+                total,
+            },
+        );
+    }
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// `audio.mix` offline export: original + placed dub clips (or the dub stem).
+/// Reads inputs under the DB lock, then renders on a blocking thread without it.
+#[tauri::command]
+async fn export_dub_mix(
+    app: AppHandle,
+    media_id: i64,
+    output_path: String,
+    options: Option<MixOptions>,
+) -> Result<MixReport, String> {
+    let options = options.unwrap_or_default();
+    options.validate()?;
+    let inputs = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        mix::export_inputs(db.connection(), media_id, &options.placement)?
+    };
+    let sink = EventProgress {
+        app: app.clone(),
+        media_id,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        mix::render(
+            &inputs.original_path,
+            &inputs.clips,
+            Path::new(&output_path),
+            &options,
+            &sink,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1228,6 +1296,7 @@ pub fn run() {
             tts::get_tts_asset,
             tts::set_segment_dub_skip,
             plan_dub,
+            export_dub_mix,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,

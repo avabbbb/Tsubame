@@ -25,3 +25,5 @@ uuid = { version = "1", features = ["v4"] }
 # PR #10 jobs/worker host input immutability + TTS cache keys (sha256).
 sha2 = "0.10"
 unicode-normalization = "0.1"
+# WAV read/write for the offline dub mix (Apache-2.0, pure Rust, no deps).
+hound = "3.5"

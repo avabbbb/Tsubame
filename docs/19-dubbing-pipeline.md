@@ -189,6 +189,46 @@ are only summed with dub samples; a limiter, when enabled, acts on the sum bus o
 can be disabled. Loudness match per clip: target = source sentence active RMS + offset,
 clamped. Output WAV/FLAC; also a dub-only stem export.
 
+Implementation (`mix.rs`, command `export_dub_mix(media_id, output_path, options?)`):
+- Frames where no dub clip contributes are written from the original's raw samples
+  (bit-identical). With the limiter disabled the whole output equals the original
+  except where clips play (tested). The mix keeps the original's WAV format (rate,
+  channels, bit depth, int/float).
+- Limiter (default on, `limiter: false` disables): instant attack, 50 ms release,
+  ceiling -1 dBFS, linked across channels, applied to the sum only where a clip
+  contributes plus its release tail (until gain is within 1e-6 of unity). It only stops
+  the dub from pushing the sum above `max(ceiling, original peak)`, so it never limits
+  what the original alone already does. The stem never passes through it.
+- Loudness (ported from Dubber `active_rms_dbfs` / `prepare_chinese_clip`): source level
+  = gated active RMS (50 ms frames, relative 20 dB gate) of the original's mono mix over
+  the sentence window; target = level + `relative_loudness_db` (-8) clamped to
+  [`min_active_rms_dbfs` -42, `max_active_rms_dbfs` -30]; a silent source targets the
+  minimum; one gain capped at `max_boost_db` (+12); 8 ms edge fades; per-clip peak
+  ceiling `clip_peak_dbfs` (-9); then `dub_gain_db`. None of this changes clip length.
+- Clips are resampled to the original rate with a band-limited windowed-sinc resampler
+  (rate change only; output length = round(len · to/from)) and channel-mapped (mono →
+  both channels of stereo, centre of 3+ channels; extra channels dropped; N → mono by
+  averaging). A decoded clip whose duration differs from `tts_assets.duration_ms` by
+  more than 50 ms fails with `clip_duration_mismatch` instead of being mixed.
+- When the last dub ends after the original, the output is extended with silence on the
+  original side instead of truncating the dub.
+- `kind: dub_stem` writes the dub layer only, 32-bit float WAV at the original rate and
+  channel count, same length as the mix.
+- Output goes to `<output>.partial` and is renamed on success; failure or cancel removes
+  it. Writing over the original media file is refused.
+- Progress/cancel through the local `ProgressSink` trait (`progress(stage, done, total)`,
+  `is_cancelled()`); until `jobs.rs` wires it, the command emits `mix://progress` events
+  and cannot be cancelled from the UI.
+
+Deviations / limits of this implementation (PR #10):
+- Input and output are **WAV only** (`hound`, Apache-2.0). Compressed originals (mp3,
+  m4a, flac…) fail with `unsupported_source_format`; decoding them needs the app-managed
+  FFmpeg runtime or a permissively licensed decoder (Symphonia is MPL-2.0 and was not
+  added). FLAC output is not implemented. RIFF limits a file to 4 GiB.
+- Spatialized clips are not looked up yet: the mixer takes each Segment's TTS asset path.
+  Once `audio.spatialize` assets exist the integrator passes their paths in `MixClip`.
+- Export does not clear `dirty_mix`.
+
 ## Defaults pending user confirmation
 
 anchor `end` + `beat_ms` 300; drift limit 4000 ms → flag only; spatial mode
