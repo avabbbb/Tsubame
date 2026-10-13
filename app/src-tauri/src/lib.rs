@@ -1,6 +1,7 @@
 mod alignment;
 mod asr;
 mod db;
+mod jobs; // PR #10: jobs table + runner
 mod providers;
 mod refine;
 mod subtitle;
@@ -964,6 +965,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
             app.manage(AppState { db: Mutex::new(db) });
+            jobs::install(app, &dir.join("tsubame.db"))?; // PR #10: jobs + job://update
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -995,7 +997,11 @@ pub fn run() {
             list_refine_proposals,
             accept_refine_proposal,
             reject_refine_proposal,
-            apply_alignment_result
+            apply_alignment_result,
+            // PR #10: jobs
+            jobs::list_jobs,
+            jobs::cancel_job,
+            jobs::retry_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tsubame");
