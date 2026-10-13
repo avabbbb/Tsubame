@@ -6,6 +6,7 @@ import {
   segmentDraft,
 } from "./segmentEditor";
 import type { Segment, SegmentDraft } from "./types";
+import SegmentDubPanel from "./SegmentDubPanel";
 
 type Props = {
   segment: Segment | null;
@@ -307,6 +308,8 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
         <div><span>Translation</span><strong>{segment.translation_provenance || "—"}</strong></div>
         <div><span>TTS</span><strong>{segment.tts_provenance || "—"}</strong></div>
       </div>
+
+      <SegmentDubPanel segment={segment} unsaved={dirty} onUpdated={onUpdated} />
 
       <button className="primary wide" disabled={saving || !dirty || !draft} onClick={() => void save()}>
         {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}

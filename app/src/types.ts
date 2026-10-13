@@ -230,3 +230,65 @@ export type ProposalDecision =
   | { outcome: "stale"; segment: Segment | null }
   | { outcome: "not_pending"; status: RefineProposalStatus }
   | { outcome: "not_found" };
+
+export type VoiceKind = "preset" | "design";
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  kind: VoiceKind;
+  provider_id: string;
+  model_id: string;
+  preset_voice: string;
+  design_prompt: string;
+  language: string;
+  params_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VoiceProfileInput {
+  id: string | null;
+  name: string;
+  kind: VoiceKind;
+  provider_id: string;
+  model_id: string;
+  preset_voice: string | null;
+  design_prompt: string | null;
+  language: string;
+  params_json: string | null;
+}
+
+export interface TtsAsset {
+  key: string;
+  path: string;
+  sha256: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  provider_id: string;
+  model_id: string;
+  voice_profile_id: string;
+  created_at: string;
+}
+
+export interface ResolvedTtsAsset {
+  segment_id: number;
+  key: string;
+  path: string;
+  sha256: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  provider_id: string;
+  model_id: string;
+  voice_profile_id: string;
+  dub_skip: boolean;
+}
+
+export interface SynthesisOutcome {
+  segment: Segment;
+  asset: TtsAsset;
+  path: string;
+  cache_hit: boolean;
+}

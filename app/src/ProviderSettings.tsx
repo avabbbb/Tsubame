@@ -7,6 +7,7 @@ import type {
   ProviderPreset,
   ProviderTestResult,
 } from "./types";
+import VoiceProfileSettings from "./VoiceProfileSettings";
 
 const EMPTY_DRAFT: ProviderInput = {
   id: null,
@@ -612,6 +613,8 @@ export default function ProviderSettings() {
           {message && <div className="provider-message">{message}</div>}
         </div>
       </div>
+
+      <VoiceProfileSettings />
     </section>
   );
 }
