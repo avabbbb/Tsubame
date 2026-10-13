@@ -219,10 +219,16 @@ impl MediaDb {
         ] {
             Self::ensure_column(&conn, "segments", name, definition)?;
         }
+        crate::tts::migrate(&conn)?;
 
         crate::jobs::migrate(&conn)?; // PR #10: jobs table (jobs.rs)
 
         Ok(Self { conn })
+    }
+
+    /// Shared connection for modules that own their own tables (voice, tts).
+    pub fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     fn ensure_column(

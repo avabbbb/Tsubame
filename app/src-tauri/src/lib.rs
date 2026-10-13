@@ -6,6 +6,8 @@ mod providers;
 mod refine;
 mod subtitle;
 mod translate;
+mod tts;
+mod voice;
 mod worker; // PR #10: worker protocol v1 host
 
 use alignment::{AlignmentResult, AlignmentTarget};
@@ -1205,6 +1207,12 @@ pub fn run() {
             reject_refine_proposal,
             apply_alignment_result,
             translate_segments,
+            voice::list_voice_profiles,
+            voice::save_voice_profile,
+            voice::delete_voice_profile,
+            tts::synthesize_segment,
+            tts::get_tts_asset,
+            tts::set_segment_dub_skip,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,
