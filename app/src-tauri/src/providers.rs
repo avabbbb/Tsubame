@@ -18,6 +18,7 @@ pub const CAPABILITY_VOCABULARY: &[&str] = &[
     "audio.separate",
     "speaker.diarize",
     "audio.mix",
+    "audio.spatialize",
     "embedding.text",
     "image.generate",
 ];

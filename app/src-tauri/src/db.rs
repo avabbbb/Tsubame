@@ -43,6 +43,10 @@ pub struct Segment {
     pub refine_confidence: Option<f64>,
     pub align_provenance: String,
     pub align_confidence: Option<f64>,
+    /// Content-addressed key of the current `speech.tts` clip (`tts.rs`).
+    pub tts_asset_key: Option<String>,
+    /// Excluded from dub placement and mix.
+    pub dub_skip: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -86,6 +90,12 @@ pub struct MediaDb {
 }
 
 impl MediaDb {
+    /// Transaction access for feature modules that own their own
+    /// revision-checked writes (e.g. `translate::apply_translations`).
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
@@ -213,8 +223,18 @@ impl MediaDb {
         ] {
             Self::ensure_column(&conn, "segments", name, definition)?;
         }
+        crate::tts::migrate(&conn)?;
+        crate::spatial::migrate(&conn)?; // audio.spatialize cache (spatial.rs)
+
+        crate::jobs::migrate(&conn)?; // PR #10: jobs table (jobs.rs)
 
         Ok(Self { conn })
+    }
+
+    /// Shared read access for modules that query the schema directly or own
+    /// their own tables (voice, tts, placement, mix).
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     fn ensure_column(
@@ -372,7 +392,8 @@ impl MediaDb {
                     transcript_provenance,asr_provenance,refine_provenance,
                     translation_provenance,tts_provenance,
                     dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
-                    asr_confidence,refine_confidence,align_provenance,align_confidence
+                    asr_confidence,refine_confidence,align_provenance,align_confidence,
+                    tts_asset_key,dub_skip
              FROM segments
              WHERE media_id=?1
              ORDER BY start_ms,ordinal,id",
@@ -389,7 +410,8 @@ impl MediaDb {
                         transcript_provenance,asr_provenance,refine_provenance,
                         translation_provenance,tts_provenance,
                         dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
-                        asr_confidence,refine_confidence,align_provenance,align_confidence
+                        asr_confidence,refine_confidence,align_provenance,align_confidence,
+                        tts_asset_key,dub_skip
                  FROM segments WHERE id=?1",
                 [id],
                 row_to_segment,
@@ -1080,6 +1102,8 @@ fn row_to_segment(row: &Row<'_>) -> rusqlite::Result<Segment> {
         refine_confidence: row.get(19)?,
         align_provenance: row.get(20)?,
         align_confidence: row.get(21)?,
+        tts_asset_key: row.get(22)?,
+        dub_skip: row.get(23)?,
     })
 }
 

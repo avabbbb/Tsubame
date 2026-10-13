@@ -1,13 +1,24 @@
 mod alignment;
 mod asr;
 mod db;
+mod jobs; // PR #10: jobs table + runner
+mod mix;
+mod placement;
 mod providers;
 mod refine;
+mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
+mod translate;
+mod tts;
+mod voice;
+mod worker; // PR #10: worker protocol v1 host
 
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, ProposalDecision, RefineProposal, Segment};
+use jobs::{JobError, JobHandle, JobRunner, JobsState, NewJob};
+use mix::MixOptions;
+use placement::{DubPlan, PlacementParams};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
     discover_models, normalize_capabilities, presets, provider_target, read_secret, secret_ref,
@@ -16,9 +27,13 @@ use providers::{
 };
 use refine::{GlossaryTerm, RefineSegmentInput, MAX_BATCH_SEGMENTS};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path, sync::Mutex};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use subtitle::{SubtitleCue, SubtitleFormat};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 struct AppState {
     db: Mutex<MediaDb>,
@@ -955,6 +970,362 @@ fn apply_alignment_result(
     db.apply_alignment(&result)
 }
 
+// ----- translation (PR #10, text.translate) -----
+
+/// Job kind of `translate_segments` runs.
+const TRANSLATE_JOB: &str = "translate";
+
+/// `input_json` of a `translate` job: the `translate_segments` arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TranslateJobInput {
+    media_id: i64,
+    segment_ids: Option<Vec<i64>>,
+    provider_id: String,
+    model_id: String,
+    source_language: Option<String>,
+    target_language: String,
+    overwrite_human_edits: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TranslateOutcome {
+    provenance: String,
+    target_language: String,
+    /// Lines sent to the Provider.
+    requested: usize,
+    translated: Vec<i64>,
+    unchanged: Vec<i64>,
+    stale: Vec<i64>,
+    protected: Vec<i64>,
+    failed_batches: Vec<translate::BatchFailure>,
+    cancelled: bool,
+    notes: Vec<String>,
+    /// All Segments of the media after the run.
+    segments: Vec<Segment>,
+}
+
+fn invalid_input(message: impl Into<String>) -> JobError {
+    JobError::new("invalid_input", false, message)
+}
+
+fn db_error(error: impl std::fmt::Display) -> JobError {
+    JobError::new("db", true, error.to_string())
+}
+
+/// Runner for `translate` jobs (registered at startup; also used by
+/// `translate_segments`).
+fn translate_runner(app: AppHandle) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let input: TranslateJobInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid_input(format!("invalid translate job input: {e}")))?;
+        let outcome = tauri::async_runtime::block_on(run_translate_job(&app, input, job))?;
+        serde_json::to_value(outcome).map_err(|e| JobError::new("internal", false, e.to_string()))
+    })
+}
+
+async fn run_translate_job(
+    app: &AppHandle,
+    input: TranslateJobInput,
+    sink: &dyn jobs::ProgressSink,
+) -> Result<TranslateOutcome, JobError> {
+    let state = app.state::<AppState>();
+    let media_id = input.media_id;
+    let provider_id = input.provider_id.trim().to_string();
+    let model_id = input.model_id.trim().to_string();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(invalid_input("translation requires a Provider and a Model"));
+    }
+    let target_language = translate::normalize_target_language(&input.target_language)
+        .map_err(invalid_input)?
+        .to_string();
+    let source_language = input
+        .source_language
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let overwrite_human_edits = input.overwrite_human_edits;
+    let unavailable = |message: &str| JobError::new("provider_unavailable", false, message);
+
+    let (provider, segments, glossary) = {
+        let db = state.db.lock().map_err(db_error)?;
+        let provider = db
+            .get_provider(&provider_id)
+            .map_err(db_error)?
+            .ok_or_else(|| unavailable("translation Provider not found"))?;
+        if !provider.enabled {
+            return Err(unavailable("translation Provider is disabled"));
+        }
+        let model = db
+            .list_provider_models(&provider_id)
+            .map_err(db_error)?
+            .into_iter()
+            .find(|model| model.model_id == model_id)
+            .ok_or_else(|| unavailable("model not found in Provider inventory"))?;
+        if !model.available {
+            return Err(unavailable("model is currently unavailable"));
+        }
+        if !model
+            .effective_capabilities
+            .iter()
+            .any(|capability| capability == "text.translate")
+        {
+            return Err(unavailable(
+                "selected model does not resolve text.translate",
+            ));
+        }
+        let segments = db.get_segments(media_id).map_err(db_error)?;
+        let glossary = db.list_glossary().map_err(db_error)?;
+        (provider, segments, glossary)
+    };
+
+    if provider.kind != "openai-compatible" {
+        return Err(unavailable(&format!(
+            "provider adapter {} does not implement text.translate yet",
+            provider.kind
+        )));
+    }
+
+    let selection = translate::select_targets(
+        &segments,
+        input.segment_ids.as_deref(),
+        overwrite_human_edits,
+    );
+    let provenance = format!("{}{provider_id}:{model_id}", translate::PROVENANCE_PREFIX);
+    let requested = selection.targets.len();
+    let plan = translate::TranslatePlan {
+        batches: translate::plan_batches(&selection.targets),
+        all_segments: segments,
+        source_language,
+        target_language: target_language.clone(),
+        glossary,
+    };
+    let secret = if requested > 0 {
+        provider_secret(&provider).map_err(|e| unavailable(&e))?
+    } else {
+        None
+    };
+    let summary = translate::run_translation(
+        &plan,
+        |system, user| {
+            let provider = provider.clone();
+            let secret = secret.clone();
+            let model_id = model_id.clone();
+            async move {
+                refine::chat_completion(
+                    &provider,
+                    secret.as_deref(),
+                    &model_id,
+                    &system,
+                    &user,
+                    "translate",
+                )
+                .await
+            }
+        },
+        sink,
+        |lines| {
+            let mut db = state.db.lock().map_err(|e| e.to_string())?;
+            translate::apply_translations(
+                db.connection_mut(),
+                lines,
+                &provenance,
+                overwrite_human_edits,
+            )
+            .map_err(|e| e.to_string())
+        },
+    )
+    .await;
+
+    // Batches applied before the cancel stay applied (checkpointing); the job
+    // ends `cancelled` and the UI reloads Segments.
+    if summary.cancelled {
+        return Err(JobError::new(
+            "cancelled",
+            true,
+            "translation was cancelled; lines translated before the cancel were kept",
+        ));
+    }
+    let failed_lines: usize = summary
+        .failed_batches
+        .iter()
+        .map(|batch| batch.segment_ids.len())
+        .sum();
+    if requested > 0 && failed_lines == requested {
+        let error = summary
+            .failed_batches
+            .last()
+            .map(|batch| batch.error.clone())
+            .unwrap_or_else(|| "translation failed".into());
+        return Err(JobError::new("translate_failed", true, error));
+    }
+
+    let mut protected = selection.protected;
+    protected.extend(summary.report.protected);
+    let mut notes = selection.notes;
+    notes.extend(summary.notes);
+    let segments = state
+        .db
+        .lock()
+        .map_err(db_error)?
+        .get_segments(media_id)
+        .map_err(db_error)?;
+
+    Ok(TranslateOutcome {
+        provenance,
+        target_language,
+        requested,
+        translated: summary.report.applied,
+        unchanged: summary.report.unchanged,
+        stale: summary.report.stale,
+        protected,
+        failed_batches: summary.failed_batches,
+        cancelled: summary.cancelled,
+        notes,
+        segments,
+    })
+}
+
+/// Runs a `translate` job to completion; progress and cancel go through
+/// `job://update` / `cancel_job`. Returns the `TranslateOutcome` JSON.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn translate_segments(
+    media_id: i64,
+    segment_ids: Option<Vec<i64>>,
+    provider_id: String,
+    model_id: String,
+    source_language: Option<String>,
+    target_language: String,
+    overwrite_human_edits: Option<bool>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    let input = TranslateJobInput {
+        media_id,
+        segment_ids,
+        provider_id,
+        model_id,
+        source_language,
+        target_language,
+        overwrite_human_edits: overwrite_human_edits.unwrap_or(false),
+    };
+    let input = serde_json::to_value(input).map_err(|e| e.to_string())?;
+    let store = Arc::clone(&app.state::<JobsState>().0);
+    jobs::run_to_completion(
+        store,
+        NewJob::new(TRANSLATE_JOB, media_id).input(input),
+        translate_runner(app.clone()),
+    )
+    .await
+}
+
+/// `dub.place` for one media item. The plan is derived (not persisted): it is
+/// recomputed from canonical Segments + TTS assets on every call.
+#[tauri::command]
+fn plan_dub(
+    media_id: i64,
+    params: Option<PlacementParams>,
+    state: State<AppState>,
+) -> Result<DubPlan, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    placement::plan_dub(db.connection(), media_id, params)
+}
+
+/// Job kind of `export_dub_mix` runs.
+const MIX_JOB: &str = "mix";
+
+/// `input_json` of a `mix` job: the `export_dub_mix` arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MixJobInput {
+    media_id: i64,
+    output_path: String,
+    options: MixOptions,
+}
+
+/// Runner for `mix` jobs. Reads inputs under the DB lock, then renders
+/// without it.
+fn mix_runner(app: AppHandle) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let input: MixJobInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid_input(format!("invalid mix job input: {e}")))?;
+        input.options.validate().map_err(invalid_input)?;
+        let assets = tts::asset_store(&app).map_err(|e| JobError::new("io", true, e))?;
+        let state = app.state::<AppState>();
+        let (mut inputs, spatial_candidates) = {
+            let db = state.db.lock().map_err(db_error)?;
+            let mut inputs =
+                mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
+                    .map_err(invalid_input)?;
+            // `tts_assets.path` is relative to the asset store.
+            for clip in &mut inputs.clips {
+                if clip.path.is_relative() {
+                    clip.path = assets.root.join(&clip.path);
+                }
+            }
+            let candidates = input.options.use_spatial
+                && spatial::has_renders(db.connection(), input.media_id).map_err(db_error)?;
+            (inputs, candidates)
+        };
+        let mut spatial_clips = 0;
+        if spatial_candidates {
+            // Hash the original without the DB lock; renders are keyed on its track key.
+            job.progress(0, 1, "spatial");
+            let (_, track_key) = spatial::current_track_key(&inputs.original_path)?;
+            let db = state.db.lock().map_err(db_error)?;
+            spatial_clips = spatial::apply_spatial_renders(
+                db.connection(),
+                &assets,
+                &mut inputs.clips,
+                &track_key,
+                input.options.spatial_mode,
+            )
+            .map_err(db_error)?;
+        }
+        let report = mix::render(
+            &inputs.original_path,
+            &inputs.clips,
+            Path::new(&input.output_path),
+            &input.options,
+            job,
+        )
+        .map_err(|error| {
+            if error == mix::ERR_CANCELLED {
+                JobError::cancelled()
+            } else {
+                JobError::new("mix_failed", true, error)
+            }
+        })?;
+        let mut value = serde_json::to_value(report)
+            .map_err(|e| JobError::new("internal", false, e.to_string()))?;
+        value["spatial_clips"] = serde_json::json!(spatial_clips);
+        Ok(value)
+    })
+}
+
+/// `audio.mix` offline export: original + placed dub clips (or the dub stem),
+/// run as a `mix` job. Returns the `MixReport` JSON.
+#[tauri::command]
+async fn export_dub_mix(
+    app: AppHandle,
+    media_id: i64,
+    output_path: String,
+    options: Option<MixOptions>,
+) -> Result<serde_json::Value, String> {
+    let options = options.unwrap_or_default();
+    options.validate()?;
+    let input = serde_json::to_value(MixJobInput {
+        media_id,
+        output_path,
+        options,
+    })
+    .map_err(|e| e.to_string())?;
+    let store = Arc::clone(&app.state::<JobsState>().0);
+    jobs::run_to_completion(
+        store,
+        NewJob::new(MIX_JOB, media_id).input(input),
+        mix_runner(app.clone()),
+    )
+    .await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -963,6 +1334,14 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
             app.manage(AppState { db: Mutex::new(db) });
+            // PR #10: jobs + job://update, and the in-process stage runners
+            // (`retry_job` re-runs a job through these).
+            let store = jobs::install(app, &dir.join("tsubame.db"))?;
+            let handle = app.handle().clone();
+            store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
+            store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
+            store.register_runner(MIX_JOB, mix_runner(handle.clone()));
+            store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -994,7 +1373,22 @@ pub fn run() {
             list_refine_proposals,
             accept_refine_proposal,
             reject_refine_proposal,
-            apply_alignment_result
+            apply_alignment_result,
+            translate_segments,
+            voice::list_voice_profiles,
+            voice::save_voice_profile,
+            voice::delete_voice_profile,
+            tts::synthesize_segment,
+            tts::get_tts_asset,
+            tts::set_segment_dub_skip,
+            plan_dub,
+            export_dub_mix,
+            spatial::analyze_spatial,
+            spatial::spatialize_segment,
+            // PR #10: jobs
+            jobs::list_jobs,
+            jobs::cancel_job,
+            jobs::retry_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tsubame");

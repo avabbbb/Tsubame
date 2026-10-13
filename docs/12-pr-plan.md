@@ -150,6 +150,10 @@ Scope:
 
 ## PR #10 — ASMR-Dubber worker integration
 
+**Status:** implemented on branch `feat/dubbing-pipeline`, stacked on plan item #9
+(GitHub PR #10, `feat/transcript-refine-align`); opened as GitHub PR #11. See
+[Dubbing pipeline](19-dubbing-pipeline.md).
+
 Goal: reuse compatible MIT processing capabilities without adopting its product UI.
 
 Scope:

@@ -33,6 +33,10 @@ export interface Segment {
   refine_confidence: number | null;
   align_provenance: string;
   align_confidence: number | null;
+  /** Content-addressed key of the current speech.tts clip, if any. */
+  tts_asset_key: string | null;
+  /** Excluded from dub placement and mix. */
+  dub_skip: boolean;
 }
 
 export interface SegmentDraft {
@@ -194,9 +198,151 @@ export interface RefineOutcome {
   notes: string[];
 }
 
+export type TranslateTargetLanguage = "en" | "zh-Hans" | "zh-Hant";
+
+export interface TranslateBatchFailure {
+  segment_ids: number[];
+  error: string;
+}
+
+/** Result of the `translate_segments` command (text.translate). */
+export interface TranslateOutcome {
+  provenance: string;
+  target_language: TranslateTargetLanguage;
+  requested: number;
+  translated: number[];
+  unchanged: number[];
+  stale: number[];
+  protected: number[];
+  failed_batches: TranslateBatchFailure[];
+  cancelled: boolean;
+  notes: string[];
+  segments: Segment[];
+}
+
 export type ProposalDecision =
   | { outcome: "applied"; segment: Segment }
   | { outcome: "rejected" }
   | { outcome: "stale"; segment: Segment | null }
   | { outcome: "not_pending"; status: RefineProposalStatus }
   | { outcome: "not_found" };
+
+export type VoiceKind = "preset" | "design";
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  kind: VoiceKind;
+  provider_id: string;
+  model_id: string;
+  preset_voice: string;
+  design_prompt: string;
+  language: string;
+  params_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VoiceProfileInput {
+  id: string | null;
+  name: string;
+  kind: VoiceKind;
+  provider_id: string;
+  model_id: string;
+  preset_voice: string | null;
+  design_prompt: string | null;
+  language: string;
+  params_json: string | null;
+}
+
+export interface TtsAsset {
+  key: string;
+  path: string;
+  sha256: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  provider_id: string;
+  model_id: string;
+  voice_profile_id: string;
+  created_at: string;
+}
+
+export interface ResolvedTtsAsset {
+  segment_id: number;
+  key: string;
+  path: string;
+  sha256: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  provider_id: string;
+  model_id: string;
+  voice_profile_id: string;
+  dub_skip: boolean;
+}
+
+export interface SynthesisOutcome {
+  segment: Segment;
+  asset: TtsAsset;
+  path: string;
+  cache_hit: boolean;
+}
+
+/** `dub.place` output (docs/19-dubbing-pipeline.md). */
+export interface DubPlacement {
+  segment_id: number;
+  dub_start_ms: number;
+  dub_end_ms: number;
+  drift_ms: number;
+  /** `drift_exceeded`, `skipped`, `no_clip`. */
+  flags: string[];
+}
+
+export interface DubPlacementParams {
+  anchor: "start" | "end";
+  beat_ms: number;
+  min_gap_ms: number;
+  max_drift_ms: number;
+}
+
+export interface DubPlan {
+  media_id: number;
+  params: DubPlacementParams;
+  placements: DubPlacement[];
+  placed_count: number;
+  drift_exceeded_count: number;
+}
+
+export type DubExportKind = "mix" | "dub_stem";
+
+export interface DubMixReport {
+  output_path: string;
+  kind: DubExportKind;
+  sample_rate: number;
+  channels: number;
+  original_frames: number;
+  output_frames: number;
+  limited_frames: number;
+  clips: { segment_id: number; start_frame: number; frames: number; gain_db: number }[];
+  /** Clips that used an `audio.spatialize` render instead of the raw TTS clip. */
+  spatial_clips: number;
+}
+
+/** `audio.spatialize` render mode (default `source_trajectory`). */
+export type SpatialMode = "source_trajectory" | "concurrent";
+
+/** `spatialize_segment` result (mirrors `spatial::RenderOutcome`). */
+export interface SpatialRenderOutcome {
+  segment_id: number;
+  media_id: number;
+  mode: SpatialMode;
+  render_key: string;
+  spatial_track_key: string;
+  tts_asset_key: string;
+  /** Absolute path of the stereo render (use `convertFileSrc`). */
+  path: string;
+  cache_hit: boolean;
+  analysis_cache_hit: boolean;
+  report: unknown | null;
+}

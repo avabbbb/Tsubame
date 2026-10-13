@@ -11,12 +11,15 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AsrPanel from "./AsrPanel";
+import DubExportActions from "./DubExportActions";
 import RefinePanel from "./RefinePanel";
+import TranslatePanel from "./TranslatePanel";
 import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
 import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
 import type {
+  DubPlan,
   MediaItem,
   RailSection,
   Segment,
@@ -98,6 +101,7 @@ export default function App() {
   const [current, setCurrent] = useState<MediaItem | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selected, setSelected] = useState<Segment | null>(null);
+  const [dubPlan, setDubPlan] = useState<DubPlan | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -546,6 +550,26 @@ export default function App() {
     document.documentElement.dataset.theme = resolvedTheme;
   }, [resolvedTheme]);
 
+  const refreshDubPlan = useCallback(() => {
+    if (!current || activeRail !== "studio") {
+      setDubPlan(null);
+      return;
+    }
+    invoke<DubPlan>("plan_dub", { mediaId: current.id })
+      .then(setDubPlan)
+      .catch(() => setDubPlan(null));
+  }, [activeRail, current]);
+
+  // The dub plan is derived from Segments + TTS assets; recompute on change.
+  useEffect(() => {
+    refreshDubPlan();
+  }, [refreshDubPlan, segments]);
+
+  const dubPlacements = useMemo(
+    () => new Map((dubPlan?.placements ?? []).map((row) => [row.segment_id, row])),
+    [dubPlan],
+  );
+
   useEffect(() => {
     const onChange = (event: MediaQueryListEvent) => setSystemDark(event.matches);
     prefersDark.addEventListener("change", onChange);
@@ -907,6 +931,23 @@ export default function App() {
                         if (target) chooseSegment(target);
                       }}
                     />
+                    <TranslatePanel
+                      media={current}
+                      segments={segments}
+                      onSegments={(rows) => {
+                        setSegments(rows);
+                        setSelected((currentSelection) =>
+                          currentSelection
+                            ? (rows.find((row) => row.id === currentSelection.id) ?? null)
+                            : null,
+                        );
+                      }}
+                    />
+                    <DubExportActions
+                      media={current}
+                      plan={dubPlan}
+                      onRefreshPlan={refreshDubPlan}
+                    />
                   </>
                 )}
 
@@ -972,6 +1013,18 @@ export default function App() {
                       <span className="segment-copy">
                         <strong>{segment.source_text || "Untitled segment"}</strong>
                         <small>{segment.translated_text || "No translation yet"}</small>
+                        {dubPlacements.get(segment.id)?.flags.includes("drift_exceeded") && (
+                          <span
+                            className="state-badge drift-badge"
+                            title="Dub starts too late after this sentence. Shorten the translation or skip this sentence's dub."
+                          >
+                            Dub drift +
+                            {(
+                              (dubPlacements.get(segment.id)?.drift_ms ?? 0) / 1000
+                            ).toFixed(1)}
+                            s
+                          </span>
+                        )}
                       </span>
                     </button>
                   ))}
