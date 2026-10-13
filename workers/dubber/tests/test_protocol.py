@@ -101,6 +101,49 @@ class InProcessTests(unittest.TestCase):
                 resolve_out_path(ctx, "/etc/passwd")
 
 
+    def test_non_object_input_is_invalid_input(self):
+        out = run_in_process(
+            self.make(),
+            [{"type": "request", "id": "x", "op": "test.op", "input": "nope"}],
+        )
+        error = [m for m in out if m["type"] == "error"][0]
+        self.assertEqual((error["id"], error["code"], error["retryable"]), ("x", "invalid_input", False))
+
+    def test_cancel_of_queued_request_skips_the_handler(self):
+        worker = Worker("t", "1.0.0", ["test.slow"])
+        started = []
+
+        @worker.handler("test.slow")
+        def slow(ctx: Context):
+            started.append(ctx.id)
+            time.sleep(0.3)
+            return {"id": ctx.id}
+
+        out = run_in_process(
+            worker,
+            [
+                {"type": "request", "id": "first", "op": "test.slow", "input": {}},
+                {"type": "request", "id": "queued", "op": "test.slow", "input": {}},
+                {"type": "cancel", "id": "queued"},
+            ],
+        )
+        terminal = {m["id"]: m for m in out if m["type"] in ("result", "error")}
+        self.assertEqual(terminal["first"]["type"], "result")
+        self.assertEqual((terminal["queued"]["type"], terminal["queued"]["code"]), ("error", "cancelled"))
+        self.assertEqual(started, ["first"])
+
+    def test_memory_error_is_out_of_memory(self):
+        worker = Worker("t", "1.0.0", ["test.oom"])
+
+        @worker.handler("test.oom")
+        def oom(ctx: Context):
+            raise MemoryError()
+
+        out = run_in_process(worker, [{"type": "request", "id": "m", "op": "test.oom", "input": {}}])
+        error = [m for m in out if m["type"] == "error"][0]
+        self.assertEqual((error["code"], error["retryable"]), ("out_of_memory", True))
+
+
 class SubprocessTests(unittest.TestCase):
     def spawn(self, *args):
         return subprocess.Popen(

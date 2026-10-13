@@ -15,8 +15,7 @@ Every ported file carries the attribution header.
 
 | File | Role |
 |---|---|
-| `worker.py` | Entry point. Protocol v1 over stdio, ops `analyze` / `render`. |
-| `_protocol.py` | Private minimal protocol v1 helper (to be replaced by the shared SDK `workers/dubber/tsubame_worker/`). |
+| `worker.py` | Entry point. Protocol v1 over stdio through the shared SDK [`workers/dubber/tsubame_worker/`](../tsubame_worker/), ops `analyze` / `render`. |
 | `analyze.py` | Track analysis → `SpatialTrack`, `spatial_track_key()`. |
 | `render.py` | Per-clip render, hold-and-release trajectory, `render_key()`. |
 | `_wav.py` | RIFF/RF64 WAV reader (memory-mapped; PCM 8/16/24/32, float 32/64) and float32 writer. |
@@ -41,13 +40,16 @@ Behaviour details (within the contract):
 - `hello` is the first line; `capabilities[0].features` advertises
   `ops`, `modes`, `default_mode`, `default_strengths`, `analyzer_version`,
   `renderer_version`, `reference_channels` `[2]`, `clip_channels` `[1,2]`, `formats` `["wav"]`.
-- Requests run one at a time in arrival order on a background thread; stdin
-  stays responsive.
-- `cancel` (running or queued job) is answered immediately with `error`
-  `cancelled` (`retryable:false`); the job stops at its next cancellation
-  point and no later message is emitted for that id. Unknown ids are ignored.
-- `shutdown` cancels outstanding jobs (`cancelled`, `retryable:true`) and exits 0.
-  stdin EOF without `shutdown` drains the queue, then exits 0.
+- The protocol loop is the shared SDK (`tsubame_worker`): requests run one at a
+  time in arrival order; a reader thread keeps stdin responsive.
+- `cancel` of the running job flips its cancel flag; the job stops at its next
+  cancellation point (every 128 analysis frames / every render block / every
+  4 MiB while hashing) and answers `error` `cancelled` (`retryable:true`), well
+  inside the host's 2 s grace. `cancel` of a queued job answers `cancelled`
+  without running it. Exactly one terminal message is emitted per id.
+- `shutdown` cancels the running job and exits 0. stdin EOF without `shutdown`
+  drains the queue, then exits 0 (batch mode).
+- A non-object `input` → `invalid_input`; `MemoryError` → `out_of_memory`.
 - Outputs are written to a temp name in `out_dir` and renamed into place.
 - Malformed lines are ignored with a note on stderr (no id to answer).
 

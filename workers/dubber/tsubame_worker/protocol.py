@@ -12,6 +12,12 @@ JSON Lines over stdio, see ``docs/19-dubbing-pipeline.md`` ("Worker protocol v1"
   Handlers should call ``ctx.check_cancelled()`` between units of work; the host
   kills the worker if it does not answer with ``error`` code ``cancelled`` within
   2 s of the cancel.
+* A ``cancel`` for a request that has not started yet is answered with
+  ``error`` ``cancelled`` without running the handler. ``shutdown`` cancels the
+  running request; requests read before it still run. stdin EOF without
+  ``shutdown`` drains the queue (batch mode: ``worker.py < requests.jsonl``).
+* A non-object ``input`` is answered with ``invalid_input``; ``MemoryError`` with
+  ``out_of_memory`` (retryable); any other exception with ``internal``.
 * Workers never write SQLite and must write only inside ``input["out_dir"]``.
 
 Written for Tsubame (MIT). No ASMR-Dubber code is ported in this module.
@@ -235,7 +241,16 @@ class Worker:
         op = str(message.get("op", ""))
         payload = message.get("input")
         if not isinstance(payload, dict):
-            payload = {}
+            channel.send(
+                {
+                    "type": "error",
+                    "id": request_id,
+                    "code": "invalid_input",
+                    "retryable": False,
+                    "message": "request.input must be a JSON object",
+                }
+            )
+            return
         ctx = Context(channel, request_id, op, payload)
         handler = self._handlers.get(op)
         if handler is None:
@@ -250,10 +265,20 @@ class Worker:
             )
             return
         with self._active_lock:
-            self._active = ctx
             if request_id in self._early_cancels:
+                # Cancelled while queued: answer without running the handler.
                 self._early_cancels.discard(request_id)
-                ctx._cancel.set()
+                channel.send(
+                    {
+                        "type": "error",
+                        "id": request_id,
+                        "code": "cancelled",
+                        "retryable": True,
+                        "message": "cancelled before the request started",
+                    }
+                )
+                return
+            self._active = ctx
         try:
             output = handler(ctx)
             if ctx.cancelled:
@@ -267,6 +292,17 @@ class Worker:
                     "code": exc.code,
                     "retryable": bool(exc.retryable),
                     "message": exc.message,
+                }
+            )
+        except MemoryError:
+            traceback.print_exc(file=sys.stderr)
+            channel.send(
+                {
+                    "type": "error",
+                    "id": request_id,
+                    "code": "out_of_memory",
+                    "retryable": True,
+                    "message": "worker ran out of memory",
                 }
             )
         except Exception as exc:  # noqa: BLE001 — every failure must become a protocol error

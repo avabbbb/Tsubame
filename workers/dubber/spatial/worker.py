@@ -25,8 +25,9 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "spatial"  # noqa: A001 - allow relative imports when run as a script
 
+from tsubame_worker import Context, Worker, WorkerError  # noqa: E402  (shared protocol v1 SDK)
+
 from . import ANALYZER_VERSION, RENDERER_VERSION, WORKER_NAME, WORKER_VERSION  # noqa: E402
-from ._protocol import JobContext, Worker, WorkerError  # noqa: E402
 
 CAPABILITY = "audio.spatialize"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -92,11 +93,16 @@ def _atomic_write(path: Path, writer) -> None:
             tmp.unlink()
 
 
-def _sha256_file(path: Path, ctx: JobContext) -> str:
+def _progress(ctx: Context):
+    """Adapts the ``progress(stage, done, total)`` callbacks of analyze/render to the SDK."""
+    return lambda stage, done, total: ctx.progress(done, total, stage)
+
+
+def _sha256_file(path: Path, ctx: Context) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
         for block in iter(lambda: f.read(1 << 22), b""):
-            ctx.check_cancel()
+            ctx.check_cancelled()
             h.update(block)
     return h.hexdigest()
 
@@ -104,7 +110,7 @@ def _sha256_file(path: Path, ctx: JobContext) -> str:
 # -- ops -------------------------------------------------------------------
 
 
-def op_analyze(ctx: JobContext, inp: dict) -> dict:
+def op_analyze(ctx: Context, inp: dict) -> dict:
     from ._wav import WavError
     from .analyze import AnalysisError, analyze_file, resolve_params, spatial_track_key
 
@@ -129,15 +135,15 @@ def op_analyze(ctx: JobContext, inp: dict) -> dict:
     sha = sha.lower()
     key = spatial_track_key(sha, kind, resolved)
     try:
-        track = analyze_file(ref, resolved, progress=ctx.progress, check_cancel=ctx.check_cancel)
+        track = analyze_file(ref, resolved, progress=_progress(ctx), check_cancel=ctx.check_cancelled)
     except AnalysisError as exc:
         raise WorkerError(exc.code, str(exc)) from exc
     except WavError as exc:
         raise WorkerError("unsupported_format", str(exc)) from exc
-    ctx.check_cancel()
+    ctx.check_cancelled()
     track.meta.update(spatial_track_key=key, reference_sha256=sha, reference_kind=kind)
     summary = track.summary()
-    ctx.progress("write", 0, 2)
+    ctx.progress(0, 2, "write")
     track_path, summary_path = out_dir / TRACK_FILE, out_dir / SUMMARY_FILE
     _atomic_write(track_path, track.save)
     doc = {"spatial_track_key": key, "analyzer_version": ANALYZER_VERSION,
@@ -146,7 +152,7 @@ def op_analyze(ctx: JobContext, inp: dict) -> dict:
            "frame_size": track.frame_size, "summary": summary}
     _atomic_write(summary_path, lambda p: Path(p).write_text(
         json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"))
-    ctx.progress("write", 2, 2)
+    ctx.progress(2, 2, "write")
     return {
         "op": "analyze",
         "spatial_track_key": key,
@@ -177,7 +183,7 @@ def _window(inp: dict, mode: str) -> dict:
     return out
 
 
-def op_render(ctx: JobContext, inp: dict) -> dict:
+def op_render(ctx: Context, inp: dict) -> dict:
     from ._wav import WavError
     from .analyze import AnalysisError, SpatialTrack
     from .render import MODES, RenderError, render_file, render_key, resolve_strengths
@@ -215,8 +221,8 @@ def op_render(ctx: JobContext, inp: dict) -> dict:
     out_path = out_dir / name
     try:
         report = render_file(clip, ref, track, out_path, mode=mode, window=window,
-                             strengths=strengths, progress=ctx.progress,
-                             check_cancel=ctx.check_cancel)
+                             strengths=strengths, progress=_progress(ctx),
+                             check_cancel=ctx.check_cancelled)
     except RenderError as exc:
         raise WorkerError(exc.code, str(exc)) from exc
     except WavError as exc:
@@ -235,7 +241,8 @@ def op_render(ctx: JobContext, inp: dict) -> dict:
     }
 
 
-def handle(ctx: JobContext, op: str, inp: dict) -> dict:
+def handle(ctx: Context) -> dict:
+    inp = ctx.input
     sub = inp.get("op")
     if sub == "analyze":
         return op_analyze(ctx, inp)
@@ -248,12 +255,15 @@ def main() -> int:
     if importlib.util.find_spec("numpy") is None:  # runtime pack incomplete
         print(f"[{WORKER_NAME}] numpy unavailable", file=sys.stderr)
 
-        def handle_missing(ctx, op, inp):
+        def handle_missing(ctx: Context) -> dict:
             raise WorkerError("runtime_missing", "numpy is not installed in this runtime", False)
 
-        return Worker(WORKER_NAME, WORKER_VERSION, [{"id": CAPABILITY, "features": {}}],
-                      handle_missing).serve()
-    return Worker(WORKER_NAME, WORKER_VERSION, capabilities(), handle).serve()
+        worker = Worker(WORKER_NAME, WORKER_VERSION, [{"id": CAPABILITY, "features": {}}])
+        worker.handler(CAPABILITY)(handle_missing)
+        return worker.run()
+    worker = Worker(WORKER_NAME, WORKER_VERSION, capabilities())
+    worker.handler(CAPABILITY)(handle)
+    return worker.run()
 
 
 if __name__ == "__main__":
