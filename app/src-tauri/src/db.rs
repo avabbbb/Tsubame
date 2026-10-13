@@ -86,6 +86,12 @@ pub struct MediaDb {
 }
 
 impl MediaDb {
+    /// Transaction access for feature modules that own their own
+    /// revision-checked writes (e.g. `translate::apply_translations`).
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(

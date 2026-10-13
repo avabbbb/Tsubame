@@ -5,6 +5,7 @@ mod jobs; // PR #10: jobs table + runner
 mod providers;
 mod refine;
 mod subtitle;
+mod translate;
 mod worker; // PR #10: worker protocol v1 host
 
 use alignment::{AlignmentResult, AlignmentTarget};
@@ -20,7 +21,7 @@ use refine::{GlossaryTerm, RefineSegmentInput, MAX_BATCH_SEGMENTS};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path, sync::Mutex};
 use subtitle::{SubtitleCue, SubtitleFormat};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
     db: Mutex<MediaDb>,
@@ -957,6 +958,211 @@ fn apply_alignment_result(
     db.apply_alignment(&result)
 }
 
+// ----- translation (PR #10, text.translate) -----
+
+/// Progress sink for `translate_segments` until the jobs track wires its
+/// `JobHandle`: emits `translate://progress` and is never cancelled.
+struct TranslateEventSink {
+    app: AppHandle,
+    media_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TranslateProgressEvent {
+    media_id: i64,
+    done: usize,
+    total: usize,
+    stage: String,
+}
+
+impl translate::ProgressSink for TranslateEventSink {
+    fn progress(&self, done: usize, total: usize, stage: &str) {
+        let _ = self.app.emit(
+            "translate://progress",
+            TranslateProgressEvent {
+                media_id: self.media_id,
+                done,
+                total,
+                stage: stage.to_string(),
+            },
+        );
+    }
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TranslateOutcome {
+    provenance: String,
+    target_language: String,
+    /// Lines sent to the Provider.
+    requested: usize,
+    translated: Vec<i64>,
+    unchanged: Vec<i64>,
+    stale: Vec<i64>,
+    protected: Vec<i64>,
+    failed_batches: Vec<translate::BatchFailure>,
+    cancelled: bool,
+    notes: Vec<String>,
+    /// All Segments of the media after the run.
+    segments: Vec<Segment>,
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn translate_segments(
+    media_id: i64,
+    segment_ids: Option<Vec<i64>>,
+    provider_id: String,
+    model_id: String,
+    source_language: Option<String>,
+    target_language: String,
+    overwrite_human_edits: Option<bool>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TranslateOutcome, String> {
+    let provider_id = provider_id.trim().to_string();
+    let model_id = model_id.trim().to_string();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err("translation requires a Provider and a Model".into());
+    }
+    let target_language = translate::normalize_target_language(&target_language)?.to_string();
+    let source_language = source_language
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let overwrite_human_edits = overwrite_human_edits.unwrap_or(false);
+
+    let (provider, segments, glossary) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let provider = db
+            .get_provider(&provider_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "translation Provider not found".to_string())?;
+        if !provider.enabled {
+            return Err("translation Provider is disabled".into());
+        }
+        let model = db
+            .list_provider_models(&provider_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|model| model.model_id == model_id)
+            .ok_or_else(|| "model not found in Provider inventory".to_string())?;
+        if !model.available {
+            return Err("model is currently unavailable".into());
+        }
+        if !model
+            .effective_capabilities
+            .iter()
+            .any(|capability| capability == "text.translate")
+        {
+            return Err("selected model does not resolve text.translate".into());
+        }
+        let segments = db.get_segments(media_id).map_err(|e| e.to_string())?;
+        let glossary = db.list_glossary().map_err(|e| e.to_string())?;
+        (provider, segments, glossary)
+    };
+
+    if provider.kind != "openai-compatible" {
+        return Err(format!(
+            "provider adapter {} does not implement text.translate yet",
+            provider.kind
+        ));
+    }
+
+    let selection =
+        translate::select_targets(&segments, segment_ids.as_deref(), overwrite_human_edits);
+    let provenance = format!("{}{provider_id}:{model_id}", translate::PROVENANCE_PREFIX);
+    let requested = selection.targets.len();
+    let plan = translate::TranslatePlan {
+        batches: translate::plan_batches(&selection.targets),
+        all_segments: segments,
+        source_language,
+        target_language: target_language.clone(),
+        glossary,
+    };
+    let secret = if requested > 0 {
+        provider_secret(&provider)?
+    } else {
+        None
+    };
+    let sink = TranslateEventSink {
+        app: app.clone(),
+        media_id,
+    };
+    let summary = translate::run_translation(
+        &plan,
+        |system, user| {
+            let provider = provider.clone();
+            let secret = secret.clone();
+            let model_id = model_id.clone();
+            async move {
+                refine::chat_completion(
+                    &provider,
+                    secret.as_deref(),
+                    &model_id,
+                    &system,
+                    &user,
+                    "translate",
+                )
+                .await
+            }
+        },
+        &sink,
+        |lines| {
+            let mut db = state.db.lock().map_err(|e| e.to_string())?;
+            translate::apply_translations(
+                db.connection_mut(),
+                lines,
+                &provenance,
+                overwrite_human_edits,
+            )
+            .map_err(|e| e.to_string())
+        },
+    )
+    .await;
+
+    let failed_lines: usize = summary
+        .failed_batches
+        .iter()
+        .map(|batch| batch.segment_ids.len())
+        .sum();
+    if requested > 0 && !summary.cancelled && failed_lines == requested {
+        let error = summary
+            .failed_batches
+            .last()
+            .map(|batch| batch.error.clone())
+            .unwrap_or_else(|| "translation failed".into());
+        return Err(error);
+    }
+
+    let mut protected = selection.protected;
+    protected.extend(summary.report.protected);
+    let mut notes = selection.notes;
+    notes.extend(summary.notes);
+    let segments = state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_segments(media_id)
+        .map_err(|e| e.to_string())?;
+
+    Ok(TranslateOutcome {
+        provenance,
+        target_language,
+        requested,
+        translated: summary.report.applied,
+        unchanged: summary.report.unchanged,
+        stale: summary.report.stale,
+        protected,
+        failed_batches: summary.failed_batches,
+        cancelled: summary.cancelled,
+        notes,
+        segments,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -998,6 +1204,7 @@ pub fn run() {
             accept_refine_proposal,
             reject_refine_proposal,
             apply_alignment_result,
+            translate_segments,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,
