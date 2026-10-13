@@ -226,13 +226,8 @@ impl MediaDb {
         Ok(Self { conn })
     }
 
-    /// Shared connection for modules that own their own tables (voice, tts).
-    pub fn conn(&self) -> &Connection {
-        &self.conn
-    }
-
-    /// Read access for pure modules that query the contract schema directly
-    /// (`placement::load_dub_sentences`, `mix::export_inputs`).
+    /// Shared read access for modules that query the schema directly or own
+    /// their own tables (voice, tts, placement, mix).
     pub fn connection(&self) -> &Connection {
         &self.conn
     }

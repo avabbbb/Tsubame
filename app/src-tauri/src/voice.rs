@@ -347,7 +347,7 @@ pub fn list_voice_profiles(
     state: tauri::State<crate::AppState>,
 ) -> Result<Vec<VoiceProfile>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    list(db.conn()).map_err(|e| e.to_string())
+    list(db.connection()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -356,7 +356,7 @@ pub fn save_voice_profile(
     state: tauri::State<crate::AppState>,
 ) -> Result<VoiceProfile, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    save(db.conn(), &input)
+    save(db.connection(), &input)
 }
 
 #[tauri::command]
@@ -365,7 +365,7 @@ pub fn delete_voice_profile(
     state: tauri::State<crate::AppState>,
 ) -> Result<bool, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    delete(db.conn(), &id).map_err(|e| e.to_string())
+    delete(db.connection(), &id).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

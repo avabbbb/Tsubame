@@ -812,7 +812,7 @@ pub fn resolve_segment_tts_asset(
     store: &AssetStore,
     segment_id: i64,
 ) -> Result<Option<ResolvedTtsAsset>, TtsError> {
-    let conn = db.conn();
+    let conn = db.connection();
     let Some((key, dub_skip)) = segment_dub_fields(conn, segment_id).map_err(TtsError::db)? else {
         return Err(TtsError::new("not_found", "segment not found", false));
     };
@@ -853,7 +853,7 @@ pub fn set_dub_skip(
     skip: bool,
 ) -> Result<Segment, TtsError> {
     let changed = db
-        .conn()
+        .connection()
         .execute(
             "UPDATE segments SET dub_skip=?1,dirty_mix=1,revision=revision+1
              WHERE id=?2 AND revision=?3",
@@ -926,7 +926,7 @@ pub fn prepare(
             false,
         ));
     }
-    let (_, dub_skip) = segment_dub_fields(db.conn(), segment_id)
+    let (_, dub_skip) = segment_dub_fields(db.connection(), segment_id)
         .map_err(TtsError::db)?
         .unwrap_or((None, false));
     if dub_skip {
@@ -990,7 +990,7 @@ pub fn commit_segment(
     prepared: &PreparedSynthesis,
     expected_revision: i64,
 ) -> Result<Segment, TtsError> {
-    let (current_key, _) = segment_dub_fields(db.conn(), prepared.segment.id)
+    let (current_key, _) = segment_dub_fields(db.connection(), prepared.segment.id)
         .map_err(TtsError::db)?
         .unwrap_or((None, false));
     let segment = &prepared.segment;
@@ -1007,7 +1007,7 @@ pub fn commit_segment(
         }
     }
     let changed = db
-        .conn()
+        .connection()
         .execute(
             "UPDATE segments
              SET tts_asset_key=?1,
@@ -1060,7 +1060,7 @@ pub async fn run_synthesis<A: TtsAdapter>(
             adapter.adapter_version(),
             take,
         )?;
-        let cached = verified_asset(guard.conn(), store, &prepared.key)?;
+        let cached = verified_asset(guard.connection(), store, &prepared.key)?;
         (prepared, cached)
     };
 
@@ -1087,8 +1087,8 @@ pub async fn run_synthesis<A: TtsAdapter>(
                 created_at: String::new(),
             };
             let guard = lock(db)?;
-            upsert_asset(guard.conn(), &asset).map_err(TtsError::db)?;
-            let stored = get_asset(guard.conn(), &asset.key)
+            upsert_asset(guard.connection(), &asset).map_err(TtsError::db)?;
+            let stored = get_asset(guard.connection(), &asset.key)
                 .map_err(TtsError::db)?
                 .unwrap_or(asset);
             (stored, false)
@@ -1175,7 +1175,7 @@ pub async fn synthesize_segment(
     let store = asset_store(&app)?;
     let (profile, provider) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        let profile = voice::get(db.conn(), voice_profile_id.trim())
+        let profile = voice::get(db.connection(), voice_profile_id.trim())
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "voice profile not found".to_string())?;
         let provider = resolve_tts_target(&db, &profile).map_err(|e| e.to_string())?;

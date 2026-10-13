@@ -65,7 +65,7 @@ fn add_translated_segment(db: &mut MediaDb, media_path: &str, text: &str) -> Seg
 fn fixture(kind: &str) -> Fixture {
     let mut db = MediaDb::open(Path::new(":memory:")).unwrap();
     let segment = add_translated_segment(&mut db, "a.mp3", "晚安，好好休息。");
-    let profile = voice::save(db.conn(), &profile_input(kind)).unwrap();
+    let profile = voice::save(db.connection(), &profile_input(kind)).unwrap();
     Fixture {
         db: Mutex::new(db),
         store: temp_store(),
@@ -223,7 +223,7 @@ fn synthesis_sets_asset_provenance_and_dirty_flags() {
     )));
 
     let db = fx.db.lock().unwrap();
-    let (key, skip) = segment_dub_fields(db.conn(), fx.segment.id)
+    let (key, skip) = segment_dub_fields(db.connection(), fx.segment.id)
         .unwrap()
         .unwrap();
     assert_eq!(key.as_deref(), Some(out.asset.key.as_str()));
@@ -318,7 +318,7 @@ fn revision_conflict_is_rejected_before_and_after_synthesis() {
     .unwrap();
     let err = commit_segment(&db, &prepared, fx.segment.revision).unwrap_err();
     assert_eq!(err.code, "revision_conflict");
-    let (key, _) = segment_dub_fields(db.conn(), fx.segment.id)
+    let (key, _) = segment_dub_fields(db.connection(), fx.segment.id)
         .unwrap()
         .unwrap();
     assert!(key.is_none());
@@ -689,10 +689,10 @@ fn migration_upgrades_an_existing_database() {
         assert_eq!(seg.revision, 4);
         assert_eq!(seg.translated_text, "你好");
         assert_eq!(
-            segment_dub_fields(db.conn(), 1).unwrap(),
+            segment_dub_fields(db.connection(), 1).unwrap(),
             Some((None, false))
         );
-        assert!(get_asset(db.conn(), "missing").unwrap().is_none());
-        assert!(voice::list(db.conn()).unwrap().is_empty());
+        assert!(get_asset(db.connection(), "missing").unwrap().is_none());
+        assert!(voice::list(db.connection()).unwrap().is_empty());
     }
 }
