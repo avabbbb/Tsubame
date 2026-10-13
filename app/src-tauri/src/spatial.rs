@@ -1,5 +1,6 @@
-//! `audio.spatialize` host side: cache keys and the `spatial_assets` table for
-//! the Python worker (`workers/dubber/spatial/worker.py`).
+//! `audio.spatialize` host side: cache keys, the `spatial_assets` table and the
+//! `spatial` job runner that drives the Python worker
+//! (`workers/dubber/spatial/worker.py`).
 //!
 //! Contract: `docs/19-dubbing-pipeline.md` § audio.spatialize and the worker's
 //! `workers/dubber/spatial/README.md` (ops, input schema, key derivation).
@@ -10,23 +11,43 @@
 //! (`analyze.spatial_track_key`, `render.render_key`): SHA-256 over a canonical
 //! JSON array (domain tag first, sorted keys, `,`/`:` separators, UTF-8, Python
 //! `float.__repr__` for non-integers). The README's pinned vectors are tested here.
+//!
+//! Flow:
+//! - analysis, once per media and cached by `spatial_track_key`: the reference is
+//!   the media file itself (`reference_kind: mix`, default params), hashed by the
+//!   host;
+//! - render, once per Segment clip and cached by `render_key` (TTS asset key,
+//!   track key, mode, window, strengths, renderer version);
+//! - outputs are promoted into the asset store (`spatial/tracks/…npz`,
+//!   `spatial/renders/…wav`) and recorded in `spatial_assets`; a verified cache
+//!   row skips the worker entirely.
+//! - mix (`MixOptions.use_spatial`, default on) swaps a clip's raw TTS file for
+//!   its render when one exists for the clip's *current* render key
+//!   ([`apply_spatial_renders`]).
 
-#[cfg(test)]
 use crate::db::MediaDb;
-use crate::tts::AssetStore;
-use crate::worker;
+use crate::jobs::{JobError, JobHandle, JobRunner, NewJob};
+use crate::mix::MixClip;
+use crate::placement::{self, PlacementParams};
+use crate::tts::{self, AssetStore};
+use crate::worker::{self, WorkerSpec};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+/// Job kind of `analyze_spatial` / `spatialize_segment` runs.
+pub const SPATIAL_JOB: &str = "spatial";
+/// Worker capability (protocol v1 `op`).
+pub const CAPABILITY: &str = "audio.spatialize";
 /// Must equal `spatial.ANALYZER_VERSION` in the worker.
 pub const ANALYZER_VERSION: &str = "spatial-analyze/1";
 /// Must equal `spatial.RENDERER_VERSION` in the worker.
 pub const RENDERER_VERSION: &str = "spatial-render/1";
+/// The host analyses the media file itself (whole mix; no vocal stem yet).
+pub const REFERENCE_KIND: &str = "mix";
 
 const TRACK_DOMAIN: &str = "tsubame.spatial_track.v1";
 const RENDER_DOMAIN: &str = "tsubame.spatial_render.v1";
@@ -415,6 +436,495 @@ pub fn verified_asset(
         Ok(sha) if sha == asset.sha256 => Ok(Some((asset, path))),
         _ => Ok(None),
     }
+}
+
+// ----- mix selection -----
+
+/// Replaces each clip's path with its spatial render when a verified render
+/// exists for the clip's **current** render key (its TTS asset key, the media's
+/// current track key, `mode`, its window and default strengths). Clips without
+/// one keep the raw TTS file. Returns how many clips were swapped.
+pub fn apply_spatial_renders(
+    conn: &Connection,
+    store: &AssetStore,
+    clips: &mut [MixClip],
+    spatial_track_key: &str,
+    mode: SpatialMode,
+) -> Result<usize, String> {
+    let mut swapped = 0;
+    for clip in clips.iter_mut() {
+        let Some(tts_key) = clip.tts_asset_key.as_deref() else {
+            continue;
+        };
+        let window = RenderWindow {
+            src_start_ms: clip.src_start_ms,
+            src_end_ms: clip.src_end_ms,
+            dub_start_ms: clip.dub_start_ms,
+        };
+        let key = render_key(
+            tts_key,
+            spatial_track_key,
+            mode,
+            &window,
+            &Strengths::default(),
+            RENDERER_VERSION,
+        )?;
+        if let Some((_, path)) = verified_asset(conn, store, &key, KIND_RENDER)? {
+            clip.path = path;
+            swapped += 1;
+        }
+    }
+    Ok(swapped)
+}
+
+// ----- worker -----
+
+/// Python interpreter: `TSUBAME_PYTHON`, else `python3` on `PATH`.
+pub fn python_program() -> PathBuf {
+    match std::env::var("TSUBAME_PYTHON") {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
+        _ => PathBuf::from("python3"),
+    }
+}
+
+/// Worker script: `TSUBAME_SPATIAL_WORKER`, else the repo checkout
+/// (`workers/dubber/spatial/worker.py` relative to `CARGO_MANIFEST_DIR`). This is
+/// a dev-time path: packaging the worker and its runtime is the PR #12 runtime
+/// bootstrap's job.
+pub fn worker_script() -> PathBuf {
+    match std::env::var("TSUBAME_SPATIAL_WORKER") {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
+        _ => {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/dubber/spatial/worker.py")
+        }
+    }
+}
+
+pub fn worker_spec() -> WorkerSpec {
+    WorkerSpec::python(python_program(), worker_script())
+}
+
+// ----- orchestration -----
+
+fn db_err(error: impl std::fmt::Display) -> JobError {
+    JobError::new("db", true, error.to_string())
+}
+
+fn io_err(error: impl std::fmt::Display) -> JobError {
+    JobError::new("io", true, error.to_string())
+}
+
+fn invalid(message: impl Into<String>) -> JobError {
+    JobError::new("invalid_input", false, message)
+}
+
+fn internal(error: impl std::fmt::Display) -> JobError {
+    JobError::new("internal", false, error.to_string())
+}
+
+fn lock(db: &Mutex<MediaDb>) -> Result<std::sync::MutexGuard<'_, MediaDb>, JobError> {
+    db.lock().map_err(db_err)
+}
+
+/// Removes a job's scratch directory when dropped (success, failure or cancel).
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch_dir(store: &AssetStore, job: &JobHandle, tag: &str) -> Scratch {
+    Scratch(
+        store
+            .root
+            .join("spatial")
+            .join("tmp")
+            .join(format!("{}-{tag}", job.id())),
+    )
+}
+
+fn output_str<'a>(output: &'a Value, key: &str) -> Result<&'a str, JobError> {
+    output.get(key).and_then(Value::as_str).ok_or_else(|| {
+        JobError::new(
+            worker::codes::PROTOCOL_VIOLATION,
+            false,
+            format!("worker result has no {key}"),
+        )
+    })
+}
+
+/// Media file path (the analysis reference), made absolute.
+fn reference_path(db: &MediaDb, media_id: i64) -> Result<PathBuf, JobError> {
+    let path: String = db
+        .connection()
+        .query_row(
+            "SELECT path FROM media_files WHERE id=?1",
+            [media_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| JobError::new("not_found", false, "media not found"))?;
+    std::fs::canonicalize(&path).map_err(|e| {
+        JobError::new(
+            "input_missing",
+            false,
+            format!("media file is not readable: {e}"),
+        )
+    })
+}
+
+/// Current track key of a media file (hashes the file; call without the DB lock).
+pub fn current_track_key(reference: &Path) -> Result<(String, String), JobError> {
+    let sha = worker::sha256_file(reference).map_err(|e| {
+        JobError::new(
+            "input_missing",
+            false,
+            format!("cannot read media file: {e}"),
+        )
+    })?;
+    let key = spatial_track_key(
+        &sha,
+        REFERENCE_KIND,
+        &default_analysis_params(),
+        ANALYZER_VERSION,
+    )
+    .map_err(internal)?;
+    Ok((sha, key))
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AnalysisOutcome {
+    pub media_id: i64,
+    pub spatial_track_key: String,
+    pub reference_sha256: String,
+    /// Absolute path of the cached `spatial_track.npz`.
+    pub track_path: String,
+    pub cache_hit: bool,
+    /// Worker `summary` (only on a fresh analysis).
+    pub summary: Option<Value>,
+}
+
+/// Analysis for `media_id`, from the cache or by running the worker's `analyze`.
+pub fn ensure_analysis(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    spec: &WorkerSpec,
+    job: &JobHandle,
+    media_id: i64,
+) -> Result<AnalysisOutcome, JobError> {
+    let reference = reference_path(&*lock(db)?, media_id)?;
+    job.progress(0, 1, "hash");
+    let (sha, key) = current_track_key(&reference)?;
+    if job.is_cancelled() {
+        return Err(JobError::cancelled());
+    }
+    if let Some((_, path)) =
+        verified_asset(lock(db)?.connection(), store, &key, KIND_ANALYSIS).map_err(db_err)?
+    {
+        return Ok(AnalysisOutcome {
+            media_id,
+            spatial_track_key: key,
+            reference_sha256: sha,
+            track_path: path.to_string_lossy().into_owned(),
+            cache_hit: true,
+            summary: None,
+        });
+    }
+    let scratch = scratch_dir(store, job, "analyze");
+    let input = json!({
+        "op": "analyze",
+        "reference_path": reference.to_string_lossy(),
+        "reference_kind": REFERENCE_KIND,
+        "reference_sha256": sha,
+        "params": {},
+    });
+    let result = job.run_worker(spec, CAPABILITY, input, vec![reference], scratch.0.clone())?;
+    let output = &result.output;
+    if output.get("analyzer_version").and_then(Value::as_str) != Some(ANALYZER_VERSION)
+        || output.get("spatial_track_key").and_then(Value::as_str) != Some(key.as_str())
+    {
+        return Err(JobError::new(
+            "spatial_key_mismatch",
+            false,
+            "the spatial worker's analyzer version or track key differs from the host's",
+        ));
+    }
+    let relative = track_relative_path(&key).map_err(internal)?;
+    let dest = store.absolute(&relative).map_err(io_err)?;
+    worker::promote_output(Path::new(output_str(output, "track_path")?), &dest).map_err(io_err)?;
+    if let Ok(summary) = output_str(output, "summary_path") {
+        // Human-readable sidecar next to the track; not part of the cache row.
+        let _ = worker::promote_output(Path::new(summary), &dest.with_extension("json"));
+    }
+    let asset = SpatialAsset {
+        key: key.clone(),
+        kind: KIND_ANALYSIS.to_string(),
+        media_id,
+        segment_id: None,
+        path: relative,
+        sha256: worker::sha256_file(&dest).map_err(io_err)?,
+        created_at: String::new(),
+    };
+    upsert_asset(lock(db)?.connection(), &asset).map_err(db_err)?;
+    Ok(AnalysisOutcome {
+        media_id,
+        spatial_track_key: key,
+        reference_sha256: sha,
+        track_path: dest.to_string_lossy().into_owned(),
+        cache_hit: false,
+        summary: output.get("summary").cloned(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RenderOutcome {
+    pub segment_id: i64,
+    pub media_id: i64,
+    pub mode: SpatialMode,
+    pub render_key: String,
+    pub spatial_track_key: String,
+    pub tts_asset_key: String,
+    /// Absolute path of the stereo render (frontend: `convertFileSrc`).
+    pub path: String,
+    pub cache_hit: bool,
+    pub analysis_cache_hit: bool,
+    /// Worker `report` (only on a fresh render).
+    pub report: Option<Value>,
+}
+
+/// What a render needs, read under the DB lock.
+struct RenderPlan {
+    media_id: i64,
+    reference: PathBuf,
+    tts_key: String,
+    clip: PathBuf,
+    window: RenderWindow,
+}
+
+fn plan_render(
+    db: &MediaDb,
+    store: &AssetStore,
+    segment_id: i64,
+    mode: SpatialMode,
+) -> Result<RenderPlan, JobError> {
+    let segment = db
+        .get_segment(segment_id)
+        .map_err(db_err)?
+        .ok_or_else(|| JobError::new("not_found", false, "segment not found"))?;
+    if segment.dub_skip {
+        return Err(invalid("sentence is marked skip for dubbing"));
+    }
+    let tts = tts::resolve_segment_tts_asset(db, store, segment_id)?
+        .ok_or_else(|| JobError::new("no_clip", false, "synthesize the sentence first"))?;
+    let mut window = RenderWindow {
+        src_start_ms: segment.start_ms.max(0),
+        src_end_ms: segment.end_ms,
+        dub_start_ms: 0,
+    };
+    if window.src_end_ms <= window.src_start_ms {
+        return Err(invalid("sentence has no duration"));
+    }
+    if mode == SpatialMode::Concurrent {
+        // Same placement as the default export (`MixOptions.placement` default).
+        let rows =
+            placement::load_dub_sentences(db.connection(), segment.media_id).map_err(db_err)?;
+        let sentences = rows.iter().map(|r| r.sentence.clone()).collect::<Vec<_>>();
+        let plan = placement::place(&sentences, &PlacementParams::default()).map_err(invalid)?;
+        let placed = plan
+            .iter()
+            .find(|p| p.segment_id == segment_id && p.is_placed())
+            .ok_or_else(|| JobError::new("not_placed", false, "sentence is not placed"))?;
+        window.dub_start_ms = placed.dub_start_ms.max(0);
+    }
+    Ok(RenderPlan {
+        media_id: segment.media_id,
+        reference: reference_path(db, segment.media_id)?,
+        tts_key: tts.key,
+        clip: tts.path,
+        window,
+    })
+}
+
+/// Spatializes one Segment's current TTS clip (analysis first if needed).
+pub fn spatialize(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    spec: &WorkerSpec,
+    job: &JobHandle,
+    segment_id: i64,
+    mode: SpatialMode,
+) -> Result<RenderOutcome, JobError> {
+    let plan = plan_render(&*lock(db)?, store, segment_id, mode)?;
+    let analysis = ensure_analysis(db, store, spec, job, plan.media_id)?;
+    let key = render_key(
+        &plan.tts_key,
+        &analysis.spatial_track_key,
+        mode,
+        &plan.window,
+        &Strengths::default(),
+        RENDERER_VERSION,
+    )
+    .map_err(internal)?;
+    let outcome = |path: &Path, cache_hit: bool, report: Option<Value>| RenderOutcome {
+        segment_id,
+        media_id: plan.media_id,
+        mode,
+        render_key: key.clone(),
+        spatial_track_key: analysis.spatial_track_key.clone(),
+        tts_asset_key: plan.tts_key.clone(),
+        path: path.to_string_lossy().into_owned(),
+        cache_hit,
+        analysis_cache_hit: analysis.cache_hit,
+        report,
+    };
+    if let Some((_, path)) =
+        verified_asset(lock(db)?.connection(), store, &key, KIND_RENDER).map_err(db_err)?
+    {
+        return Ok(outcome(&path, true, None));
+    }
+    if job.is_cancelled() {
+        return Err(JobError::cancelled());
+    }
+    let scratch = scratch_dir(store, job, "render");
+    let track = PathBuf::from(&analysis.track_path);
+    let mut window = json!({
+        "src_start_ms": plan.window.src_start_ms,
+        "src_end_ms": plan.window.src_end_ms,
+    });
+    if mode == SpatialMode::Concurrent {
+        window["dub_start_ms"] = json!(plan.window.dub_start_ms);
+    }
+    let input = json!({
+        "op": "render",
+        "clip_path": plan.clip.to_string_lossy(),
+        "reference_path": plan.reference.to_string_lossy(),
+        "spatial_track_path": track.to_string_lossy(),
+        "spatial_track_key": analysis.spatial_track_key,
+        "reference_sha256": analysis.reference_sha256,
+        "tts_asset_key": plan.tts_key,
+        "mode": mode.as_str(),
+        "window": window,
+        "strengths": Strengths::default().to_value(),
+        "output_name": format!("{key}.wav"),
+    });
+    let result = job.run_worker(
+        spec,
+        CAPABILITY,
+        input,
+        vec![plan.clip.clone(), plan.reference.clone(), track],
+        scratch.0.clone(),
+    )?;
+    let output = &result.output;
+    if output.get("render_key").and_then(Value::as_str) != Some(key.as_str()) {
+        return Err(JobError::new(
+            "spatial_key_mismatch",
+            false,
+            "the spatial worker's render key differs from the host's",
+        ));
+    }
+    let relative = render_relative_path(&key).map_err(internal)?;
+    let dest = store.absolute(&relative).map_err(io_err)?;
+    worker::promote_output(Path::new(output_str(output, "path")?), &dest).map_err(io_err)?;
+    let asset = SpatialAsset {
+        key: key.clone(),
+        kind: KIND_RENDER.to_string(),
+        media_id: plan.media_id,
+        segment_id: Some(segment_id),
+        path: relative,
+        sha256: worker::sha256_file(&dest).map_err(io_err)?,
+        created_at: String::new(),
+    };
+    upsert_asset(lock(db)?.connection(), &asset).map_err(db_err)?;
+    Ok(outcome(&dest, false, output.get("report").cloned()))
+}
+
+// ----- jobs + Tauri surface -----
+
+/// `input_json` of a `spatial` job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum SpatialJobInput {
+    Analyze {
+        media_id: i64,
+    },
+    Render {
+        segment_id: i64,
+        #[serde(default)]
+        mode: SpatialMode,
+    },
+}
+
+/// Runner for `spatial` jobs (registered at startup; also used by the commands).
+pub fn spatial_runner(app: tauri::AppHandle) -> JobRunner {
+    std::sync::Arc::new(move |job: &JobHandle| {
+        use tauri::Manager;
+        let input: SpatialJobInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid(format!("invalid spatial job input: {e}")))?;
+        let state = app.state::<crate::AppState>();
+        let store = tts::asset_store(&app).map_err(io_err)?;
+        let spec = worker_spec();
+        let value = match input {
+            SpatialJobInput::Analyze { media_id } => {
+                serde_json::to_value(ensure_analysis(&state.db, &store, &spec, job, media_id)?)
+            }
+            SpatialJobInput::Render { segment_id, mode } => {
+                serde_json::to_value(spatialize(&state.db, &store, &spec, job, segment_id, mode)?)
+            }
+        };
+        value.map_err(internal)
+    })
+}
+
+/// Analyses a media file's spatial cues (cached per media) as a `spatial` job.
+/// Returns the `AnalysisOutcome` JSON.
+#[tauri::command]
+pub async fn analyze_spatial(app: tauri::AppHandle, media_id: i64) -> Result<Value, String> {
+    use tauri::Manager;
+    let input =
+        serde_json::to_value(SpatialJobInput::Analyze { media_id }).map_err(|e| e.to_string())?;
+    let store = std::sync::Arc::clone(&app.state::<crate::jobs::JobsState>().0);
+    crate::jobs::run_to_completion(
+        store,
+        NewJob::new(SPATIAL_JOB, media_id).input(input),
+        spatial_runner(app.clone()),
+    )
+    .await
+}
+
+/// Spatializes one Segment's TTS clip as a `spatial` job (analysis first when not
+/// cached). `mode` defaults to `source_trajectory`. Returns the `RenderOutcome` JSON.
+#[tauri::command]
+pub async fn spatialize_segment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    segment_id: i64,
+    mode: Option<SpatialMode>,
+) -> Result<Value, String> {
+    use tauri::Manager;
+    let media_id = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_segment(segment_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "segment not found".to_string())?
+            .media_id
+    };
+    let input = serde_json::to_value(SpatialJobInput::Render {
+        segment_id,
+        mode: mode.unwrap_or_default(),
+    })
+    .map_err(|e| e.to_string())?;
+    let store = std::sync::Arc::clone(&app.state::<crate::jobs::JobsState>().0);
+    crate::jobs::run_to_completion(
+        store,
+        NewJob::new(SPATIAL_JOB, media_id)
+            .segment(segment_id)
+            .input(input),
+        spatial_runner(app.clone()),
+    )
+    .await
 }
 
 #[cfg(test)]

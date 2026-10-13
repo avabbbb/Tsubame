@@ -6,9 +6,7 @@ mod mix;
 mod placement;
 mod providers;
 mod refine;
-// audio.spatialize host: keys + cache table; wired into jobs/mix next.
-#[cfg_attr(not(test), allow(dead_code))]
-mod spatial;
+mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
 mod translate;
 mod tts;
@@ -1249,12 +1247,38 @@ fn mix_runner(app: AppHandle) -> JobRunner {
         let input: MixJobInput = serde_json::from_value(job.input())
             .map_err(|e| invalid_input(format!("invalid mix job input: {e}")))?;
         input.options.validate().map_err(invalid_input)?;
-        let inputs = {
-            let state = app.state::<AppState>();
+        let assets = tts::asset_store(&app).map_err(|e| JobError::new("io", true, e))?;
+        let state = app.state::<AppState>();
+        let (mut inputs, spatial_candidates) = {
             let db = state.db.lock().map_err(db_error)?;
-            mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
-                .map_err(invalid_input)?
+            let mut inputs =
+                mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
+                    .map_err(invalid_input)?;
+            // `tts_assets.path` is relative to the asset store.
+            for clip in &mut inputs.clips {
+                if clip.path.is_relative() {
+                    clip.path = assets.root.join(&clip.path);
+                }
+            }
+            let candidates = input.options.use_spatial
+                && spatial::has_renders(db.connection(), input.media_id).map_err(db_error)?;
+            (inputs, candidates)
         };
+        let mut spatial_clips = 0;
+        if spatial_candidates {
+            // Hash the original without the DB lock; renders are keyed on its track key.
+            job.progress(0, 1, "spatial");
+            let (_, track_key) = spatial::current_track_key(&inputs.original_path)?;
+            let db = state.db.lock().map_err(db_error)?;
+            spatial_clips = spatial::apply_spatial_renders(
+                db.connection(),
+                &assets,
+                &mut inputs.clips,
+                &track_key,
+                input.options.spatial_mode,
+            )
+            .map_err(db_error)?;
+        }
         let report = mix::render(
             &inputs.original_path,
             &inputs.clips,
@@ -1269,7 +1293,10 @@ fn mix_runner(app: AppHandle) -> JobRunner {
                 JobError::new("mix_failed", true, error)
             }
         })?;
-        serde_json::to_value(report).map_err(|e| JobError::new("internal", false, e.to_string()))
+        let mut value = serde_json::to_value(report)
+            .map_err(|e| JobError::new("internal", false, e.to_string()))?;
+        value["spatial_clips"] = serde_json::json!(spatial_clips);
+        Ok(value)
     })
 }
 
@@ -1313,7 +1340,8 @@ pub fn run() {
             let handle = app.handle().clone();
             store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
             store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
-            store.register_runner(MIX_JOB, mix_runner(handle));
+            store.register_runner(MIX_JOB, mix_runner(handle.clone()));
+            store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1355,6 +1383,8 @@ pub fn run() {
             tts::set_segment_dub_skip,
             plan_dub,
             export_dub_mix,
+            spatial::analyze_spatial,
+            spatial::spatialize_segment,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,

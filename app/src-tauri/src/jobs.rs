@@ -624,7 +624,6 @@ pub struct JobHandle {
 }
 
 impl JobHandle {
-    #[allow(dead_code)] // handle API for worker-backed runners
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -700,8 +699,7 @@ impl JobHandle {
 
     /// Runs one worker request (spawn → handshake on `op` → request → shutdown),
     /// forwarding `progress` into this job and honouring `cancel_job`.
-    /// Not called outside tests until a worker-backed stage is wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Used by the `spatial` stage (`spatial.rs`).
     pub fn run_worker(
         &self,
         spec: &WorkerSpec,

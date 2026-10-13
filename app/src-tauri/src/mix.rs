@@ -23,6 +23,7 @@
 
 use crate::jobs::ProgressSink;
 use crate::placement::{self, Placement, PlacementParams};
+use crate::spatial::SpatialMode;
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,11 @@ pub struct MixOptions {
     pub clip_peak_dbfs: Option<f64>,
     pub fade_ms: f64,
     pub placement: PlacementParams,
+    /// Use a Segment's `audio.spatialize` render instead of its raw TTS clip
+    /// when one exists for the clip's current render key (default on).
+    pub use_spatial: bool,
+    /// Render mode whose assets `use_spatial` looks up.
+    pub spatial_mode: SpatialMode,
 }
 
 impl Default for MixOptions {
@@ -82,6 +88,8 @@ impl Default for MixOptions {
             clip_peak_dbfs: Some(-9.0),
             fade_ms: 8.0,
             placement: PlacementParams::default(),
+            use_spatial: true,
+            spatial_mode: SpatialMode::default(),
         }
     }
 }
@@ -138,6 +146,8 @@ pub struct MixClip {
     pub src_end_ms: i64,
     /// Duration the placement assumed; the decoded clip must match it.
     pub expected_duration_ms: Option<i64>,
+    /// The Segment's TTS asset key (selects a spatial render, see `use_spatial`).
+    pub tts_asset_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -918,6 +928,7 @@ pub fn export_inputs(
                 src_start_ms: row.sentence.src_start_ms,
                 src_end_ms: row.sentence.src_end_ms,
                 expected_duration_ms: row.sentence.clip_duration_ms,
+                tts_asset_key: row.tts_asset_key.clone(),
             })
         })
         .collect();
@@ -1018,6 +1029,7 @@ mod tests {
             src_start_ms: 0,
             src_end_ms: 1000,
             expected_duration_ms: None,
+            tts_asset_key: None,
         }
     }
 
@@ -1445,6 +1457,10 @@ mod tests {
         assert!(!parsed.limiter);
         assert_eq!(parsed.kind, ExportKind::DubStem);
         assert_eq!(parsed.relative_loudness_db, -8.0);
+        assert!(parsed.use_spatial, "spatial follow defaults on");
+        assert_eq!(parsed.spatial_mode, SpatialMode::SourceTrajectory);
+        let off: MixOptions = serde_json::from_str(r#"{"use_spatial":false}"#).unwrap();
+        assert!(!off.use_spatial);
     }
 
     #[test]
@@ -1470,6 +1486,7 @@ mod tests {
         assert_eq!(inputs.clips[0].dub_start_ms, 1300);
         assert_eq!(inputs.clips[1].dub_start_ms, 1300 + 3000 + 120);
         assert_eq!(inputs.clips[1].expected_duration_ms, Some(500));
+        assert_eq!(inputs.clips[1].tts_asset_key.as_deref(), Some("b"));
         assert!(export_inputs(&conn, 9, &PlacementParams::default()).is_err());
     }
 }
