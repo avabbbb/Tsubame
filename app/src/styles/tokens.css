@@ -744,6 +744,20 @@ textarea:focus, input:focus, select:focus {
   color: color-mix(in srgb, #ff9f0a 76%, var(--text));
   font-size: 9px;
 }
+.drift-badge {
+  align-self: flex-start;
+  background: color-mix(in srgb, #ff453a 13%, var(--surface));
+  color: color-mix(in srgb, #ff453a 76%, var(--text));
+}
+.dub-export-actions .section-label { margin: 0; }
+.dub-plan-summary { color: var(--muted); font-size: 10px; }
+.dub-limiter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
 .state-badge.clean {
   background: color-mix(in srgb, #30d158 12%, var(--surface));
   color: color-mix(in srgb, #30d158 76%, var(--text));

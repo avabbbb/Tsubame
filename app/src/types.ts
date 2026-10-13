@@ -292,3 +292,41 @@ export interface SynthesisOutcome {
   path: string;
   cache_hit: boolean;
 }
+
+/** `dub.place` output (docs/19-dubbing-pipeline.md). */
+export interface DubPlacement {
+  segment_id: number;
+  dub_start_ms: number;
+  dub_end_ms: number;
+  drift_ms: number;
+  /** `drift_exceeded`, `skipped`, `no_clip`. */
+  flags: string[];
+}
+
+export interface DubPlacementParams {
+  anchor: "start" | "end";
+  beat_ms: number;
+  min_gap_ms: number;
+  max_drift_ms: number;
+}
+
+export interface DubPlan {
+  media_id: number;
+  params: DubPlacementParams;
+  placements: DubPlacement[];
+  placed_count: number;
+  drift_exceeded_count: number;
+}
+
+export type DubExportKind = "mix" | "dub_stem";
+
+export interface DubMixReport {
+  output_path: string;
+  kind: DubExportKind;
+  sample_rate: number;
+  channels: number;
+  original_frames: number;
+  output_frames: number;
+  limited_frames: number;
+  clips: { segment_id: number; start_frame: number; frames: number; gain_db: number }[];
+}
