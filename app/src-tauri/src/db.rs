@@ -224,6 +224,7 @@ impl MediaDb {
             Self::ensure_column(&conn, "segments", name, definition)?;
         }
         crate::tts::migrate(&conn)?;
+        crate::spatial::migrate(&conn)?; // audio.spatialize cache (spatial.rs)
 
         crate::jobs::migrate(&conn)?; // PR #10: jobs table (jobs.rs)
 

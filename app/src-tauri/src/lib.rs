@@ -6,6 +6,9 @@ mod mix;
 mod placement;
 mod providers;
 mod refine;
+// audio.spatialize host: keys + cache table; wired into jobs/mix next.
+#[cfg_attr(not(test), allow(dead_code))]
+mod spatial;
 mod subtitle;
 mod translate;
 mod tts;
