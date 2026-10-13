@@ -144,20 +144,27 @@ pub fn build_user_message(request: &RefineRequest) -> String {
     .to_string()
 }
 
+/// Extracts the outermost JSON object from a model message. Models frequently
+/// wrap JSON in prose or code fences. Shared by every chat-completion based
+/// capability (`transcript.refine`, `text.translate`).
+pub fn extract_json_object(content: &str, label: &str) -> Result<Value, String> {
+    let start = content
+        .find('{')
+        .ok_or_else(|| format!("{label} provider returned no JSON object"))?;
+    let end = content
+        .rfind('}')
+        .ok_or_else(|| format!("{label} provider returned no JSON object"))?;
+    if end < start {
+        return Err(format!("{label} provider returned malformed JSON"));
+    }
+    serde_json::from_str(&content[start..=end])
+        .map_err(|e| format!("{label} provider returned invalid JSON: {e}"))
+}
+
 /// Extracts the refinement JSON from a model message. Models frequently wrap
 /// JSON in prose or code fences; we take the outermost object.
 pub fn parse_model_content(content: &str) -> Result<RefineResult, String> {
-    let start = content
-        .find('{')
-        .ok_or_else(|| "refine provider returned no JSON object".to_string())?;
-    let end = content
-        .rfind('}')
-        .ok_or_else(|| "refine provider returned no JSON object".to_string())?;
-    if end < start {
-        return Err("refine provider returned malformed JSON".into());
-    }
-    let value: Value = serde_json::from_str(&content[start..=end])
-        .map_err(|e| format!("refine provider returned invalid JSON: {e}"))?;
+    let value = extract_json_object(content, "refine")?;
     let proposals = value
         .get("proposals")
         .and_then(Value::as_array)
@@ -370,23 +377,34 @@ pub fn char_diff(original: &str, proposed: &str) -> Vec<DiffOp> {
     ops
 }
 
-fn client() -> Result<Client, String> {
+fn client(user_agent: &str) -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(120))
-        .user_agent("Tsubame/0.1 TranscriptRefine")
+        .user_agent(user_agent)
         .build()
         .map_err(|e| e.to_string())
 }
 
-/// Calls an OpenAI-compatible `/chat/completions` endpoint. The same code path
-/// serves paid APIs and local servers (LM Studio, Ollama, llama.cpp): there is
-/// no online/local branch and no model-name switch.
-pub async fn run_openai_compatible(
+/// One OpenAI-compatible chat completion: the first choice's message content
+/// and its `finish_reason` (`"length"` means the output was truncated).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatCompletion {
+    pub content: String,
+    pub finish_reason: Option<String>,
+}
+
+/// Calls an OpenAI-compatible `/chat/completions` endpoint with one system and
+/// one user message. The same code path serves paid APIs and local servers
+/// (LM Studio, Ollama, llama.cpp): there is no online/local branch and no
+/// model-name switch. `label` only prefixes error messages.
+pub async fn chat_completion(
     provider: &ProviderConfig,
     secret: Option<&str>,
     model_id: &str,
-    request: &RefineRequest,
-) -> Result<RefineResult, String> {
+    system: &str,
+    user: &str,
+    label: &str,
+) -> Result<ChatCompletion, String> {
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
@@ -395,12 +413,12 @@ pub async fn run_openai_compatible(
         "model": model_id,
         "temperature": 0,
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user", "content": build_user_message(request) },
+            { "role": "system", "content": system },
+            { "role": "user", "content": user },
         ],
     });
 
-    let mut http = client()?.post(url).json(&body);
+    let mut http = client("Tsubame/0.1")?.post(url).json(&body);
     match provider.auth_mode.as_str() {
         "none" => {}
         "bearer" => {
@@ -414,15 +432,41 @@ pub async fn run_openai_compatible(
     let status = response.status();
     let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("refine provider returned HTTP {status}"));
+        return Err(format!("{label} provider returned HTTP {status}"));
     }
     let value: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("refine provider returned invalid JSON: {e}"))?;
+        .map_err(|e| format!("{label} provider returned invalid JSON: {e}"))?;
     let content = value
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .ok_or_else(|| "refine provider response has no message content".to_string())?;
-    parse_model_content(content)
+        .ok_or_else(|| format!("{label} provider response has no message content"))?;
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(ChatCompletion {
+        content: content.to_string(),
+        finish_reason,
+    })
+}
+
+/// Runs `transcript.refine` on an OpenAI-compatible Provider.
+pub async fn run_openai_compatible(
+    provider: &ProviderConfig,
+    secret: Option<&str>,
+    model_id: &str,
+    request: &RefineRequest,
+) -> Result<RefineResult, String> {
+    let completion = chat_completion(
+        provider,
+        secret,
+        model_id,
+        SYSTEM_PROMPT,
+        &build_user_message(request),
+        "refine",
+    )
+    .await?;
+    parse_model_content(&completion.content)
 }
 
 #[cfg(test)]
