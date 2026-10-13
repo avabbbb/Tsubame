@@ -33,6 +33,10 @@ export interface Segment {
   refine_confidence: number | null;
   align_provenance: string;
   align_confidence: number | null;
+  /** Content-addressed key of the current speech.tts clip, if any. */
+  tts_asset_key: string | null;
+  /** Excluded from dub placement and mix. */
+  dub_skip: boolean;
 }
 
 export interface SegmentDraft {

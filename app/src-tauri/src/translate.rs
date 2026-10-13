@@ -691,6 +691,8 @@ mod tests {
             refine_confidence: None,
             align_provenance: String::new(),
             align_confidence: None,
+            tts_asset_key: None,
+            dub_skip: false,
         }
     }
 

@@ -229,6 +229,9 @@ fn synthesis_sets_asset_provenance_and_dirty_flags() {
         .unwrap();
     assert_eq!(key.as_deref(), Some(out.asset.key.as_str()));
     assert!(!skip);
+    let segment = db.get_segment(fx.segment.id).unwrap().unwrap();
+    assert_eq!(segment.tts_asset_key, key);
+    assert!(!segment.dub_skip);
     let resolved = resolve_segment_tts_asset(&db, &fx.store, fx.segment.id)
         .unwrap()
         .unwrap();
@@ -334,6 +337,7 @@ fn refuses_skip_missing_or_stale_translation() {
         set_dub_skip(&db, fx.segment.id, fx.segment.revision, true).unwrap()
     };
     assert!(skipped.dirty_mix);
+    assert!(skipped.dub_skip);
     let err = run(&fx, &adapter, fx.segment.id, skipped.revision, 0).unwrap_err();
     assert!(err.message.contains("skip"));
 
