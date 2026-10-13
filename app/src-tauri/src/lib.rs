@@ -15,7 +15,8 @@ mod worker; // PR #10: worker protocol v1 host
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
 use db::{MediaDb, MediaItem, ProposalDecision, RefineProposal, Segment};
-use mix::{MixOptions, MixReport, ProgressSink};
+use jobs::{JobError, JobHandle, JobRunner, JobsState, NewJob};
+use mix::MixOptions;
 use placement::{DubPlan, PlacementParams};
 use providers::{
     builtin_local_providers, builtin_provider, builtin_provider_models, delete_secret,
@@ -25,9 +26,13 @@ use providers::{
 };
 use refine::{GlossaryTerm, RefineSegmentInput, MAX_BATCH_SEGMENTS};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path, sync::Mutex};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use subtitle::{SubtitleCue, SubtitleFormat};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 struct AppState {
     db: Mutex<MediaDb>,
@@ -966,37 +971,19 @@ fn apply_alignment_result(
 
 // ----- translation (PR #10, text.translate) -----
 
-/// Progress sink for `translate_segments` until the jobs track wires its
-/// `JobHandle`: emits `translate://progress` and is never cancelled.
-struct TranslateEventSink {
-    app: AppHandle,
+/// Job kind of `translate_segments` runs.
+const TRANSLATE_JOB: &str = "translate";
+
+/// `input_json` of a `translate` job: the `translate_segments` arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TranslateJobInput {
     media_id: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct TranslateProgressEvent {
-    media_id: i64,
-    done: usize,
-    total: usize,
-    stage: String,
-}
-
-impl translate::ProgressSink for TranslateEventSink {
-    fn progress(&self, done: usize, total: usize, stage: &str) {
-        let _ = self.app.emit(
-            "translate://progress",
-            TranslateProgressEvent {
-                media_id: self.media_id,
-                done,
-                total,
-                stage: stage.to_string(),
-            },
-        );
-    }
-
-    fn is_cancelled(&self) -> bool {
-        false
-    }
+    segment_ids: Option<Vec<i64>>,
+    provider_id: String,
+    model_id: String,
+    source_language: Option<String>,
+    target_language: String,
+    overwrite_human_edits: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1016,69 +1003,91 @@ struct TranslateOutcome {
     segments: Vec<Segment>,
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-async fn translate_segments(
-    media_id: i64,
-    segment_ids: Option<Vec<i64>>,
-    provider_id: String,
-    model_id: String,
-    source_language: Option<String>,
-    target_language: String,
-    overwrite_human_edits: Option<bool>,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<TranslateOutcome, String> {
-    let provider_id = provider_id.trim().to_string();
-    let model_id = model_id.trim().to_string();
+fn invalid_input(message: impl Into<String>) -> JobError {
+    JobError::new("invalid_input", false, message)
+}
+
+fn db_error(error: impl std::fmt::Display) -> JobError {
+    JobError::new("db", true, error.to_string())
+}
+
+/// Runner for `translate` jobs (registered at startup; also used by
+/// `translate_segments`).
+fn translate_runner(app: AppHandle) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let input: TranslateJobInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid_input(format!("invalid translate job input: {e}")))?;
+        let outcome = tauri::async_runtime::block_on(run_translate_job(&app, input, job))?;
+        serde_json::to_value(outcome).map_err(|e| JobError::new("internal", false, e.to_string()))
+    })
+}
+
+async fn run_translate_job(
+    app: &AppHandle,
+    input: TranslateJobInput,
+    sink: &dyn jobs::ProgressSink,
+) -> Result<TranslateOutcome, JobError> {
+    let state = app.state::<AppState>();
+    let media_id = input.media_id;
+    let provider_id = input.provider_id.trim().to_string();
+    let model_id = input.model_id.trim().to_string();
     if provider_id.is_empty() || model_id.is_empty() {
-        return Err("translation requires a Provider and a Model".into());
+        return Err(invalid_input("translation requires a Provider and a Model"));
     }
-    let target_language = translate::normalize_target_language(&target_language)?.to_string();
-    let source_language = source_language
+    let target_language = translate::normalize_target_language(&input.target_language)
+        .map_err(invalid_input)?
+        .to_string();
+    let source_language = input
+        .source_language
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let overwrite_human_edits = overwrite_human_edits.unwrap_or(false);
+    let overwrite_human_edits = input.overwrite_human_edits;
+    let unavailable = |message: &str| JobError::new("provider_unavailable", false, message);
 
     let (provider, segments, glossary) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(db_error)?;
         let provider = db
             .get_provider(&provider_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "translation Provider not found".to_string())?;
+            .map_err(db_error)?
+            .ok_or_else(|| unavailable("translation Provider not found"))?;
         if !provider.enabled {
-            return Err("translation Provider is disabled".into());
+            return Err(unavailable("translation Provider is disabled"));
         }
         let model = db
             .list_provider_models(&provider_id)
-            .map_err(|e| e.to_string())?
+            .map_err(db_error)?
             .into_iter()
             .find(|model| model.model_id == model_id)
-            .ok_or_else(|| "model not found in Provider inventory".to_string())?;
+            .ok_or_else(|| unavailable("model not found in Provider inventory"))?;
         if !model.available {
-            return Err("model is currently unavailable".into());
+            return Err(unavailable("model is currently unavailable"));
         }
         if !model
             .effective_capabilities
             .iter()
             .any(|capability| capability == "text.translate")
         {
-            return Err("selected model does not resolve text.translate".into());
+            return Err(unavailable(
+                "selected model does not resolve text.translate",
+            ));
         }
-        let segments = db.get_segments(media_id).map_err(|e| e.to_string())?;
-        let glossary = db.list_glossary().map_err(|e| e.to_string())?;
+        let segments = db.get_segments(media_id).map_err(db_error)?;
+        let glossary = db.list_glossary().map_err(db_error)?;
         (provider, segments, glossary)
     };
 
     if provider.kind != "openai-compatible" {
-        return Err(format!(
+        return Err(unavailable(&format!(
             "provider adapter {} does not implement text.translate yet",
             provider.kind
-        ));
+        )));
     }
 
-    let selection =
-        translate::select_targets(&segments, segment_ids.as_deref(), overwrite_human_edits);
+    let selection = translate::select_targets(
+        &segments,
+        input.segment_ids.as_deref(),
+        overwrite_human_edits,
+    );
     let provenance = format!("{}{provider_id}:{model_id}", translate::PROVENANCE_PREFIX);
     let requested = selection.targets.len();
     let plan = translate::TranslatePlan {
@@ -1089,13 +1098,9 @@ async fn translate_segments(
         glossary,
     };
     let secret = if requested > 0 {
-        provider_secret(&provider)?
+        provider_secret(&provider).map_err(|e| unavailable(&e))?
     } else {
         None
-    };
-    let sink = TranslateEventSink {
-        app: app.clone(),
-        media_id,
     };
     let summary = translate::run_translation(
         &plan,
@@ -1115,7 +1120,7 @@ async fn translate_segments(
                 .await
             }
         },
-        &sink,
+        sink,
         |lines| {
             let mut db = state.db.lock().map_err(|e| e.to_string())?;
             translate::apply_translations(
@@ -1129,18 +1134,27 @@ async fn translate_segments(
     )
     .await;
 
+    // Batches applied before the cancel stay applied (checkpointing); the job
+    // ends `cancelled` and the UI reloads Segments.
+    if summary.cancelled {
+        return Err(JobError::new(
+            "cancelled",
+            true,
+            "translation was cancelled; lines translated before the cancel were kept",
+        ));
+    }
     let failed_lines: usize = summary
         .failed_batches
         .iter()
         .map(|batch| batch.segment_ids.len())
         .sum();
-    if requested > 0 && !summary.cancelled && failed_lines == requested {
+    if requested > 0 && failed_lines == requested {
         let error = summary
             .failed_batches
             .last()
             .map(|batch| batch.error.clone())
             .unwrap_or_else(|| "translation failed".into());
-        return Err(error);
+        return Err(JobError::new("translate_failed", true, error));
     }
 
     let mut protected = selection.protected;
@@ -1150,9 +1164,9 @@ async fn translate_segments(
     let segments = state
         .db
         .lock()
-        .map_err(|e| e.to_string())?
+        .map_err(db_error)?
         .get_segments(media_id)
-        .map_err(|e| e.to_string())?;
+        .map_err(db_error)?;
 
     Ok(TranslateOutcome {
         provenance,
@@ -1169,6 +1183,39 @@ async fn translate_segments(
     })
 }
 
+/// Runs a `translate` job to completion; progress and cancel go through
+/// `job://update` / `cancel_job`. Returns the `TranslateOutcome` JSON.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn translate_segments(
+    media_id: i64,
+    segment_ids: Option<Vec<i64>>,
+    provider_id: String,
+    model_id: String,
+    source_language: Option<String>,
+    target_language: String,
+    overwrite_human_edits: Option<bool>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    let input = TranslateJobInput {
+        media_id,
+        segment_ids,
+        provider_id,
+        model_id,
+        source_language,
+        target_language,
+        overwrite_human_edits: overwrite_human_edits.unwrap_or(false),
+    };
+    let input = serde_json::to_value(input).map_err(|e| e.to_string())?;
+    let store = Arc::clone(&app.state::<JobsState>().0);
+    jobs::run_to_completion(
+        store,
+        NewJob::new(TRANSLATE_JOB, media_id).input(input),
+        translate_runner(app.clone()),
+    )
+    .await
+}
+
 /// `dub.place` for one media item. The plan is derived (not persisted): it is
 /// recomputed from canonical Segments + TTS assets on every call.
 #[tauri::command]
@@ -1181,70 +1228,72 @@ fn plan_dub(
     placement::plan_dub(db.connection(), media_id, params)
 }
 
-#[derive(Clone, Serialize)]
-struct MixProgressEvent {
+/// Job kind of `export_dub_mix` runs.
+const MIX_JOB: &str = "mix";
+
+/// `input_json` of a `mix` job: the `export_dub_mix` arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MixJobInput {
     media_id: i64,
-    stage: String,
-    done: u64,
-    total: u64,
+    output_path: String,
+    options: MixOptions,
 }
 
-/// Temporary progress sink until `jobs.rs` adapts its job handle to
-/// `mix::ProgressSink`: emits `mix://progress`, never cancels.
-struct EventProgress {
-    app: AppHandle,
-    media_id: i64,
+/// Runner for `mix` jobs. Reads inputs under the DB lock, then renders
+/// without it.
+fn mix_runner(app: AppHandle) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let input: MixJobInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid_input(format!("invalid mix job input: {e}")))?;
+        input.options.validate().map_err(invalid_input)?;
+        let inputs = {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().map_err(db_error)?;
+            mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
+                .map_err(invalid_input)?
+        };
+        let report = mix::render(
+            &inputs.original_path,
+            &inputs.clips,
+            Path::new(&input.output_path),
+            &input.options,
+            job,
+        )
+        .map_err(|error| {
+            if error == mix::ERR_CANCELLED {
+                JobError::cancelled()
+            } else {
+                JobError::new("mix_failed", true, error)
+            }
+        })?;
+        serde_json::to_value(report).map_err(|e| JobError::new("internal", false, e.to_string()))
+    })
 }
 
-impl ProgressSink for EventProgress {
-    fn progress(&self, stage: &str, done: u64, total: u64) {
-        let _ = self.app.emit(
-            "mix://progress",
-            MixProgressEvent {
-                media_id: self.media_id,
-                stage: stage.to_string(),
-                done,
-                total,
-            },
-        );
-    }
-
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
-
-/// `audio.mix` offline export: original + placed dub clips (or the dub stem).
-/// Reads inputs under the DB lock, then renders on a blocking thread without it.
+/// `audio.mix` offline export: original + placed dub clips (or the dub stem),
+/// run as a `mix` job. Returns the `MixReport` JSON.
 #[tauri::command]
 async fn export_dub_mix(
     app: AppHandle,
     media_id: i64,
     output_path: String,
     options: Option<MixOptions>,
-) -> Result<MixReport, String> {
+) -> Result<serde_json::Value, String> {
     let options = options.unwrap_or_default();
     options.validate()?;
-    let inputs = {
-        let state = app.state::<AppState>();
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        mix::export_inputs(db.connection(), media_id, &options.placement)?
-    };
-    let sink = EventProgress {
-        app: app.clone(),
+    let input = serde_json::to_value(MixJobInput {
         media_id,
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        mix::render(
-            &inputs.original_path,
-            &inputs.clips,
-            Path::new(&output_path),
-            &options,
-            &sink,
-        )
+        output_path,
+        options,
     })
+    .map_err(|e| e.to_string())?;
+    let store = Arc::clone(&app.state::<JobsState>().0);
+    jobs::run_to_completion(
+        store,
+        NewJob::new(MIX_JOB, media_id).input(input),
+        mix_runner(app.clone()),
+    )
     .await
-    .map_err(|e| e.to_string())?
 }
 
 pub fn run() {
@@ -1255,7 +1304,13 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
             app.manage(AppState { db: Mutex::new(db) });
-            jobs::install(app, &dir.join("tsubame.db"))?; // PR #10: jobs + job://update
+            // PR #10: jobs + job://update, and the in-process stage runners
+            // (`retry_job` re-runs a job through these).
+            let store = jobs::install(app, &dir.join("tsubame.db"))?;
+            let handle = app.handle().clone();
+            store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
+            store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
+            store.register_runner(MIX_JOB, mix_runner(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

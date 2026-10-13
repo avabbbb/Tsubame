@@ -20,6 +20,7 @@
 //! reference-audio / voice-clone path.
 
 use crate::db::{MediaDb, Segment};
+use crate::jobs::{JobError, JobHandle, JobRunner, NewJob, ProgressSink};
 use crate::providers::ProviderConfig;
 use crate::voice::{self, hex, VoiceProfile};
 use reqwest::Client;
@@ -83,22 +84,6 @@ impl fmt::Display for TtsError {
         } else {
             write!(f, "{}: {}", self.code, self.message)
         }
-    }
-}
-
-/// Minimal progress/cancellation hook. Kept local so this module does not
-/// depend on the job runner; the integrator adapts a job handle to it.
-pub trait ProgressSink: Send + Sync {
-    fn progress(&self, stage: &str, done: u64, total: u64);
-    fn is_cancelled(&self) -> bool;
-}
-
-pub struct NoopProgress;
-
-impl ProgressSink for NoopProgress {
-    fn progress(&self, _stage: &str, _done: u64, _total: u64) {}
-    fn is_cancelled(&self) -> bool {
-        false
     }
 }
 
@@ -1163,38 +1148,113 @@ fn resolve_tts_target(db: &MediaDb, profile: &VoiceProfile) -> Result<ProviderCo
     Ok(provider)
 }
 
+/// Job kind of `synthesize_segment` runs.
+pub const TTS_JOB: &str = "tts";
+
+/// `input_json` of a `tts` job: the `synthesize_segment` arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TtsJobInput {
+    segment_id: i64,
+    expected_revision: i64,
+    voice_profile_id: String,
+    take: u32,
+}
+
+impl From<TtsError> for JobError {
+    fn from(error: TtsError) -> Self {
+        // The message keeps the `Display` form (e.g. "segment revision
+        // conflict: ...") that the UI matches on.
+        JobError::new(error.code.clone(), error.retryable, error.to_string())
+    }
+}
+
+/// Error messages match what `synthesize_segment` returned before it ran as a
+/// job (plain strings for setup failures, `TtsError` display otherwise).
+async fn run_tts_job(
+    app: &tauri::AppHandle,
+    input: TtsJobInput,
+    sink: &dyn ProgressSink,
+) -> Result<SynthesisOutcome, JobError> {
+    use tauri::Manager;
+    let setup = |code: &str, message: String| JobError::new(code, false, message);
+    let state = app.state::<crate::AppState>();
+    let store = asset_store(app).map_err(|e| setup("io", e))?;
+    let (profile, provider) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|e| JobError::new("db", true, e.to_string()))?;
+        let profile = voice::get(db.connection(), input.voice_profile_id.trim())
+            .map_err(|e| JobError::new("db", true, e.to_string()))?
+            .ok_or_else(|| setup("not_found", "voice profile not found".into()))?;
+        let provider = resolve_tts_target(&db, &profile)?;
+        (profile, provider)
+    };
+    let secret = crate::provider_secret(&provider).map_err(|e| setup("provider_unavailable", e))?;
+    let adapter = adapter_for_provider(&provider, secret)?;
+    Ok(run_synthesis(
+        &state.db,
+        &store,
+        &adapter,
+        input.segment_id,
+        input.expected_revision,
+        &profile,
+        input.take,
+        sink,
+    )
+    .await?)
+}
+
+/// Runner for `tts` jobs (registered at startup; also used by
+/// `synthesize_segment`).
+pub fn tts_runner(app: tauri::AppHandle) -> JobRunner {
+    std::sync::Arc::new(move |job: &JobHandle| {
+        let input: TtsJobInput = serde_json::from_value(job.input()).map_err(|e| {
+            JobError::new(
+                "invalid_input",
+                false,
+                format!("invalid tts job input: {e}"),
+            )
+        })?;
+        let outcome = tauri::async_runtime::block_on(run_tts_job(&app, input, job))?;
+        serde_json::to_value(outcome).map_err(|e| JobError::new("internal", false, e.to_string()))
+    })
+}
+
+/// Synthesizes one Segment as a `tts` job; progress and cancel go through
+/// `job://update` / `cancel_job`. Returns the `SynthesisOutcome` JSON.
 #[tauri::command]
 pub async fn synthesize_segment(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
+    jobs_state: tauri::State<'_, crate::jobs::JobsState>,
     segment_id: i64,
     expected_revision: i64,
     voice_profile_id: String,
     take: Option<u32>,
-) -> Result<SynthesisOutcome, String> {
-    let store = asset_store(&app)?;
-    let (profile, provider) = {
+) -> Result<Value, String> {
+    let media_id = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        let profile = voice::get(db.connection(), voice_profile_id.trim())
+        db.get_segment(segment_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "voice profile not found".to_string())?;
-        let provider = resolve_tts_target(&db, &profile).map_err(|e| e.to_string())?;
-        (profile, provider)
+            .ok_or_else(|| TtsError::new("not_found", "segment not found", false).to_string())?
+            .media_id
     };
-    let secret = crate::provider_secret(&provider)?;
-    let adapter = adapter_for_provider(&provider, secret).map_err(|e| e.to_string())?;
-    run_synthesis(
-        &state.db,
-        &store,
-        &adapter,
+    let input = serde_json::to_value(TtsJobInput {
         segment_id,
         expected_revision,
-        &profile,
-        take.unwrap_or(0),
-        &NoopProgress,
+        voice_profile_id,
+        take: take.unwrap_or(0),
+    })
+    .map_err(|e| e.to_string())?;
+    crate::jobs::run_to_completion(
+        std::sync::Arc::clone(&jobs_state.0),
+        NewJob::new(TTS_JOB, media_id)
+            .segment(segment_id)
+            .input(input),
+        tts_runner(app.clone()),
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

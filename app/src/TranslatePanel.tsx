@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { canCancel, useJobs } from "./jobs";
 import type {
   CapabilityTarget,
   MediaItem,
   Segment,
   TranslateOutcome,
-  TranslateProgress,
   TranslateTargetLanguage,
 } from "./types";
 
@@ -42,8 +41,9 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
   const [selectedKey, setSelectedKey] = useState("");
   const [language, setLanguage] = useState<TranslateTargetLanguage>("zh-Hans");
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<TranslateProgress | null>(null);
   const [message, setMessage] = useState("");
+  const { jobs, cancel } = useJobs({ media_id: media.id, kind: "translate" });
+  const activeJob = jobs.find(canCancel) ?? null;
 
   const usable = useMemo(
     () =>
@@ -76,19 +76,9 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
     void load().catch((error) => setMessage(String(error)));
   }, [load, media.id]);
 
-  useEffect(() => {
-    const unlisten = listen<TranslateProgress>("translate://progress", (event) => {
-      if (event.payload.media_id === media.id) setProgress(event.payload);
-    });
-    return () => {
-      void unlisten.then((stop) => stop());
-    };
-  }, [media.id]);
-
   const run = async () => {
     if (!selected) return;
     setBusy(true);
-    setProgress(null);
     setMessage("Translating…");
     try {
       const outcome = await invoke<TranslateOutcome>("translate_segments", {
@@ -108,9 +98,24 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
       );
     } catch (error) {
       setMessage(String(error));
+      // Batches applied before a cancel or failure are kept; show them.
+      try {
+        onSegments(await invoke<Segment[]>("get_segments", { mediaId: media.id }));
+      } catch {
+        // Keep the current list if the reload fails.
+      }
     } finally {
       setBusy(false);
-      setProgress(null);
+    }
+  };
+
+  const stop = async () => {
+    if (!activeJob) return;
+    try {
+      await cancel(activeJob.id);
+      setMessage("Stopping after the current batch…");
+    } catch (error) {
+      setMessage(String(error));
     }
   };
 
@@ -160,11 +165,12 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
             onClick={() => void run()}
           >
             {busy
-              ? progress && progress.total > 0
-                ? `Translating ${progress.done}/${progress.total}…`
+              ? activeJob && activeJob.progress_total > 0
+                ? `Translating ${activeJob.progress_done}/${activeJob.progress_total}…`
                 : "Translating…"
               : "Translate"}
           </button>
+          {activeJob && <button onClick={() => void stop()}>Cancel</button>}
         </div>
       )}
 

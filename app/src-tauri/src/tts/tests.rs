@@ -1,4 +1,5 @@
 use super::*;
+use crate::jobs::NoopSink;
 use crate::subtitle::SubtitleCue;
 use crate::voice::VoiceProfileInput;
 use std::io::{BufRead, BufReader, Read};
@@ -89,7 +90,7 @@ fn run<A: TtsAdapter>(
         revision,
         &fx.profile,
         take,
-        &NoopProgress,
+        &NoopSink,
     ))
 }
 
@@ -530,7 +531,7 @@ fn call_mock_server(kind: &str, auth: &str) -> (Result<Vec<u8>, TtsError>, Captu
         timeout: Duration::from_secs(10),
     };
     let req = request(kind);
-    let result = tauri::async_runtime::block_on(adapter.synthesize(&req, &NoopProgress));
+    let result = tauri::async_runtime::block_on(adapter.synthesize(&req, &NoopSink));
     (result, handle.join().unwrap())
 }
 
@@ -577,7 +578,7 @@ fn openai_adapter_reports_http_errors_as_retryable_when_transient() {
         timeout: Duration::from_secs(10),
     };
     let req = request("preset");
-    let err = tauri::async_runtime::block_on(adapter.synthesize(&req, &NoopProgress)).unwrap_err();
+    let err = tauri::async_runtime::block_on(adapter.synthesize(&req, &NoopSink)).unwrap_err();
     handle.join().unwrap();
     assert_eq!(err.code, "http");
     assert!(err.retryable);

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { canCancel, jobProgress, useJobs } from "./jobs";
 import type { DubExportKind, DubMixReport, DubPlan, MediaItem } from "./types";
 
 type Props = {
@@ -18,6 +19,9 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
   const [limiter, setLimiter] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const { jobs, cancel } = useJobs({ media_id: media.id, kind: "mix" });
+  const activeJob = jobs.find(canCancel) ?? null;
+  const fraction = activeJob ? jobProgress(activeJob) : null;
 
   async function exportAudio() {
     const base = media.title.replace(/[\\/:*?"<>|]/g, "_");
@@ -45,6 +49,15 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
       setMessage(String(errorValue));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function stop() {
+    if (!activeJob) return;
+    try {
+      await cancel(activeJob.id);
+    } catch (errorValue) {
+      setMessage(String(errorValue));
     }
   }
 
@@ -77,8 +90,13 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
         Limiter
       </label>
       <button disabled={busy || placed === 0} onClick={() => void exportAudio()}>
-        {busy ? "Exporting…" : "Export dubbed audio"}
+        {busy
+          ? fraction !== null
+            ? `Exporting ${Math.round(fraction * 100)}%…`
+            : "Exporting…"
+          : "Export dubbed audio"}
       </button>
+      {activeJob && <button onClick={() => void stop()}>Cancel</button>}
       {message && <span className="subtitle-message">{message}</span>}
     </div>
   );

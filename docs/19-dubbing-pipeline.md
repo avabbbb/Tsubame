@@ -137,8 +137,8 @@ Recorded decisions and deviations from the frozen text above:
   &AssetStore, segment_id) -> Result<Option<ResolvedTtsAsset>, TtsError>` returns
   the absolute path, `duration_ms`, format and `dub_skip`; it errors when the
   recorded file is missing.
-- **Jobs.** `tts.rs` defines a local `ProgressSink { progress, is_cancelled }`
-  instead of depending on `jobs.rs`; the integrator adapts a job handle to it.
+- **Jobs.** `synthesize_segment` runs as a `tts` job; synthesis reports through
+  the shared `jobs::ProgressSink` (implemented by `JobHandle`).
 
 ## dub.place (pure Rust)
 
@@ -216,9 +216,9 @@ Implementation (`mix.rs`, command `export_dub_mix(media_id, output_path, options
   channel count, same length as the mix.
 - Output goes to `<output>.partial` and is renamed on success; failure or cancel removes
   it. Writing over the original media file is refused.
-- Progress/cancel through the local `ProgressSink` trait (`progress(stage, done, total)`,
-  `is_cancelled()`); until `jobs.rs` wires it, the command emits `mix://progress` events
-  and cannot be cancelled from the UI.
+- `export_dub_mix` runs as a `mix` job: progress/cancel through the shared
+  `jobs::ProgressSink` (`progress(stage, done, total)`, `is_cancelled()`), observed via
+  `job://update` and cancelled with `cancel_job`.
 
 Deviations / limits of this implementation (PR #10):
 - Input and output are **WAV only** (`hound`, Apache-2.0). Compressed originals (mp3,

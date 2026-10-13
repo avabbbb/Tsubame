@@ -54,9 +54,6 @@
 //! `retry_job` accepts only `failed` + `retryable` and requires a registered
 //! runner for the job kind; it clears error/output/progress and bumps `attempt`.
 
-// Public API consumed by the other PR #10 tracks; unused until they land.
-#![allow(dead_code)]
-
 use crate::worker::{self, WorkerEvent, WorkerOutput, WorkerRequest, WorkerSpec};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
@@ -132,6 +129,7 @@ impl JobStatus {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // used by tests and future stage callers
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }
@@ -225,6 +223,27 @@ pub struct JobFilter {
     pub limit: Option<i64>,
 }
 
+/// Progress/cancellation seam shared by every in-process pipeline stage
+/// (translate, tts, mix). Stage code depends only on this trait; a running
+/// job's `JobHandle` implements it, and `NoopSink` serves tests and callers
+/// that run a stage outside a job.
+pub trait ProgressSink: Send + Sync {
+    /// `total` 0 = indeterminate.
+    fn progress(&self, stage: &str, done: u64, total: u64);
+    fn is_cancelled(&self) -> bool;
+}
+
+/// Sink that ignores progress and is never cancelled.
+#[cfg_attr(not(test), allow(dead_code))] // stage tests; callers outside a job
+pub struct NoopSink;
+
+impl ProgressSink for NoopSink {
+    fn progress(&self, _stage: &str, _done: u64, _total: u64) {}
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
 pub type JobListener = Arc<dyn Fn(&Job) + Send + Sync>;
 pub type JobRunner = Arc<dyn Fn(&JobHandle) -> Result<Value, JobError> + Send + Sync>;
 
@@ -248,6 +267,7 @@ impl JobStore {
         Self::from_connection(conn)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn open_in_memory() -> rusqlite::Result<Arc<Self>> {
         Self::from_connection(Connection::open_in_memory()?)
     }
@@ -384,6 +404,7 @@ impl JobStore {
     }
 
     /// `create` + run the registered runner for `kind` on a background thread.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn submit(self: &Arc<Self>, new: NewJob) -> Result<Job, String> {
         if !self.has_runner(&new.kind) {
             return Err(format!("no runner registered for job kind {}", new.kind));
@@ -603,10 +624,12 @@ pub struct JobHandle {
 }
 
 impl JobHandle {
+    #[allow(dead_code)] // handle API for worker-backed runners
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    #[allow(dead_code)] // handle API for worker-backed runners
     pub fn store(&self) -> &Arc<JobStore> {
         &self.store
     }
@@ -627,6 +650,7 @@ impl JobHandle {
     }
 
     /// Shared flag for code that polls cancellation (e.g. the worker host).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel)
     }
@@ -676,6 +700,8 @@ impl JobHandle {
 
     /// Runs one worker request (spawn → handshake on `op` → request → shutdown),
     /// forwarding `progress` into this job and honouring `cancel_job`.
+    /// Not called outside tests until a worker-backed stage is wired.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn run_worker(
         &self,
         spec: &WorkerSpec,
@@ -702,6 +728,21 @@ impl JobHandle {
             }
         })
         .map_err(JobError::from)
+    }
+}
+
+impl ProgressSink for JobHandle {
+    fn progress(&self, stage: &str, done: u64, total: u64) {
+        JobHandle::progress(
+            self,
+            i64::try_from(done).unwrap_or(i64::MAX),
+            i64::try_from(total).unwrap_or(i64::MAX),
+            stage,
+        );
+    }
+
+    fn is_cancelled(&self) -> bool {
+        JobHandle::is_cancelled(self)
     }
 }
 
@@ -779,6 +820,40 @@ pub fn install(
     }));
     app.manage(JobsState(Arc::clone(&store)));
     Ok(store)
+}
+
+/// Creates a job, runs `runner` on a blocking thread and maps the terminal row
+/// back to a command result: the runner's output when it `succeeded`, else the
+/// runner's own error message (`failed`/`cancelled`). Lets a command keep its
+/// request/response shape while its progress and cancel go through the jobs
+/// table and `job://update`.
+pub async fn run_to_completion(
+    store: Arc<JobStore>,
+    new: NewJob,
+    runner: JobRunner,
+) -> Result<Value, String> {
+    let id = store.create(new)?.id;
+    tauri::async_runtime::spawn_blocking(move || {
+        let last_error: Mutex<Option<String>> = Mutex::new(None);
+        let job = store.execute(&id, &|handle: &JobHandle| {
+            runner(handle).inspect_err(|error| {
+                if let Ok(mut slot) = last_error.lock() {
+                    *slot = Some(error.message.clone());
+                }
+            })
+        })?;
+        if job.status == JobStatus::Succeeded {
+            return Ok(job.output_json.unwrap_or(Value::Null));
+        }
+        Err(last_error
+            .into_inner()
+            .ok()
+            .flatten()
+            .or(job.error_message)
+            .unwrap_or_else(|| format!("job {}", job.status.as_str())))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

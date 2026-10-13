@@ -35,7 +35,8 @@
 //! Limitation: kill targets the direct child process only (no process-group kill
 //! yet). Workers that spawn their own subprocesses must clean them up on cancel.
 
-// Public API consumed by the other PR #10 tracks; unused until they land.
+// No command spawns a worker yet (audio.spatialize is not wired into the
+// Studio); the host is exercised by its tests and by `JobHandle::run_worker`.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};

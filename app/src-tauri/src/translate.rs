@@ -18,6 +18,7 @@
 //! revision-checked apply and protection of human-edited translations.
 
 use crate::db::Segment;
+use crate::jobs::ProgressSink;
 use crate::refine::{apply_glossary, extract_json_object, ChatCompletion, GlossaryTerm};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -39,24 +40,6 @@ pub const PROVENANCE_PREFIX: &str = "translate:";
 pub const OVERLONG_FACTOR: usize = 4;
 pub const OVERLONG_SLACK: usize = 40;
 
-/// Progress/cancellation seam. The jobs track wires its `JobHandle` here; the
-/// translation code never depends on how progress is shown.
-pub trait ProgressSink: Send + Sync {
-    fn progress(&self, done: usize, total: usize, stage: &str);
-    fn is_cancelled(&self) -> bool;
-}
-
-/// Sink that ignores progress and is never cancelled.
-pub struct NoopSink;
-
-impl ProgressSink for NoopSink {
-    fn progress(&self, _done: usize, _total: usize, _stage: &str) {}
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
-
-/// Validates and canonicalizes a target language tag (case-insensitive).
 pub fn normalize_target_language(value: &str) -> Result<&'static str, String> {
     let value = value.trim();
     TARGET_LANGUAGES
@@ -609,7 +592,7 @@ where
     };
     let system = system_prompt(plan.source_language.as_deref(), &plan.target_language);
     let mut queue: VecDeque<Vec<Segment>> = plan.batches.iter().cloned().collect();
-    sink.progress(0, total, "translate");
+    sink.progress("translate", 0, total as u64);
 
     while let Some(batch) = queue.pop_front() {
         if sink.is_cancelled() {
@@ -668,7 +651,7 @@ where
                 summary.done += batch.len();
             }
         }
-        sink.progress(summary.done, total, "translate");
+        sink.progress("translate", summary.done as u64, total as u64);
     }
     summary
 }
@@ -677,6 +660,7 @@ where
 mod tests {
     use super::*;
     use crate::db::MediaDb;
+    use crate::jobs::NoopSink;
     use crate::subtitle::SubtitleCue;
     use std::cell::RefCell;
     use std::path::Path;
@@ -1007,11 +991,11 @@ mod tests {
         calls: AtomicUsize,
         after: usize,
         cancelled: AtomicBool,
-        last: std::sync::Mutex<(usize, usize)>,
+        last: std::sync::Mutex<(u64, u64)>,
     }
 
     impl ProgressSink for CancelAfter {
-        fn progress(&self, done: usize, total: usize, _stage: &str) {
+        fn progress(&self, _stage: &str, done: u64, total: u64) {
             *self.last.lock().unwrap() = (done, total);
         }
         fn is_cancelled(&self) -> bool {

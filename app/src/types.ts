@@ -216,14 +216,6 @@ export interface TranslateOutcome {
   segments: Segment[];
 }
 
-/** Payload of the `translate://progress` event. */
-export interface TranslateProgress {
-  media_id: number;
-  done: number;
-  total: number;
-  stage: string;
-}
-
 export type ProposalDecision =
   | { outcome: "applied"; segment: Segment }
   | { outcome: "rejected" }

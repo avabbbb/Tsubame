@@ -21,6 +21,7 @@
 //! Copyright (c) EveningStudy and ASMR-Dubber contributors, MIT License,
 //! https://github.com/EveningStudy/asmr-dubber (commit `2faea94f`).
 
+use crate::jobs::ProgressSink;
 use crate::placement::{self, Placement, PlacementParams};
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -35,21 +36,6 @@ const PROGRESS_EVERY_FRAMES: u64 = 65_536;
 const ACTIVE_RMS_FRAME_MS: f64 = 50.0;
 /// Tolerance between the duration a placement assumed and the decoded clip.
 const CLIP_DURATION_TOLERANCE_MS: i64 = 50;
-
-/// Progress/cancellation hook. `jobs.rs` (another track) adapts its job handle to this.
-pub trait ProgressSink: Send {
-    fn progress(&self, stage: &str, done: u64, total: u64);
-    fn is_cancelled(&self) -> bool;
-}
-
-pub struct NoProgress;
-
-impl ProgressSink for NoProgress {
-    fn progress(&self, _stage: &str, _done: u64, _total: u64) {}
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -945,6 +931,7 @@ pub fn export_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobs::NoopSink;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct TempDir(PathBuf);
@@ -1046,7 +1033,7 @@ mod tests {
                 limiter,
                 ..MixOptions::default()
             };
-            let report = render(&original, &[], &out, &options, &NoProgress).unwrap();
+            let report = render(&original, &[], &out, &options, &NoopSink).unwrap();
             let (spec, written) = read_i16(&out);
             assert_eq!(spec, WavReader::open(&original).unwrap().spec());
             assert_eq!(written, samples);
@@ -1068,14 +1055,7 @@ mod tests {
             limiter: false,
             ..MixOptions::default()
         };
-        let report = render(
-            &original,
-            &[clip(1, dub, 1000)],
-            &out,
-            &options,
-            &NoProgress,
-        )
-        .unwrap();
+        let report = render(&original, &[clip(1, dub, 1000)], &out, &options, &NoopSink).unwrap();
         let (_, written) = read_i16(&out);
         let start = report.clips[0].start_frame as usize;
         let end = start + report.clips[0].frames as usize;
@@ -1111,7 +1091,7 @@ mod tests {
             clip_peak_dbfs: None,
             ..MixOptions::default()
         };
-        render(&original, &[clip(1, dub, 500)], &out, &options, &NoProgress).unwrap();
+        render(&original, &[clip(1, dub, 500)], &out, &options, &NoopSink).unwrap();
         let (_, written) = read_i16(&out);
         // Before the clip and well after its release tail: bit-exact.
         assert_eq!(written[..4000], samples[..4000]);
@@ -1142,7 +1122,7 @@ mod tests {
             &[clip(1, dub.clone(), 500)],
             &out,
             &options,
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         let mixed = read_f32(&out);
@@ -1163,7 +1143,7 @@ mod tests {
             &[clip(1, dub.clone(), 500)],
             &off,
             &options_off,
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         assert!(read_f32(&off)[4000..8000]
@@ -1181,7 +1161,7 @@ mod tests {
             &[clip(1, dub, 500)],
             &stem,
             &stem_options,
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         assert!(read_f32(&stem)[4000..8000]
@@ -1203,7 +1183,7 @@ mod tests {
             &[clip(1, dub, 333)],
             &out,
             &raw_options(),
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         let (_, written) = read_i16(&out);
@@ -1254,7 +1234,7 @@ mod tests {
             &[clip(1, dub, 100)],
             &out,
             &raw_options(),
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(report.clips[0].frames, 48_000);
@@ -1305,7 +1285,7 @@ mod tests {
             &[clip(1, loud, 1000), silent_src],
             &out,
             &options,
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         let first = &report.clips[0];
@@ -1341,14 +1321,7 @@ mod tests {
             kind: ExportKind::DubStem,
             ..raw_options()
         };
-        let report = render(
-            &original,
-            &[clip(1, dub, 250)],
-            &stem,
-            &options,
-            &NoProgress,
-        )
-        .unwrap();
+        let report = render(&original, &[clip(1, dub, 250)], &stem, &options, &NoopSink).unwrap();
         let spec = WavReader::open(&stem).unwrap().spec();
         assert_eq!(
             (spec.sample_format, spec.channels, spec.sample_rate),
@@ -1380,7 +1353,7 @@ mod tests {
             &[clip(1, dub, 900)],
             &out,
             &raw_options(),
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(report.output_frames, 7200 + 4000);
@@ -1395,14 +1368,7 @@ mod tests {
         let dir = TempDir::new();
         let original = dir.path("orig.wav");
         write_i16(&original, 8000, 1, &noise(200_000, 0.3, 2));
-        assert!(render(
-            &original,
-            &[],
-            &original,
-            &MixOptions::default(),
-            &NoProgress
-        )
-        .is_err());
+        assert!(render(&original, &[], &original, &MixOptions::default(), &NoopSink).is_err());
 
         struct Cancel(AtomicBool);
         impl ProgressSink for Cancel {
@@ -1437,7 +1403,7 @@ mod tests {
             &[],
             &dir.path("o.wav"),
             &raw_options(),
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap_err();
         assert!(error.starts_with("unsupported_source_format"));
@@ -1453,7 +1419,7 @@ mod tests {
             &[wrong],
             &dir.path("o.wav"),
             &raw_options(),
-            &NoProgress,
+            &NoopSink,
         )
         .unwrap_err();
         assert!(error.starts_with("clip_duration_mismatch"));
