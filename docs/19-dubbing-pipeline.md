@@ -96,6 +96,50 @@ model_id, voice_profile_id, created_at)`; `segments` gains `tts_asset_key TEXT`,
 expected_revision, voice_profile_id, take?)` → sets `tts_asset_key`,
 `tts_provenance`, `dirty_tts=0`, `dirty_mix=1`. Editing timing never changes the key.
 
+### speech.tts implementation notes (`tts.rs`, `voice.rs`)
+
+Recorded decisions and deviations from the frozen text above:
+
+- **Key encoding.** Each `‖` field is length-prefixed (u64 BE) after the domain
+  tag `tsubame.speech.tts.key.v1`; `normalized_text` is the Segment's
+  `translated_text` in NFC with whitespace runs collapsed; `params_json` is
+  canonical JSON (keys sorted recursively); `take` defaults to `0`.
+- **`voice_profile_hash`** = sha256 of canonical `{v, kind, preset_voice,
+  design_prompt (design only)}`. Name, id and timestamps are excluded (renaming a
+  voice never invalidates clips); provider, model, language and params are their
+  own key fields.
+- **Adapter versions.** `openai-compatible/audio-speech@1`, `mock@1`. The mock
+  adapter is not selectable by Provider kind.
+- **Request shape.** `POST {base_url}/audio/speech` with `model`, `input`,
+  `voice` (when the profile has one), `instructions` (design voices only),
+  `response_format: "wav"`; profile params are merged at top level but cannot
+  override those fields. A design voice may also carry an optional base
+  `voice` because some OpenAI-compatible endpoints require one. Providers that
+  reject `instructions` fail visibly; there is no silent retry without it.
+- **No cloning.** `voice_profiles.kind` is constrained to `preset|design`;
+  `params_json` containing reference-audio keys (`reference_audio`,
+  `speaker_wav`, `prompt_audio`, …) is rejected.
+- **Text source.** Synthesis reads `translated_text` only (no fallback to source
+  text) and refuses when it is empty, when `dirty_translation=1`, or when
+  `dub_skip=1`.
+- **Assets.** WAV is validated (PCM/float, consistent block align, >0 frames;
+  streaming headers with 0/0xFFFFFFFF sizes tolerated) and rewritten as
+  `RIFF+fmt+data` with exact sizes before hashing. Stored atomically (temp file in
+  the same directory, fsync, rename) at `<app data>/assets/tts/<key[0..2]>/<key>.wav`.
+  `tts_assets.path` is **relative to `<app data>/assets`** so the data directory
+  can move. A cache hit requires the row, the file and a matching sha256;
+  anything else re-synthesizes.
+- **Segment write.** `synthesize_segment` bumps `revision` (like every Segment
+  write) unless the Segment already points at the same clean clip. Also exposed:
+  `get_tts_asset(segment_id)` and `set_segment_dub_skip(segment_id,
+  expected_revision, skip)` (bumps `revision`, sets `dirty_mix=1`).
+- **Placement / mix API.** `tts::resolve_segment_tts_asset(&MediaDb,
+  &AssetStore, segment_id) -> Result<Option<ResolvedTtsAsset>, TtsError>` returns
+  the absolute path, `duration_ms`, format and `dub_skip`; it errors when the
+  recorded file is missing.
+- **Jobs.** `tts.rs` defines a local `ProgressSink { progress, is_cancelled }`
+  instead of depending on `jobs.rs`; the integrator adapts a job handle to it.
+
 ## dub.place (pure Rust)
 
 Input: ordered sentences `{segment_id, src_start_ms, src_end_ms, clip_duration_ms,
