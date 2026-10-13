@@ -1,0 +1,4 @@
+# Runtime dependency of the audio.spatialize worker. Supplied by the Tsubame
+# runtime pack, never installed globally and never vendored into git.
+# numpy: BSD-3-Clause. WAV I/O uses the in-tree _wav.py (stdlib + numpy only).
+numpy>=1.24
