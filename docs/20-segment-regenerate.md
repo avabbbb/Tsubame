@@ -1,6 +1,6 @@
 # 20 — Single-sentence regenerate loop (PR plan #11)
 
-Status: contract for the backend of [PR plan item #11](12-pr-plan.md) (GitHub PR #12,
+Status: contract and implementation of [PR plan item #11](12-pr-plan.md) (GitHub PR #12,
 branch `feat/segment-regenerate`). Builds on the [dubbing pipeline](19-dubbing-pipeline.md)
 (`tts.rs`, `placement.rs`, `spatial.rs`, `mix.rs`, `jobs.rs`) and the
 [Segment editor](14-segment-editor.md) dirty rules. Product decisions confirmed by the
@@ -238,7 +238,23 @@ directory.
 - with python3 + numpy available: the real spatial worker renders the new take and
   re-renders a moved downstream `concurrent` render (skipped otherwise).
 
-## Not in this PR (frontend chunk)
+## Frontend (Sentence Inspector)
 
-Inspector take list / A-B buttons, yellow pushed marks, Ctrl/Cmd+Enter binding and
-preview playback UI. `app/src/types.ts` already carries the result types.
+- `Ctrl/Cmd+Enter` (focus in the Inspector, segment list/waveform or nowhere): saves
+  pending edits first, then runs `regenerate_segment` with `expected_revision`. A stale
+  translation, an empty translation or `dub_skip` shows the reason and does not run. The
+  "Regenerate Segment" button carries the shortcut hint.
+- While the job runs the stages `tts → spatialize → replan` are shown with Cancel
+  (`cancel_job`); on success the context preview plays automatically.
+- Preview: "Play in context" (1 s pre-roll) by default, "Dub only" toggle (`solo`); one
+  `<audio>` element via `convertFileSrc`; starting any preview stops the previous one.
+- Takes: up to 5, newest first, active marked; each plays solo and offers "Use this take"
+  (`set_active_take`, revision-checked; a conflict reloads the Segment and explains). A/B
+  switches between the active take and the compare take at the same playback position.
+- Pushed marks: `dub_pushed_ms > 0` shows a yellow "Pushed +X.Xs" badge (tooltip "pushed
+  later by X.Xs") in the segment list and a yellow waveform region; it clears after a
+  context preview or the Inspector's OK (`acknowledge_pushed`). PR #10's red drift badges
+  stay; the two differ in hue, outline and a leading arrow.
+- A skipped spatial stage (`spatial_worker_unavailable`) is a subtle note, not an error.
+- The regenerate voice: when the Segment already has a clip the backend default (the active
+  take's voice) is used; otherwise the voice chosen in the Dub voice section.
