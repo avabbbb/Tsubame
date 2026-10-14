@@ -107,7 +107,7 @@ The history stack is session-local; each undo/redo still creates a new canonical
 
 ## Waveform
 
-The waveform uses WaveSurfer with the existing Tsubame media element, not a second playback engine.
+The waveform uses WaveSurfer with the existing YUZUKI media element, not a second playback engine.
 
 Regions map to canonical Segments:
 - click region → select/seek Segment;
@@ -115,8 +115,8 @@ Regions map to canonical Segments:
 - drag edge → change start/end;
 - region update → revision-checked Rust mutation.
 
-Playback, speed and volume continue to belong to the global Tsubame player.
+Playback, speed and volume continue to belong to the global YUZUKI player.
 
 ## Standards
 
-WebVTT follows the W3C time-aligned cue model. Tsubame initially preserves cue text and timing; advanced WebVTT presentation settings are not part of the canonical Segment model.
+WebVTT follows the W3C time-aligned cue model. YUZUKI initially preserves cue text and timing; advanced WebVTT presentation settings are not part of the canonical Segment model.

@@ -1,6 +1,6 @@
 # Provider / Model Registry
 
-Tsubame separates connection/authentication from model capabilities.
+YUZUKI separates connection/authentication from model capabilities.
 
 ```text
 Feature
@@ -38,7 +38,7 @@ The inference URL and discovery URL are separate on purpose.
 
 OpenAI exposes model discovery at `GET /v1/models`.
 
-Alibaba Cloud Model Studio exposes a dedicated model-list API at `GET /api/v1/models`, while OpenAI-compatible inference uses `/compatible-mode/v1`. Therefore Tsubame cannot assume every compatible provider discovers models at `{base_url}/models`.
+Alibaba Cloud Model Studio exposes a dedicated model-list API at `GET /api/v1/models`, while OpenAI-compatible inference uses `/compatible-mode/v1`. Therefore YUZUKI cannot assume every compatible provider discovers models at `{base_url}/models`.
 
 For providers where that convention is valid, an empty discovery URL falls back to `{base_url}/models`.
 
@@ -106,12 +106,12 @@ This vocabulary is intentionally broader than PR #6's execution surface. PR #6 i
 Resolution order:
 
 1. explicit manual override;
-2. provider-advertised / Tsubame catalog metadata;
+2. provider-advertised / YUZUKI catalog metadata;
 3. unknown.
 
 Unknown is a valid state.
 
-Tsubame may centrally classify well-known model families for convenience, but execution code must only query the resulting capability set.
+YUZUKI may centrally classify well-known model families for convenience, but execution code must only query the resulting capability set.
 
 For example, the ASR workflow may ask:
 
@@ -152,7 +152,7 @@ The parser extracts model identity/metadata but does not log the credential or r
 
 **Refresh models** performs the same discovery and persists the visible inventory.
 
-Successful discovery proves only that the model is visible to the credential. It does not prove that Tsubame has an execution adapter for every advertised capability.
+Successful discovery proves only that the model is visible to the credential. It does not prove that YUZUKI has an execution adapter for every advertised capability.
 
 ## Built-in local Providers
 

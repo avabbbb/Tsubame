@@ -1,8 +1,8 @@
-# Tsubame
+# YUZUKI
 
 > Local-first ASMR Library & AI Dubbing Workbench.
 
-Tsubame is a desktop workbench for discovering, downloading, organizing, playing, transcribing, translating, editing, dubbing, and exporting ASMR / voice media.
+YUZUKI is a desktop workbench for discovering, downloading, organizing, playing, transcribing, translating, editing, dubbing, and exporting ASMR / voice media.
 
 The product combines three ideas into one coherent desktop app:
 
@@ -10,13 +10,13 @@ The product combines three ideas into one coherent desktop app:
 - **ASMR-Dubber-grade processing pipelines**
 - **pluggable source/download adapters**
 
-The result is not a downloader, player, and dubbing tool glued together. Tsubame is one local-first workbench with a single library, one canonical segment timeline, one job system, and modular providers.
+The result is not a downloader, player, and dubbing tool glued together. YUZUKI is one local-first workbench with a single library, one canonical segment timeline, one job system, and modular providers.
 
 ## Status
 
 **React + Tauri/Rust clean-room foundation.**
 
-The current implementation is a clean-room Tsubame codebase built around its own product and data contracts.
+The current implementation is a clean-room YUZUKI codebase built around its own product and data contracts.
 
 ## Product principles
 
@@ -27,7 +27,7 @@ The current implementation is a clean-room Tsubame codebase built around its own
 5. **BYOK by default for cloud AI.** Provider credentials are user-owned; supported providers can discover accessible models automatically.
 6. **Local runtimes are modular.** Faster-Whisper, SenseVoice, Apple Speech, future ASR/TTS engines, etc. are replaceable providers.
 7. **On-demand install.** Heavy runtimes/models are downloaded only when the chosen processing profile needs them.
-8. **Agent-operable.** Local agents use the same product through the Tsubame Skill + CLI/MCP/local RPC, not brittle GUI automation.
+8. **Agent-operable.** Local agents use the same product through the YUZUKI Skill + CLI/MCP/local RPC, not brittle GUI automation.
 9. **Source adapters are isolated.** ASMR.one, Japanese ASMR, local folders, and future sources share one contract.
 10. **No silent fallback.** Model/provider/runtime changes are explicit and auditable.
 
@@ -75,7 +75,7 @@ The Desktop remains the product and canonical state owner.
 ```text
 Local Agent
     │
-  $tsubame Skill
+  $yuzuki Skill
     │
  ┌──┴──────────────┐
  │                 │
@@ -85,14 +85,14 @@ CLI               MCP
         │
    Local RPC
         │
- Tsubame Desktop
+ YUZUKI Desktop
         │
  Operation Registry
 ```
 
 The Skill is for fast initialization and orchestration:
 
-- detect/install Tsubame Desktop;
+- detect/install YUZUKI Desktop;
 - run doctor checks;
 - inspect hardware;
 - resolve a processing profile;
@@ -122,21 +122,21 @@ The Skill is for fast initialization and orchestration:
 - `docs/15-provider-registry.md`
 - `docs/DECISIONS.md`
 - `docs/REFERENCES.md`
-- `.agents/skills/tsubame/SKILL.md`
+- `.agents/skills/yuzuki/SKILL.md`
 
 ## Implementation boundaries
 
-Tsubame is implemented with **React + TypeScript + Tauri 2 + Rust + SQLite**.
+YUZUKI is implemented with **React + TypeScript + Tauri 2 + Rust + SQLite**.
 
 Reference projects inform product research, but license boundaries are explicit:
 
-- [ASPlayer](https://github.com/yumili426/ASPlayer) — **reference only** for playback/timeline UX. Its GPL-3.0 source is not copied or incorporated into Tsubame.
+- [ASPlayer](https://github.com/yumili426/ASPlayer) — **reference only** for playback/timeline UX. Its GPL-3.0 source is not copied or incorporated into YUZUKI.
 - [ASMR-Dubber](https://github.com/EveningStudy/asmr-dubber) — MIT; selected processing ideas/code may be reused later with required notices.
 - [asmr-downloader / ASMRoner](https://github.com/fireinrain/asmr-downloader) — MIT; selected downloader/source ideas/code may be reused later with required notices.
 
 ## Name
 
-**Tsubame** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
+**YUZUKI** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
 
 This project is **not affiliated with, endorsed by, or an official product of Yuzuki Tsubame**. It does not bundle her recordings, voice model, likeness, branding assets, or training data.
 
@@ -146,4 +146,4 @@ The project must not be used to train, clone, or synthesize a real person's voic
 
 **MIT.**
 
-Tsubame remains MIT-compatible by keeping GPL source out of the codebase. Reference-only projects may inspire independently implemented features without becoming code dependencies.
+YUZUKI remains MIT-compatible by keeping GPL source out of the codebase. Reference-only projects may inspire independently implemented features without becoming code dependencies.

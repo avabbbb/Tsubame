@@ -757,7 +757,7 @@ export default function App() {
       style={workbenchStyle}
     >
       <aside className="rail">
-        <button className="brand" aria-label="Tsubame">T</button>
+        <button className="brand" aria-label="YUZUKI">Y</button>
         <nav>
           {RAILS.map((item) => (
             <button
@@ -787,7 +787,7 @@ export default function App() {
         <div className="sidebar-head">
           <div>
             <p className="eyebrow">{activeRail.toUpperCase()}</p>
-            <h1>Tsubame</h1>
+            <h1>YUZUKI</h1>
           </div>
           <button className="icon-button" onClick={() => void importFiles()} title="Import media">
             ＋

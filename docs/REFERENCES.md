@@ -1,6 +1,6 @@
 # References and Dependency Boundaries
 
-Tsubame distinguishes **product references** from **code dependencies**.
+YUZUKI distinguishes **product references** from **code dependencies**.
 
 ## Reference only
 
@@ -16,9 +16,9 @@ ASPlayer is consulted only for product/interaction research, including ideas suc
 - loop and navigation workflows;
 - media-library interaction patterns.
 
-**No ASPlayer source code is copied, adapted, vendored, linked or distributed by Tsubame.**
+**No ASPlayer source code is copied, adapted, vendored, linked or distributed by YUZUKI.**
 
-This boundary is required because Tsubame is MIT-licensed.
+This boundary is required because YUZUKI is MIT-licensed.
 
 ## MIT processing dependency candidate
 
@@ -27,7 +27,7 @@ This boundary is required because Tsubame is MIT-licensed.
 Repository: https://github.com/EveningStudy/asmr-dubber  
 License: MIT
 
-Potentially reusable capabilities behind Tsubame worker contracts:
+Potentially reusable capabilities behind YUZUKI worker contracts:
 
 - VAD/segmentation;
 - ASR backend adapters;
@@ -58,21 +58,21 @@ Potentially reusable/reference areas:
 - resumability;
 - metadata normalization.
 
-Tsubame may independently implement these ideas in Rust or incorporate MIT code where it remains architecturally appropriate.
+YUZUKI may independently implement these ideas in Rust or incorporate MIT code where it remains architecturally appropriate.
 
 ## Import policy
 
 Before importing third-party source:
 
-1. verify the license is compatible with Tsubame's MIT distribution;
+1. verify the license is compatible with YUZUKI's MIT distribution;
 2. record repository + exact commit/tag;
 3. identify copied/modified files;
 4. preserve required notices;
-5. keep third-party-specific behavior behind Tsubame contracts;
+5. keep third-party-specific behavior behind YUZUKI contracts;
 6. add tests around the boundary.
 
-GPL/AGPL code must not be imported into the MIT Tsubame codebase without an explicit licensing decision that changes this policy.
+GPL/AGPL code must not be imported into the MIT YUZUKI codebase without an explicit licensing decision that changes this policy.
 
 ## Namesake
 
-Tsubame is named as a personal homage to voice actress Yuzuki Tsubame (柚木つばめ). This does not imply affiliation or grant rights to use her voice, recordings, likeness or branding.
+YUZUKI is named as a personal homage to voice actress Yuzuki Tsubame (柚木つばめ). This does not imply affiliation or grant rights to use her voice, recordings, likeness or branding.

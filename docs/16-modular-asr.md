@@ -24,7 +24,7 @@ Every Provider adapter receives a media/request description and returns **candid
 }
 \`\`\`
 
-Provider adapters do **not** own Tsubame state and do not write SQLite.
+Provider adapters do **not** own YUZUKI state and do not write SQLite.
 
 The Desktop validates the result, converts it to canonical Segment rows, records ASR provenance, and invalidates only downstream work.
 
@@ -37,7 +37,7 @@ AsrResult (candidate data)
   ↓
 validation
   ↓
-Tsubame Desktop
+YUZUKI Desktop
   ↓
 canonical SQLite Segment[]
 \`\`\`
@@ -65,7 +65,7 @@ References:
 - https://github.com/modelscope/FunASR
 - https://github.com/QwenAudio/SenseVoice
 
-SenseVoice/FunASR can produce rich speech-understanding output. Tsubame normalizes only what it can represent honestly in the ASR contract.
+SenseVoice/FunASR can produce rich speech-understanding output. YUZUKI normalizes only what it can represent honestly in the ASR contract.
 
 If a checkpoint/runtime exposes timestamps without reliable sentence grouping, the worker does **not invent sentence boundaries**. It returns a whole-span Segment and records a note. Refinement/alignment is a later stage.
 
@@ -105,7 +105,7 @@ The engine is reported as unsupported outside macOS.
 
 Execution: HTTP multipart.
 
-Tsubame resolves only Provider models whose effective capabilities contain \`speech.asr\`.
+YUZUKI resolves only Provider models whose effective capabilities contain \`speech.asr\`.
 
 The adapter posts to:
 
@@ -113,7 +113,7 @@ The adapter posts to:
 <provider.base_url>/audio/transcriptions
 \`\`\`
 
-It first requests segment timestamps with \`verbose_json\`. If the compatible endpoint rejects that representation with a request-validation error, Tsubame retries plain JSON **without checking vendor or model names**.
+It first requests segment timestamps with \`verbose_json\`. If the compatible endpoint rejects that representation with a request-validation error, YUZUKI retries plain JSON **without checking vendor or model names**.
 
 Plain-text JSON responses become one whole-track Segment when the media duration is known. This is explicit lower-fidelity timing, not fake sentence alignment.
 

@@ -2,7 +2,7 @@
 
 External execution engines live here behind versioned contracts.
 
-Workers never own canonical product state and never write directly to Tsubame SQLite.
+Workers never own canonical product state and never write directly to YUZUKI SQLite.
 
 ## ASR
 

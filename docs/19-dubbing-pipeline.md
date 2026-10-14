@@ -1,10 +1,10 @@
 # 19 — Dubbing pipeline (PR #10)
 
 Status: contract frozen for PR #10 implementation. Reference lineage: ASMR-Dubber
-(MIT, https://github.com/EveningStudy/asmr-dubber, commit `2faea94f`). Tsubame does
+(MIT, https://github.com/EveningStudy/asmr-dubber, commit `2faea94f`). YUZUKI does
 **not** wrap Dubber's pipeline, project format, CLI or UI. Each Dubber stage is
-re-implemented as an independent capability behind Tsubame contracts, and evolved
-where Dubber conflicts with Tsubame rules. Ported code keeps MIT attribution in the
+re-implemented as an independent capability behind YUZUKI contracts, and evolved
+where Dubber conflicts with YUZUKI rules. Ported code keeps MIT attribution in the
 file header.
 
 ## Product rules (non-negotiable)
@@ -28,7 +28,7 @@ file header.
 | Mix / export | `audio.mix` | Rust | `mix.rs` |
 | Jobs + worker protocol | — | Rust + Python SDK | `jobs.rs`, `worker.rs`, `workers/dubber/tsubame_worker/` |
 
-Dropped from Dubber: ASR/refine/align (Tsubame has its own), voice cloning from the
+Dropped from Dubber: ASR/refine/align (YUZUKI has its own), voice cloning from the
 original (`voice_reference.py` default), replacement bed (alters original), speed-up
 fitting (`timing.py` `fit_window`), `autoflow/`, Gradio UI.
 

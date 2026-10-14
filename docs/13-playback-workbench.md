@@ -4,7 +4,7 @@ This document describes the user-visible behavior implemented by PR #3.
 
 ## Persistent shell
 
-The Tsubame workbench keeps these preferences across restart:
+The YUZUKI workbench keeps these preferences across restart:
 
 - active rail section;
 - Context Sidebar visibility and width;
@@ -69,7 +69,7 @@ Video uses the same global playback state and transport controls as audio. In Li
 
 ## Visual direction
 
-Tsubame keeps the Codex/VS Code workbench geometry while using Apple Music as the media-product reference:
+YUZUKI keeps the Codex/VS Code workbench geometry while using Apple Music as the media-product reference:
 
 - artwork/media-led hierarchy;
 - polished transport controls;

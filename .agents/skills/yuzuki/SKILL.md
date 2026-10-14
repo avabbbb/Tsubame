@@ -1,22 +1,22 @@
 ---
-name: tsubame
-description: Bootstrap, diagnose, configure, launch, and operate the local Tsubame Desktop through its stable CLI/MCP control plane.
+name: yuzuki
+description: Bootstrap, diagnose, configure, launch, and operate the local YUZUKI Desktop through its stable CLI/MCP control plane.
 ---
 
-# Tsubame Skill
+# YUZUKI Skill
 
-Use this Skill when the user wants to install, initialize, configure, launch, diagnose or operate Tsubame.
+Use this Skill when the user wants to install, initialize, configure, launch, diagnose or operate YUZUKI.
 
 ## Principle
 
-Tsubame Desktop is the product and canonical state owner.
+YUZUKI Desktop is the product and canonical state owner.
 
 The Skill orchestrates existing product interfaces. It must not duplicate provider logic, runtime installation logic, database writes or source parsing.
 
 Prefer, in order:
 
-1. Tsubame CLI
-2. Tsubame MCP
+1. YUZUKI CLI
+2. YUZUKI MCP
 3. local RPC through a supported client
 4. direct filesystem inspection only for diagnostics
 5. GUI interaction only when no stable operation exists
@@ -25,18 +25,18 @@ Prefer, in order:
 
 ### 1. Locate installation
 
-Check standard Tsubame install locations and whether `tsubame` CLI is available.
+Check standard YUZUKI install locations and whether `yuzuki` CLI is available.
 
 If installed:
 
 ```bash
-tsubame app status --json
-tsubame doctor --json
+yuzuki app status --json
+yuzuki doctor --json
 ```
 
 ### 2. Bootstrap when absent
 
-Use the canonical Tsubame release/bootstrap manifest.
+Use the canonical YUZUKI release/bootstrap manifest.
 
 Do not ask the user to manually install Python, Node, Rust, FFmpeg or CUDA toolchains.
 
@@ -44,14 +44,14 @@ Bootstrap should:
 - resolve OS/arch;
 - fetch a trusted Desktop release/bootstrap helper;
 - verify integrity;
-- install/launch Tsubame;
+- install/launch YUZUKI;
 - then return to CLI-driven initialization.
 
 ### 3. Initialize
 
 ```bash
-tsubame init --json
-tsubame doctor --json
+yuzuki init --json
+yuzuki doctor --json
 ```
 
 Detect:
@@ -68,8 +68,8 @@ Detect:
 For the requested workflow:
 
 ```bash
-tsubame profile list --json
-tsubame profile resolve "<profile>" --json
+yuzuki profile list --json
+yuzuki profile resolve "<profile>" --json
 ```
 
 If no profile is chosen, prefer a safe/default profile appropriate to the platform but never silently change a previously explicit user selection.
@@ -77,7 +77,7 @@ If no profile is chosen, prefer a safe/default profile appropriate to the platfo
 ### 5. Plan runtime/model downloads
 
 ```bash
-tsubame runtime plan --profile "<profile>" --json
+yuzuki runtime plan --profile "<profile>" --json
 ```
 
 Present material downloads/cost before execution when appropriate.
@@ -85,13 +85,13 @@ Present material downloads/cost before execution when appropriate.
 Then:
 
 ```bash
-tsubame runtime install --plan <plan-id>
+yuzuki runtime install --plan <plan-id>
 ```
 
 ### 6. Ensure Desktop
 
 ```bash
-tsubame app ensure
+yuzuki app ensure
 ```
 
 The CLI should connect to or launch the installed Desktop.
@@ -117,4 +117,4 @@ CLI/MCP output should expose redacted provider state and secret references only.
 
 ## Rights
 
-Do not configure or generate an unauthorized real-person voice model. Tsubame's name is a homage to Yuzuki Tsubame and does not authorize use of her voice.
+Do not configure or generate an unauthorized real-person voice model. YUZUKI's name is a homage to Yuzuki YUZUKI and does not authorize use of her voice.

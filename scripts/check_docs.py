@@ -25,7 +25,7 @@ REQUIRED = [
     "docs/15-provider-registry.md",
     "docs/DECISIONS.md",
     "docs/REFERENCES.md",
-    ".agents/skills/tsubame/SKILL.md",
+    ".agents/skills/yuzuki/SKILL.md",
 ]
 
 for rel in REQUIRED:

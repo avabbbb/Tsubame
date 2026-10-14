@@ -1,10 +1,10 @@
-# AGENTS.md — Tsubame
+# AGENTS.md — YUZUKI
 
 This file is the execution contract for coding agents working in this repository.
 
 ## Product invariant
 
-Tsubame is a **local-first desktop ASMR library and AI dubbing workbench**.
+YUZUKI is a **local-first desktop ASMR library and AI dubbing workbench**.
 
 It is not:
 - a web app that happens to be wrapped by Tauri;
@@ -32,17 +32,17 @@ Before changing contracts or implementation, read:
 
 1. **Capability first.** Product features never depend directly on a concrete model/provider name.
 2. **Provider != model, and local != special-case.** Providers own execution/auth/discovery/transport; Models declare capabilities. Local runtime, native OS, local server and remote API all live in the same Provider Registry.
-3. **Desktop is canonical.** Tsubame SQLite owns product state. Worker caches/manifests are execution state.
+3. **Desktop is canonical.** YUZUKI SQLite owns product state. Worker caches/manifests are execution state.
 4. **Segment is first-class.** One sentence can be edited, regenerated and invalidated independently.
 5. **No environment setup for end users.** Do not require global Python, Node, Rust, FFmpeg or CUDA tooling.
-6. **App-managed runtimes.** Heavy engines/models install into Tsubame-owned directories through verified manifests.
+6. **App-managed runtimes.** Heavy engines/models install into YUZUKI-owned directories through verified manifests.
 7. **BYOK secrets belong in OS credential storage.** Never store API keys in SQLite, logs, project manifests or git.
 8. **Agent operations use CLI/MCP/local RPC.** Never make GUI automation the canonical control path.
 9. **Source-specific logic stays in adapters.** No website parser in UI/domain code.
 10. **Workbench shell is canonical.** Features attach to Rail, Sidebar, Tabs, Main, Inspector or Bottom Bar.
 11. **No silent fallback.** Provider/model/runtime changes must be visible and auditable.
 12. **Real-person voice rights are explicit.** Never ship or train a real-person voice model without documented permission/rights.
-13. **MIT clean-room boundary.** Do not copy, adapt, vendor, or link GPL/AGPL source into the Tsubame codebase. ASPlayer is reference-only.
+13. **MIT clean-room boundary.** Do not copy, adapt, vendor, or link GPL/AGPL source into the YUZUKI codebase. ASPlayer is reference-only.
 14. **Canonical Desktop stack.** Use React + TypeScript for the Workbench and Tauri 2 + Rust for the native Desktop unless an ADR explicitly changes this decision.
 
 ## Change discipline
