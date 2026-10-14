@@ -350,9 +350,22 @@ export default function SegmentInspector({ segment, onUpdated, onSegmentsChanged
 
       <SegmentDubPanel segment={segment} unsaved={dirty} />
 
-      <button className="primary wide" disabled={saving || !dirty || !draft} onClick={() => void save()}>
-        {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
-      </button>
+      {/* Synthesize/Regenerate stays the visual primary: with nothing to save
+          this is a quiet status; pending edits get a secondary Save. */}
+      {saving || dirty || !draft ? (
+        <button
+          className="secondary wide save-button"
+          disabled={saving || !dirty || !draft}
+          title={draft ? "Save edits without creating a new take" : "Use a time like 00:01:23.456."}
+          onClick={() => void save()}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      ) : (
+        <p className="save-status" role="status">
+          Saved
+        </p>
+      )}
     </div>
   );
 }

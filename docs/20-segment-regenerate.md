@@ -271,5 +271,17 @@ directory.
   voice is sent instead (a note says the next take uses it) and the choice resets when
   another sentence is selected or the take is created. If the active take's voice is
   unknown (legacy empty) or no longer exists, the selected voice is sent.
-- A "Spatial audio" section under it shows the active clip's format and keeps the explicit
-  "Spatialize" (re-render without a new take, with Cancel); listen via the context preview.
+- Visual hierarchy: Synthesize/Regenerate is the Inspector's only accent-filled primary
+  button. The edit-save control at the bottom is a quiet grey "✓ Saved" status (not a
+  button) while there are no unsaved edits; with pending edits (or an invalid time) it
+  becomes a secondary "Save" button (saves without a new take; disabled while a time is
+  invalid). `Ctrl/Cmd+↵` still saves pending edits first and then runs the action; there is
+  no separate save shortcut.
+- A "Spatial audio" section under it shows the active clip's format. The explicit
+  re-spatialize (re-render the active clip's spatial audio without a new take) lives in
+  that section's "More" (⋯) menu as "Re-spatialize only (no new take)", disabled with the
+  reason while edits are unsaved or the clip is out of date; while it runs a status line
+  shows progress and the menu offers "Cancel re-spatialize" (`cancel_job`). The menu is a
+  minimal disclosure (`aria-haspopup="menu"`, `aria-expanded`; focus moves to the first
+  item, ↑/↓/Home/End move, Esc closes and returns focus, a click outside closes). Listen
+  via the context preview.

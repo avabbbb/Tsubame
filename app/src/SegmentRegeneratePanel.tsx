@@ -352,7 +352,7 @@ export default function SegmentRegeneratePanel({
       )}
 
       <button
-        className="secondary wide regenerate-button"
+        className="primary wide regenerate-button"
         disabled={busy || blocker !== null}
         title={
           blocker ??

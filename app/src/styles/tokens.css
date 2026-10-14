@@ -792,6 +792,73 @@ textarea:focus, input:focus, select:focus {
   border: 1px solid var(--line);
   border-radius: 4px;
 }
+/* The one dub action is the Inspector's accent-filled primary (docs/20). */
+.primary.regenerate-button kbd {
+  color: rgba(255, 255, 255, 0.82);
+  border-color: rgba(255, 255, 255, 0.38);
+}
+.primary.regenerate-button:disabled { opacity: .45; filter: none; cursor: default; }
+.save-button:disabled { opacity: .42; }
+.save-status {
+  margin-top: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  opacity: .72;
+}
+.save-status::before { content: "\2713\00A0"; }
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.section-head .section-label { margin: 0; }
+.more-menu { position: relative; }
+.more-trigger {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 1px 8px;
+  line-height: 1.4;
+}
+.more-trigger:hover, .more-trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.more-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 230px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+}
+.more-menu-list [role="menuitem"] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 6px 9px;
+  font-size: 11px;
+  text-align: left;
+}
+.more-menu-list [role="menuitem"] small { color: var(--muted); font-size: 10px; }
+.more-menu-list [role="menuitem"]:hover:not([aria-disabled="true"]),
+.more-menu-list [role="menuitem"]:focus-visible { background: var(--surface-hover); }
+.more-menu-list [role="menuitem"][aria-disabled="true"] { opacity: .5; cursor: default; }
 .regen-progress {
   display: flex;
   align-items: center;
