@@ -291,3 +291,6 @@ Where the implementation refines or departs from the frozen text above:
 - **Spatial reference hashing cost**: the host sha256-hashes the whole media file to
   derive the track key, about three full reads per render (analysis check, render, mix
   lookup). Follow-up: cache the hash by path + size + mtime.
+
+Single-sentence regenerate, takes, downstream replan and context preview build on this
+pipeline: see [Segment regenerate](20-segment-regenerate.md).

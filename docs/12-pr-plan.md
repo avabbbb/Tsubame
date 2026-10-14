@@ -168,6 +168,9 @@ Scope:
 
 ## PR #11 — Single-sentence regenerate loop
 
+**Status:** implemented on `feat/segment-regenerate` (stacked on `feat/dubbing-pipeline`);
+will open as GitHub PR #12. Contract: [Segment regenerate](20-segment-regenerate.md).
+
 Goal: prove Tsubame's defining editing experience.
 
 ```text

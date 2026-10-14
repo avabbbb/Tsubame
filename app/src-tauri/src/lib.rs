@@ -6,8 +6,10 @@ mod mix;
 mod placement;
 mod providers;
 mod refine;
+mod regenerate; // PR plan #11: single-sentence regenerate loop
 mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
+mod takes; // PR plan #11: per-Segment TTS takes
 mod translate;
 mod tts;
 mod voice;
@@ -1249,36 +1251,11 @@ fn mix_runner(app: AppHandle) -> JobRunner {
         input.options.validate().map_err(invalid_input)?;
         let assets = tts::asset_store(&app).map_err(|e| JobError::new("io", true, e))?;
         let state = app.state::<AppState>();
-        let (mut inputs, spatial_candidates) = {
-            let db = state.db.lock().map_err(db_error)?;
-            let mut inputs =
-                mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
-                    .map_err(invalid_input)?;
-            // `tts_assets.path` is relative to the asset store.
-            for clip in &mut inputs.clips {
-                if clip.path.is_relative() {
-                    clip.path = assets.root.join(&clip.path);
-                }
-            }
-            let candidates = input.options.use_spatial
-                && spatial::has_renders(db.connection(), input.media_id).map_err(db_error)?;
-            (inputs, candidates)
-        };
-        let mut spatial_clips = 0;
-        if spatial_candidates {
-            // Hash the original without the DB lock; renders are keyed on its track key.
-            job.progress(0, 1, "spatial");
-            let (_, track_key) = spatial::current_track_key(&inputs.original_path)?;
-            let db = state.db.lock().map_err(db_error)?;
-            spatial_clips = spatial::apply_spatial_renders(
-                db.connection(),
-                &assets,
-                &mut inputs.clips,
-                &track_key,
-                input.options.spatial_mode,
-            )
-            .map_err(db_error)?;
-        }
+        // Same clip resolution as the context preview (docs/20 § Preview).
+        let resolved =
+            mix::resolve_export(&state.db, &assets, input.media_id, &input.options, job)?;
+        let spatial_clips = resolved.spatial_segment_ids.len();
+        let inputs = resolved.inputs;
         let report = mix::render(
             &inputs.original_path,
             &inputs.clips,
@@ -1341,6 +1318,10 @@ pub fn run() {
             store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
             store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
             store.register_runner(MIX_JOB, mix_runner(handle.clone()));
+            store.register_runner(
+                regenerate::REGENERATE_JOB,
+                regenerate::regenerate_runner(handle.clone()),
+            );
             store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
             Ok(())
         })
@@ -1385,6 +1366,13 @@ pub fn run() {
             export_dub_mix,
             spatial::analyze_spatial,
             spatial::spatialize_segment,
+            // PR plan #11: regenerate loop
+            regenerate::regenerate_segment,
+            regenerate::list_takes,
+            regenerate::set_active_take,
+            regenerate::acknowledge_pushed,
+            regenerate::confirm_translation,
+            regenerate::preview_segment_context,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,

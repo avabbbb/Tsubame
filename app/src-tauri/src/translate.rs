@@ -693,6 +693,7 @@ mod tests {
             align_confidence: None,
             tts_asset_key: None,
             dub_skip: false,
+            dub_pushed_ms: 0,
         }
     }
 

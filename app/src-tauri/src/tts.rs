@@ -87,7 +87,7 @@ impl fmt::Display for TtsError {
     }
 }
 
-fn check_cancelled(sink: &dyn ProgressSink) -> Result<(), TtsError> {
+pub(crate) fn check_cancelled(sink: &dyn ProgressSink) -> Result<(), TtsError> {
     if sink.is_cancelled() {
         Err(TtsError::new("cancelled", "synthesis was cancelled", true))
     } else {
@@ -319,6 +319,8 @@ pub fn is_loopback_url(url: &str) -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct MockTts {
     pub sample_rate: u32,
+    /// Same audio for every take (a deterministic provider).
+    pub deterministic: bool,
     pub calls: std::sync::atomic::AtomicUsize,
     pub last_request: Mutex<Option<TtsRequest>>,
 }
@@ -328,6 +330,7 @@ impl MockTts {
     pub fn new() -> Self {
         Self {
             sample_rate: 24_000,
+            deterministic: false,
             calls: std::sync::atomic::AtomicUsize::new(0),
             last_request: Mutex::new(None),
         }
@@ -355,10 +358,18 @@ impl TtsAdapter for MockTts {
             }
             let chars = request.text.chars().count().max(1) as u32;
             let frames = self.sample_rate / 10 * chars.min(200); // 100 ms per char
+                                                                 // Like a sampling TTS model, a later take sounds different (a
+                                                                 // slightly higher pitch); take 0 is the PR #10 tone. A
+                                                                 // deterministic mock returns the same audio for every take.
+            let pitch = if self.deterministic {
+                440.0
+            } else {
+                440.0 + 10.0 * request.take.min(1_000) as f32
+            };
             let samples = (0..frames)
                 .map(|i| {
                     let t = i as f32 / self.sample_rate as f32;
-                    ((t * 440.0 * std::f32::consts::TAU).sin() * 8_000.0) as i16
+                    ((t * pitch * std::f32::consts::TAU).sin() * 8_000.0) as i16
                 })
                 .collect::<Vec<_>>();
             Ok(encode_pcm16_wav(self.sample_rate, 1, &samples))
@@ -709,6 +720,8 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     ensure_column(conn, "segments", "tts_asset_key", "TEXT")?;
     ensure_column(conn, "segments", "dub_skip", "INTEGER NOT NULL DEFAULT 0")?;
+    // PR plan #11: takes + pushed flag (docs/20-segment-regenerate.md).
+    crate::takes::migrate(conn)?;
     Ok(())
 }
 
@@ -736,7 +749,7 @@ pub fn get_asset(conn: &Connection, key: &str) -> rusqlite::Result<Option<TtsAss
     .optional()
 }
 
-fn upsert_asset(conn: &Connection, asset: &TtsAsset) -> rusqlite::Result<()> {
+pub(crate) fn upsert_asset(conn: &Connection, asset: &TtsAsset) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO tts_assets(
             key,path,sha256,duration_ms,sample_rate,channels,provider_id,model_id,voice_profile_id
@@ -853,7 +866,7 @@ pub fn set_dub_skip(
         .ok_or_else(|| TtsError::new("not_found", "segment not found", false))
 }
 
-fn conflict_or_missing(db: &MediaDb, segment_id: i64) -> TtsError {
+pub(crate) fn conflict_or_missing(db: &MediaDb, segment_id: i64) -> TtsError {
     match db.get_segment(segment_id) {
         Ok(Some(_)) => TtsError::new(
             "revision_conflict",
@@ -1017,9 +1030,91 @@ pub fn commit_segment(
         .ok_or_else(|| TtsError::new("not_found", "segment not found", false))
 }
 
-fn lock(db: &Mutex<MediaDb>) -> Result<std::sync::MutexGuard<'_, MediaDb>, TtsError> {
+pub(crate) fn lock(db: &Mutex<MediaDb>) -> Result<std::sync::MutexGuard<'_, MediaDb>, TtsError> {
     db.lock()
         .map_err(|e| TtsError::new("db", e.to_string(), true))
+}
+
+/// Asks the adapter and validates/normalizes the WAV (no storage, no DB).
+pub(crate) async fn synthesize_wav<A: TtsAdapter>(
+    adapter: &A,
+    prepared: &PreparedSynthesis,
+    sink: &dyn ProgressSink,
+) -> Result<(Vec<u8>, WavInfo), TtsError> {
+    let raw = adapter.synthesize(&prepared.request, sink).await?;
+    check_cancelled(sink)?;
+    normalize_wav(&raw)
+}
+
+/// Stores normalized WAV bytes atomically under `prepared.key` and records the
+/// `tts_assets` row. Takes the DB lock only for the insert.
+pub(crate) fn store_asset(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    prepared: &PreparedSynthesis,
+    bytes: &[u8],
+    info: &WavInfo,
+) -> Result<TtsAsset, TtsError> {
+    let relative = AssetStore::relative_path(&prepared.key)?;
+    store.write_atomic(&relative, bytes)?;
+    let asset = TtsAsset {
+        key: prepared.key.clone(),
+        path: relative,
+        sha256: sha256_hex(bytes),
+        duration_ms: info.duration_ms,
+        sample_rate: info.sample_rate as i64,
+        channels: info.channels as i64,
+        provider_id: prepared.provider_id.clone(),
+        model_id: prepared.model_id.clone(),
+        voice_profile_id: prepared.voice_profile_id.clone(),
+        created_at: String::new(),
+    };
+    let guard = lock(db)?;
+    upsert_asset(guard.connection(), &asset).map_err(TtsError::db)?;
+    Ok(get_asset(guard.connection(), &asset.key)
+        .map_err(TtsError::db)?
+        .unwrap_or(asset))
+}
+
+/// A verified asset (row + file + sha256) whose audio content is `sha256`,
+/// oldest first. Used to share identical audio instead of storing it twice.
+pub fn verified_asset_by_sha(
+    conn: &Connection,
+    store: &AssetStore,
+    sha256: &str,
+) -> Result<Option<TtsAsset>, TtsError> {
+    let keys = {
+        let mut stmt = conn
+            .prepare("SELECT key FROM tts_assets WHERE sha256=?1 ORDER BY created_at, key")
+            .map_err(TtsError::db)?;
+        let keys = stmt
+            .query_map([sha256], |row| row.get::<_, String>(0))
+            .map_err(TtsError::db)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(TtsError::db)?;
+        keys
+    };
+    for key in keys {
+        if let Some(asset) = verified_asset(conn, store, &key)? {
+            return Ok(Some(asset));
+        }
+    }
+    Ok(None)
+}
+
+/// Cache miss path: asks the adapter, validates/normalizes the WAV, stores it
+/// atomically and records the `tts_assets` row. Holds the DB lock only for the
+/// final insert. Used by `run_synthesis` (the regenerate job uses the two
+/// halves directly to share identical audio).
+pub(crate) async fn synthesize_asset<A: TtsAdapter>(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    adapter: &A,
+    prepared: &PreparedSynthesis,
+    sink: &dyn ProgressSink,
+) -> Result<TtsAsset, TtsError> {
+    let (bytes, info) = synthesize_wav(adapter, prepared, sink).await?;
+    store_asset(db, store, prepared, &bytes, &info)
 }
 
 /// Single-sentence synthesis. Holds the DB lock only for short synchronous
@@ -1054,36 +1149,23 @@ pub async fn run_synthesis<A: TtsAdapter>(
         None => {
             check_cancelled(sink)?;
             sink.progress("synthesize", 1, 3);
-            let raw = adapter.synthesize(&prepared.request, sink).await?;
-            check_cancelled(sink)?;
-            let (bytes, info) = normalize_wav(&raw)?;
-            let relative = AssetStore::relative_path(&prepared.key)?;
-            store.write_atomic(&relative, &bytes)?;
-            let asset = TtsAsset {
-                key: prepared.key.clone(),
-                path: relative,
-                sha256: sha256_hex(&bytes),
-                duration_ms: info.duration_ms,
-                sample_rate: info.sample_rate as i64,
-                channels: info.channels as i64,
-                provider_id: prepared.provider_id.clone(),
-                model_id: prepared.model_id.clone(),
-                voice_profile_id: prepared.voice_profile_id.clone(),
-                created_at: String::new(),
-            };
-            let guard = lock(db)?;
-            upsert_asset(guard.connection(), &asset).map_err(TtsError::db)?;
-            let stored = get_asset(guard.connection(), &asset.key)
-                .map_err(TtsError::db)?
-                .unwrap_or(asset);
-            (stored, false)
+            (
+                synthesize_asset(db, store, adapter, &prepared, sink).await?,
+                false,
+            )
         }
     };
 
     sink.progress("commit", 2, 3);
     let segment = {
         let guard = lock(db)?;
-        commit_segment(&guard, &prepared, expected_revision)?
+        let segment = commit_segment(&guard, &prepared, expected_revision)?;
+        // Keep the take table in step with the PR #10 command (docs/20 § Takes).
+        let pruned = crate::takes::record_and_prune(guard.connection(), &prepared, take)
+            .map_err(TtsError::db)?;
+        drop(guard);
+        crate::takes::delete_files(store, &pruned.deleted_paths);
+        segment
     };
     sink.progress("done", 3, 3);
     Ok(SynthesisOutcome {
@@ -1168,6 +1250,31 @@ impl From<TtsError> for JobError {
     }
 }
 
+/// Loads a Voice Profile and builds the adapter of its Provider (enabled,
+/// model available and resolving `speech.tts`, BYOK secret from the OS store).
+pub(crate) fn resolve_profile_adapter(
+    app: &tauri::AppHandle,
+    voice_profile_id: &str,
+) -> Result<(VoiceProfile, AnyTtsAdapter), JobError> {
+    use tauri::Manager;
+    let setup = |code: &str, message: String| JobError::new(code, false, message);
+    let state = app.state::<crate::AppState>();
+    let (profile, provider) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|e| JobError::new("db", true, e.to_string()))?;
+        let profile = voice::get(db.connection(), voice_profile_id.trim())
+            .map_err(|e| JobError::new("db", true, e.to_string()))?
+            .ok_or_else(|| setup("not_found", "voice profile not found".into()))?;
+        let provider = resolve_tts_target(&db, &profile)?;
+        (profile, provider)
+    };
+    let secret = crate::provider_secret(&provider).map_err(|e| setup("provider_unavailable", e))?;
+    let adapter = adapter_for_provider(&provider, secret)?;
+    Ok((profile, adapter))
+}
+
 /// Error messages match what `synthesize_segment` returned before it ran as a
 /// job (plain strings for setup failures, `TtsError` display otherwise).
 async fn run_tts_job(
@@ -1176,22 +1283,9 @@ async fn run_tts_job(
     sink: &dyn ProgressSink,
 ) -> Result<SynthesisOutcome, JobError> {
     use tauri::Manager;
-    let setup = |code: &str, message: String| JobError::new(code, false, message);
     let state = app.state::<crate::AppState>();
-    let store = asset_store(app).map_err(|e| setup("io", e))?;
-    let (profile, provider) = {
-        let db = state
-            .db
-            .lock()
-            .map_err(|e| JobError::new("db", true, e.to_string()))?;
-        let profile = voice::get(db.connection(), input.voice_profile_id.trim())
-            .map_err(|e| JobError::new("db", true, e.to_string()))?
-            .ok_or_else(|| setup("not_found", "voice profile not found".into()))?;
-        let provider = resolve_tts_target(&db, &profile)?;
-        (profile, provider)
-    };
-    let secret = crate::provider_secret(&provider).map_err(|e| setup("provider_unavailable", e))?;
-    let adapter = adapter_for_provider(&provider, secret)?;
+    let store = asset_store(app).map_err(|e| JobError::new("io", false, e))?;
+    let (profile, adapter) = resolve_profile_adapter(app, &input.voice_profile_id)?;
     Ok(run_synthesis(
         &state.db,
         &store,

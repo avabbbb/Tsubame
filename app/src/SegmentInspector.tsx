@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   formatEditorTime,
@@ -7,10 +7,15 @@ import {
 } from "./segmentEditor";
 import type { Segment, SegmentDraft } from "./types";
 import SegmentDubPanel from "./SegmentDubPanel";
+import SegmentRegeneratePanel from "./SegmentRegeneratePanel";
+import type { RegenerateControl } from "./SegmentRegeneratePanel";
+import { isRegenerateShortcut } from "./regenerate";
 
 type Props = {
   segment: Segment | null;
   onUpdated: (segment: Segment) => void;
+  /** Re-reads Segments whose dub placement changed (regenerate / take switch). */
+  onSegmentsChanged: (ids: number[]) => void;
 };
 
 function confidenceLabel(value: number | null | undefined) {
@@ -33,7 +38,7 @@ function sameDraft(left: SegmentDraft, right: SegmentDraft) {
   );
 }
 
-export default function SegmentInspector({ segment, onUpdated }: Props) {
+export default function SegmentInspector({ segment, onUpdated, onSegmentsChanged }: Props) {
   const [source, setSource] = useState("");
   const [translation, setTranslation] = useState("");
   const [start, setStart] = useState("00:00:00.000");
@@ -43,6 +48,8 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
   const [conflict, setConflict] = useState<Segment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const regenerateRef = useRef<RegenerateControl | null>(null);
 
   useEffect(() => {
     if (!segment) return;
@@ -120,24 +127,47 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
     }
   }
 
-  async function save() {
-    if (!segment) return;
+  /** Saves pending edits; resolves to the saved Segment (or the unchanged one), null on failure. */
+  async function save(): Promise<Segment | null> {
+    if (!segment) return null;
     if (!draft) {
       setError("Use a time like 00:01:23.456.");
-      return;
+      return null;
     }
-    if (!dirty) return;
+    if (!dirty) return segment;
 
     setSaving(true);
     setError(null);
     try {
-      await mutate(segment, draft, true);
+      return await mutate(segment, draft, true);
     } catch (errorValue) {
       await handleConflict(errorValue);
+      return null;
     } finally {
       setSaving(false);
     }
   }
+
+  // Ctrl/Cmd+Enter: save pending edits, then regenerate the selected sentence.
+  // Active while focus is in the Inspector or nowhere in particular.
+  useEffect(() => {
+    if (!segment) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!isRegenerateShortcut(event)) return;
+      const target = event.target as HTMLElement | null;
+      const inEditor =
+        !!target &&
+        (!!rootRef.current?.contains(target) ||
+          !!target.closest?.(".segments, .waveform-editor") ||
+          target === document.body ||
+          target === document.documentElement);
+      if (!inEditor) return;
+      event.preventDefault();
+      regenerateRef.current?.run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [segment?.id]);
 
   async function undo() {
     if (!segment || undoStack.length === 0) return;
@@ -211,7 +241,7 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
   }
 
   return (
-    <>
+    <div ref={rootRef} className="segment-inspector">
       <div className="inspector-title-row">
         <div>
           <p className="eyebrow">SEGMENT {segment.ordinal + 1}</p>
@@ -309,14 +339,33 @@ export default function SegmentInspector({ segment, onUpdated }: Props) {
         <div><span>TTS</span><strong>{segment.tts_provenance || "—"}</strong></div>
       </div>
 
-      <SegmentDubPanel segment={segment} unsaved={dirty} onUpdated={onUpdated} />
+      <SegmentRegeneratePanel
+        segment={segment}
+        unsaved={dirty}
+        saveFirst={save}
+        onUpdated={onUpdated}
+        onSegmentsChanged={onSegmentsChanged}
+        controlRef={regenerateRef}
+      />
 
-      <button className="primary wide" disabled={saving || !dirty || !draft} onClick={() => void save()}>
-        {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
-      </button>
-      <button className="secondary wide" disabled>
-        Regenerate Segment · PR #10
-      </button>
-    </>
+      <SegmentDubPanel segment={segment} unsaved={dirty} />
+
+      {/* Synthesize/Regenerate stays the visual primary: with nothing to save
+          this is a quiet status; pending edits get a secondary Save. */}
+      {saving || dirty || !draft ? (
+        <button
+          className="secondary wide save-button"
+          disabled={saving || !dirty || !draft}
+          title={draft ? "Save edits without creating a new take" : "Use a time like 00:01:23.456."}
+          onClick={() => void save()}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      ) : (
+        <p className="save-status" role="status">
+          Saved
+        </p>
+      )}
+    </div>
   );
 }

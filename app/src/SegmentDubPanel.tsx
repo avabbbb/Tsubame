@@ -1,48 +1,34 @@
-import { useEffect, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { canCancel, jobProgress, useJobs } from "./jobs";
-import type {
-  ResolvedTtsAsset,
-  Segment,
-  SpatialRenderOutcome,
-  SynthesisOutcome,
-  VoiceProfile,
-} from "./types";
+import type { ResolvedTtsAsset, Segment, SpatialRenderOutcome } from "./types";
 
 type Props = {
   segment: Segment;
   /** True while the Inspector holds unsaved edits for this sentence. */
   unsaved: boolean;
-  onUpdated: (segment: Segment) => void;
 };
 
-const VOICE_KEY = "tsubame.dub.voiceProfileId";
-
-/** Inspector section: synthesize one sentence and preview the clip alone. */
-export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) {
-  const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
-  const [voiceId, setVoiceId] = useState<string>(
-    () => localStorage.getItem(VOICE_KEY) ?? "",
-  );
+/**
+ * Inspector section for the active clip: its format, with the explicit
+ * re-spatialize (and its Cancel) tucked into a "More" (⋯) menu so it does not
+ * compete with the Synthesize/Regenerate action. Synthesis lives in that
+ * single action and listening in the takes list / context preview
+ * (SegmentRegeneratePanel).
+ */
+export default function SegmentDubPanel({ segment, unsaved }: Props) {
   const [asset, setAsset] = useState<ResolvedTtsAsset | null>(null);
-  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [spatialBusy, setSpatialBusy] = useState(false);
   const [render, setRender] = useState<SpatialRenderOutcome | null>(null);
   const { jobs: spatialJobs, cancel } = useJobs({ segment_id: segment.id, kind: "spatial" });
   const spatialJob = spatialJobs.find(canCancel) ?? null;
   const spatialFraction = spatialJob ? jobProgress(spatialJob) : null;
-
-  useEffect(() => {
-    void invoke<VoiceProfile[]>("list_voice_profiles")
-      .then((rows) => {
-        setProfiles(rows);
-        setVoiceId((current) =>
-          rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? ""),
-        );
-      })
-      .catch((error) => setNote(String(error)));
-  }, []);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuId = `spatial-menu-${segment.id}`;
 
   useEffect(() => {
     setNote(null);
@@ -52,9 +38,48 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
         setAsset(null);
         setNote(String(error));
       });
-  }, [segment.id, segment.revision]);
+  }, [segment.id, segment.revision, segment.tts_asset_key]);
 
-  // A render belongs to one TTS clip; drop the preview when the clip changes.
+  // Another sentence starts with the menu closed.
+  useEffect(() => setMenuOpen(false), [segment.id]);
+
+  // Minimal disclosure menu: focus the first item on open; a click outside closes.
+  useEffect(() => {
+    if (!menuOpen) return;
+    menuRef.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointer);
+    return () => window.removeEventListener("pointerdown", onPointer);
+  }, [menuOpen]);
+
+  function closeMenu(refocus: boolean) {
+    setMenuOpen(false);
+    if (refocus) triggerRef.current?.focus();
+  }
+
+  function onMenuKey(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+    } else if (event.key === "Tab") {
+      setMenuOpen(false);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+    }
+  }
+
+  // A render belongs to one TTS clip; forget it when the clip changes.
   useEffect(() => {
     setRender((current) => (current && current.tts_asset_key === asset?.key ? current : null));
   }, [segment.id, asset?.key]);
@@ -67,7 +92,11 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
         segmentId: segment.id,
       });
       setRender(outcome);
-      setNote(outcome.cache_hit ? "Reused a cached spatial render." : "Spatialized.");
+      setNote(
+        outcome.cache_hit
+          ? "Reused a cached spatial render. Play in context to hear it."
+          : "Spatialized. Play in context to hear it.",
+      );
     } catch (error) {
       setNote(String(error));
     } finally {
@@ -84,115 +113,91 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
     }
   }
 
-  function chooseVoice(id: string) {
-    setVoiceId(id);
-    localStorage.setItem(VOICE_KEY, id);
-  }
+  if (!asset && !note) return null;
 
-  async function synthesize() {
-    if (!voiceId) return;
-    setBusy(true);
-    setNote(null);
-    try {
-      const outcome = await invoke<SynthesisOutcome>("synthesize_segment", {
-        segmentId: segment.id,
-        expectedRevision: segment.revision,
-        voiceProfileId: voiceId,
-      });
-      onUpdated(outcome.segment);
-      setNote(outcome.cache_hit ? "Reused a cached clip." : "Synthesized.");
-    } catch (error) {
-      setNote(String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const hasTranslation = segment.translated_text.trim().length > 0;
-  const blocked = !voiceId || !hasTranslation || unsaved || busy;
+  const spatialBlocker = unsaved
+    ? "Save changes first"
+    : segment.dirty_tts
+      ? "Regenerate the current translation first"
+      : null;
+  const spatialDisabled = spatialBusy || spatialBlocker !== null;
+  const spatialLabel = render
+    ? "Re-spatialize again (no new take)"
+    : "Re-spatialize only (no new take)";
 
   return (
     <div className="segment-state">
-      <p className="section-label">DUB VOICE</p>
-      {profiles.length ? (
-        <label>
-          Voice
-          <select value={voiceId} onChange={(event) => chooseVoice(event.target.value)}>
-            {profiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name} · {profile.kind}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <p className="inspector-help">Create a dub voice in Settings first.</p>
-      )}
-
-      <button
-        className="secondary wide"
-        disabled={blocked}
-        title={
-          unsaved
-            ? "Save changes first"
-            : !hasTranslation
-              ? "This sentence has no translation yet"
-              : undefined
-        }
-        onClick={() => void synthesize()}
-      >
-        {busy ? "Synthesizing…" : asset ? "Synthesize again" : "Synthesize"}
-      </button>
-
-      {asset && (
-        <>
-          <audio
-            key={asset.key}
-            controls
-            preload="none"
-            src={convertFileSrc(asset.path)}
-            style={{ width: "100%" }}
-          />
-          <p className="inspector-help">
-            {(asset.duration_ms / 1000).toFixed(2)} s · {asset.sample_rate / 1000} kHz ·{" "}
-            {asset.channels === 1 ? "mono" : `${asset.channels} ch`}
-            {segment.dirty_tts ? " · out of date" : ""}
-          </p>
-          <button
-            className="secondary wide"
-            disabled={spatialBusy || unsaved || segment.dirty_tts}
-            title={
-              unsaved
-                ? "Save changes first"
-                : segment.dirty_tts
-                  ? "Synthesize the current translation first"
-                  : "Follow the original sentence's position in the stereo field"
-            }
-            onClick={() => void spatialize()}
-          >
-            {spatialBusy
-              ? spatialFraction !== null
-                ? `Spatializing ${Math.round(spatialFraction * 100)}%…`
-                : "Spatializing…"
-              : render
-                ? "Spatialize again"
-                : "Spatialize"}
-          </button>
-          {spatialJob && (
-            <button className="secondary wide" onClick={() => void stopSpatial()}>
-              Cancel
+      <div className="section-head">
+        <p className="section-label">SPATIAL AUDIO</p>
+        {asset && (
+          <div className="more-menu">
+            <button
+              ref={triggerRef}
+              className="more-trigger"
+              aria-label="More spatial audio actions"
+              title="More"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-controls={menuOpen ? menuId : undefined}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              ⋯
             </button>
-          )}
-          {render && (
-            <audio
-              key={render.render_key}
-              controls
-              preload="none"
-              src={convertFileSrc(render.path)}
-              style={{ width: "100%" }}
-            />
-          )}
-        </>
+            {menuOpen && (
+              <div
+                ref={menuRef}
+                id={menuId}
+                role="menu"
+                aria-label="Spatial audio actions"
+                className="more-menu-list"
+                onKeyDown={onMenuKey}
+              >
+                <button
+                  role="menuitem"
+                  aria-disabled={spatialDisabled}
+                  title={spatialBlocker ?? "Follow the original sentence's position in the stereo field"}
+                  onClick={() => {
+                    if (spatialDisabled) return;
+                    closeMenu(true);
+                    void spatialize();
+                  }}
+                >
+                  <span>{spatialLabel}</span>
+                  <small>
+                    {spatialBusy
+                      ? "Running…"
+                      : (spatialBlocker ?? "Re-render the active clip's spatial audio")}
+                  </small>
+                </button>
+                {spatialJob && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      closeMenu(true);
+                      void stopSpatial();
+                    }}
+                  >
+                    <span>Cancel re-spatialize</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {asset && (
+        <p className="inspector-help">
+          Active clip: {(asset.duration_ms / 1000).toFixed(2)} s · {asset.sample_rate / 1000} kHz ·{" "}
+          {asset.channels === 1 ? "mono" : `${asset.channels} ch`}
+          {segment.dirty_tts ? " · out of date" : ""}
+        </p>
+      )}
+      {spatialBusy && (
+        <p className="inspector-help" role="status">
+          {spatialFraction !== null
+            ? `Re-spatializing ${Math.round(spatialFraction * 100)}%… (Cancel in ⋯)`
+            : "Re-spatializing… (Cancel in ⋯)"}
+        </p>
       )}
       {note && <p className="inspector-help">{note}</p>}
     </div>

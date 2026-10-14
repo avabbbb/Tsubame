@@ -47,6 +47,9 @@ pub struct Segment {
     pub tts_asset_key: Option<String>,
     /// Excluded from dub placement and mix.
     pub dub_skip: bool,
+    /// How much later (ms) this sentence's dub now starts than when the user
+    /// last previewed/acknowledged it; 0 = not pushed (docs/20 § Replan).
+    pub dub_pushed_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -393,7 +396,7 @@ impl MediaDb {
                     translation_provenance,tts_provenance,
                     dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
                     asr_confidence,refine_confidence,align_provenance,align_confidence,
-                    tts_asset_key,dub_skip
+                    tts_asset_key,dub_skip,dub_pushed_ms
              FROM segments
              WHERE media_id=?1
              ORDER BY start_ms,ordinal,id",
@@ -411,7 +414,7 @@ impl MediaDb {
                         translation_provenance,tts_provenance,
                         dirty_translation,dirty_tts,dirty_mix,dirty_subtitle,reviewed,
                         asr_confidence,refine_confidence,align_provenance,align_confidence,
-                        tts_asset_key,dub_skip
+                        tts_asset_key,dub_skip,dub_pushed_ms
                  FROM segments WHERE id=?1",
                 [id],
                 row_to_segment,
@@ -1104,6 +1107,7 @@ fn row_to_segment(row: &Row<'_>) -> rusqlite::Result<Segment> {
         align_confidence: row.get(21)?,
         tts_asset_key: row.get(22)?,
         dub_skip: row.get(23)?,
+        dub_pushed_ms: row.get(24)?,
     })
 }
 

@@ -58,9 +58,12 @@ export default function WaveformEditor({
           id: String(segment.id),
           start: segment.start_ms / 1000,
           end: segment.end_ms / 1000,
+          // Yellow = dub pushed later by a regenerate (docs/20); red = selected.
           color: selected
             ? "rgba(250, 45, 72, .22)"
-            : "rgba(142, 142, 147, .10)",
+            : segment.dub_pushed_ms > 0
+              ? "rgba(255, 214, 10, .28)"
+              : "rgba(142, 142, 147, .10)",
           drag: true,
           resize: true,
           minLength: 0.05,

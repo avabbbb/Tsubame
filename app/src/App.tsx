@@ -16,6 +16,7 @@ import RefinePanel from "./RefinePanel";
 import TranslatePanel from "./TranslatePanel";
 import ProviderSettings from "./ProviderSettings";
 import SegmentInspector from "./SegmentInspector";
+import { pushedLabel } from "./regenerate";
 import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
 import type {
@@ -341,6 +342,20 @@ export default function App() {
       currentSelection?.id === updated.id ? updated : currentSelection,
     );
   }, []);
+
+  // Regenerate / take switches move later dubs and set their pushed marks.
+  const refreshSegmentsById = useCallback(
+    (ids: number[]) => {
+      for (const id of ids) {
+        void invoke<Segment | null>("get_segment", { id })
+          .then((row) => {
+            if (row) handleSegmentUpdated(row);
+          })
+          .catch(() => undefined);
+      }
+    },
+    [handleSegmentUpdated],
+  );
 
   const commitSegmentTiming = useCallback(
     async (segment: Segment, startMs: number, endMs: number) => {
@@ -1013,6 +1028,14 @@ export default function App() {
                       <span className="segment-copy">
                         <strong>{segment.source_text || "Untitled segment"}</strong>
                         <small>{segment.translated_text || "No translation yet"}</small>
+                        {segment.dub_pushed_ms > 0 && (
+                          <span
+                            className="state-badge pushed-badge"
+                            title={`Dub ${pushedLabel(segment.dub_pushed_ms)} after regenerating an earlier sentence. Preview it or press OK in the Inspector to clear.`}
+                          >
+                            Pushed +{(segment.dub_pushed_ms / 1000).toFixed(1)}s
+                          </span>
+                        )}
                         {dubPlacements.get(segment.id)?.flags.includes("drift_exceeded") && (
                           <span
                             className="state-badge drift-badge"
@@ -1083,7 +1106,11 @@ export default function App() {
             </div>
           </>
         ) : selected ? (
-          <SegmentInspector segment={selected} onUpdated={handleSegmentUpdated} />
+          <SegmentInspector
+            segment={selected}
+            onUpdated={handleSegmentUpdated}
+            onSegmentsChanged={refreshSegmentsById}
+          />
         ) : (
           <>
             <p className="eyebrow">INSPECTOR</p>
