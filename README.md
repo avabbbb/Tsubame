@@ -142,6 +142,32 @@ This project is **not affiliated with, endorsed by, or an official product of Yu
 
 The project must not be used to train, clone, or synthesize a real person's voice without the rights/permission required for that use.
 
+
+## Desktop installers and in-app updates
+
+GitHub Actions builds YUZUKI installers for **Windows x64 (NSIS .exe)**,
+**macOS Apple Silicon (.dmg)** and **macOS Intel (.dmg)** on pushes to `main`,
+PRs touching the app/release pipeline, and manual `build-installers` runs.
+Download these unnotarized development installers from the workflow's **Artifacts**.
+
+Version tags `vX.Y.Z` (matching `app/src-tauri/tauri.conf.json`)
+run `release-desktop` and upload installers, signed updater bundles, signatures
+and `latest.json` to a **draft GitHub Release**. Review the three jobs, then
+publish the draft to make it available to installed clients. The desktop
+checks for updates at startup, exposes **Settings → YUZUKI Updates**, and only
+downloads/installs after confirmation. App updates require a one-time install
+of a build with the updater integrated.
+
+**First-time signing setup is mandatory.** Set the repository variable
+`YUZUKI_UPDATER_PUBLIC_KEY` and GitHub Actions secrets
+`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+(if the key is password-protected). Never commit the private key.
+See [desktop release guide](docs/21-desktop-releases.md) for setup,
+release/publishing checks, code-signing caveats and rollback guidance.
+
+Build artifacts do **not** mean runtime/model installation or the complete
+ASMR pipeline is ready for non-developers; Runtime Bootstrap remains separate.
+
 ## License
 
 **MIT.**
