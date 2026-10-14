@@ -914,3 +914,125 @@ fn default_voice_profile_comes_from_the_active_take() {
         fx.profile.id
     );
 }
+
+// ----- real spatial worker -----
+
+/// `python3` (or `TSUBAME_TEST_PYTHON`) with numpy importable.
+fn python_with_numpy() -> Option<String> {
+    let python = crate::worker::test_support::python()?;
+    std::process::Command::new(&python)
+        .args(["-c", "import numpy"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|_| python)
+}
+
+#[test]
+fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
+    let Some(python) = python_with_numpy() else {
+        eprintln!("skipping: python3 with numpy not available");
+        return;
+    };
+    let fx = fixture(
+        &[
+            (0, 1_000, "一二"),
+            (1_100, 1_300, "三四"),
+            (1_400, 1_600, "五六"),
+        ],
+        6,
+    );
+    // The spatial analysis wants a stereo reference: replace the media content.
+    {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&fx.media_path, spec).unwrap();
+        let mut state = 7u64;
+        for i in 0..48_000 * 6 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let v = ((state % 20_001) as f64 / 10_000.0 - 1.0)
+                * (0.5 + 0.5 * (i as f64 / 48_000.0 * 3.0).sin());
+            writer.write_sample((v * 12_000.0) as i16).unwrap();
+            writer.write_sample((v * 4_000.0) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    for id in &fx.ids {
+        synth(&fx, *id, 0);
+    }
+    let (b, c) = (fx.ids[1], fx.ids[2]);
+    let mut spec = WorkerSpec::python(python, spatial::worker_script());
+    spec.hello_timeout = std::time::Duration::from_secs(30);
+    let jobs = JobStore::open_in_memory().unwrap();
+    // C already has a concurrent render at its current start.
+    {
+        let id = jobs
+            .create(NewJob::new(spatial::SPATIAL_JOB, fx.media_id))
+            .unwrap()
+            .id;
+        let handle = jobs.start(&id).unwrap();
+        spatial::spatialize(
+            &fx.db,
+            &fx.store,
+            &spec,
+            &handle,
+            c,
+            SpatialMode::Concurrent,
+        )
+        .expect("concurrent render through the worker");
+        handle.succeed(serde_json::json!({})).unwrap();
+    }
+    set_translation(&fx, b, "三四五六七八九十一二三四五");
+    let seg = segment(&fx, b);
+    let input = RegenerateInput {
+        segment_id: b,
+        expected_revision: seg.revision,
+        voice_profile_id: fx.profile.id.clone(),
+    };
+    let id = jobs
+        .create(NewJob::new(REGENERATE_JOB, fx.media_id).segment(b))
+        .unwrap()
+        .id;
+    let handle = jobs.start(&id).unwrap();
+    let outcome = run_regenerate(
+        &fx.db,
+        &fx.store,
+        &MockTts::new(),
+        &fx.profile,
+        &SpatialAvailability::Available(spec),
+        &handle,
+        &input,
+    )
+    .unwrap();
+    handle.succeed(serde_json::json!({})).unwrap();
+    assert_eq!(
+        outcome.spatial.status, SPATIAL_DONE,
+        "{:?}",
+        outcome.spatial
+    );
+    assert!(outcome.plan_change.pushed.iter().any(|s| s.segment_id == c));
+    let renders = &outcome.spatial.renders;
+    assert!(renders
+        .iter()
+        .any(|r| r.segment_id == b && r.mode == SpatialMode::SourceTrajectory && !r.cache_hit));
+    assert!(
+        renders
+            .iter()
+            .any(|r| r.segment_id == c && r.mode == SpatialMode::Concurrent && !r.cache_hit),
+        "moved concurrent render is redone: {renders:?}"
+    );
+    // B had no concurrent render before, so none is made for its new take.
+    assert!(!renders
+        .iter()
+        .any(|r| r.segment_id == b && r.mode == SpatialMode::Concurrent));
+    // The preview now picks B's spatial render.
+    let preview =
+        render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap();
+    assert!(preview.spatial);
+}
