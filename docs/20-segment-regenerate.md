@@ -134,8 +134,9 @@ or a spatial failure later can never leave a new clip without its pushed flags.
   plan comes from `placement::replan(previous, sentences_before, params, index,
   new_duration)`, which recomputes from the edited sentence and stops once the chain
   converges. Sentences before the edited one are never touched.
-- `plan_change` = `{index, recomputed: [start, end), moved: [...], pushed: [...]}` where
-  each entry is `{segment_id, old_start_ms, new_start_ms, delta_ms, drift_ms,
+- `plan_change` = `{index, edited, recomputed_start, recomputed_end, moved: [...],
+  pushed: [...]}` where `edited` is the edited Segment's new placement and each
+  moved/pushed entry is `{segment_id, old_start_ms, new_start_ms, delta_ms, drift_ms,
   drift_exceeded}`. `moved` = downstream Segments whose `dub_start_ms` changed; `pushed`
   = the subset that moved **later**.
 - Persistence: `segments.dub_pushed_ms` accumulates the displacement since the user last
@@ -159,12 +160,12 @@ or a spatial failure later can never leave a new clip without its pushed flags.
   `concurrent` render of a moved Segment is re-rendered only when a verified render exists
   under its old key (old `dub_start_ms`) and none exists under its new key.
 - Output: `spatial: {status: done|skipped|failed, reason?, renders: [{segment_id, mode,
-  render_key, cache_hit}]}`.
+  render_key, cache_hit}], errors: [{segment_id?, code, message}]}`.
 
 ### `RegenerateOutcome`
 
-`{segment, take: TakeInfo, cache_hit, previous_tts_asset_key, plan_change, spatial,
-pruned_takes: [take_index], deleted_assets: [key]}`.
+`{segment, take: TakeInfo, take_index, cache_hit, previous_tts_asset_key, plan_change,
+spatial, pruned_takes: [take_index], deleted_assets: [key]}`.
 
 ### Failure modes
 
@@ -224,4 +225,11 @@ directory.
 - `set_active_take` revision conflicts, unknown keys, dirty_tts recomputation;
 - replan touches only downstream Segments and flags pushed ones; acknowledge clears;
 - preview window bounds and clamping at 0; solo vs mix output; cleanup;
-- regenerate job progress stages and cancel; migration backfill idempotent.
+- regenerate job progress stages and cancel; migration backfill idempotent;
+- with python3 + numpy available: the real spatial worker renders the new take and
+  re-renders a moved downstream `concurrent` render (skipped otherwise).
+
+## Not in this PR (frontend chunk)
+
+Inspector take list / A-B buttons, yellow pushed marks, Ctrl/Cmd+Enter binding and
+preview playback UI. `app/src/types.ts` already carries the result types.
