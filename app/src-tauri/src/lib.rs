@@ -1306,8 +1306,7 @@ async fn export_dub_mix(
 pub fn run() {
     // Only signed release builds expose the updater. Keeping old app identifiers
     // preserves on-disk data and credentials across the YUZUKI rebrand.
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init());
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
     if option_env!("YUZUKI_UPDATER_PUBLIC_KEY").is_some() {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
