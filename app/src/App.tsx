@@ -342,6 +342,20 @@ export default function App() {
     );
   }, []);
 
+  // Regenerate / take switches move later dubs and set their pushed marks.
+  const refreshSegmentsById = useCallback(
+    (ids: number[]) => {
+      for (const id of ids) {
+        void invoke<Segment | null>("get_segment", { id })
+          .then((row) => {
+            if (row) handleSegmentUpdated(row);
+          })
+          .catch(() => undefined);
+      }
+    },
+    [handleSegmentUpdated],
+  );
+
   const commitSegmentTiming = useCallback(
     async (segment: Segment, startMs: number, endMs: number) => {
       try {
@@ -1083,7 +1097,11 @@ export default function App() {
             </div>
           </>
         ) : selected ? (
-          <SegmentInspector segment={selected} onUpdated={handleSegmentUpdated} />
+          <SegmentInspector
+            segment={selected}
+            onUpdated={handleSegmentUpdated}
+            onSegmentsChanged={refreshSegmentsById}
+          />
         ) : (
           <>
             <p className="eyebrow">INSPECTOR</p>
