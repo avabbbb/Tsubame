@@ -653,11 +653,22 @@ fn dub_frame(
     !active.is_empty()
 }
 
+/// Timeline frames a pass processes: `[first, end)`, writing only
+/// `[write_from, end)`. The export is `0, 0, output_frames`; a windowed render
+/// starts `first` early enough that the limiter state at `write_from` equals
+/// the export's (see [`limiter_settle_start`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameRange {
+    first: u64,
+    write_from: u64,
+    end: u64,
+}
+
 fn render_mix_pass<S: Pcm, R: Read, W: Write + Seek>(
     reader: &mut WavReader<R>,
     writer: &mut WavWriter<W>,
     ctx: &RenderCtx,
-    output_frames: u64,
+    range: FrameRange,
 ) -> Result<u64, String> {
     let spec = reader.spec();
     let bits = spec.bits_per_sample;
@@ -675,18 +686,21 @@ fn render_mix_pass<S: Pcm, R: Read, W: Write + Seek>(
         .exp(),
         gain: 1.0,
     };
-    for frame in 0..output_frames {
+    for frame in range.first..range.end {
         for slot in raw.iter_mut() {
             *slot = match samples.next() {
                 Some(sample) => sample.map_err(|e| e.to_string())?,
                 None => S::zero(), // dub runs past the original: silence there
             };
         }
+        let write = frame >= range.write_from;
         let contributes = dub_frame(&ctx.clips, &mut active, &mut next, frame, &mut dub);
         let limiting = ctx.options.limiter && (contributes || !limiter.idle());
         if !contributes && !limiting {
-            for &sample in &raw {
-                writer.write_sample(sample).map_err(|e| e.to_string())?;
+            if write {
+                for &sample in &raw {
+                    writer.write_sample(sample).map_err(|e| e.to_string())?;
+                }
             }
         } else {
             let original = raw.iter().map(|s| s.to_unit(bits)).collect::<Vec<_>>();
@@ -702,21 +716,26 @@ fn render_mix_pass<S: Pcm, R: Read, W: Write + Seek>(
             } else {
                 1.0
             };
-            if gain < 1.0 {
+            if gain < 1.0 && write {
                 limited += 1;
             }
-            for value in sum {
-                writer
-                    .write_sample(S::from_unit(value * gain, bits))
-                    .map_err(|e| e.to_string())?;
+            if write {
+                for value in sum {
+                    writer
+                        .write_sample(S::from_unit(value * gain, bits))
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
         if (frame + 1) % PROGRESS_EVERY_FRAMES == 0 {
             if ctx.sink.is_cancelled() {
                 return Err(ERR_CANCELLED.to_string());
             }
-            ctx.sink
-                .progress("mix", ctx.work_offset + frame + 1, ctx.total_work);
+            ctx.sink.progress(
+                "mix",
+                ctx.work_offset + frame + 1 - range.first,
+                ctx.total_work,
+            );
         }
     }
     Ok(limited)
@@ -726,12 +745,12 @@ fn render_stem_pass<W: Write + Seek>(
     writer: &mut WavWriter<W>,
     ctx: &RenderCtx,
     channels: usize,
-    output_frames: u64,
+    range: FrameRange,
 ) -> Result<(), String> {
     let mut dub = vec![0.0; channels];
     let mut active = Vec::new();
     let mut next = 0usize;
-    for frame in 0..output_frames {
+    for frame in range.write_from..range.end {
         dub_frame(&ctx.clips, &mut active, &mut next, frame, &mut dub);
         for &value in &dub {
             writer
@@ -742,8 +761,11 @@ fn render_stem_pass<W: Write + Seek>(
             if ctx.sink.is_cancelled() {
                 return Err(ERR_CANCELLED.to_string());
             }
-            ctx.sink
-                .progress("stem", ctx.work_offset + frame + 1, ctx.total_work);
+            ctx.sink.progress(
+                "stem",
+                ctx.work_offset + frame + 1 - range.write_from,
+                ctx.total_work,
+            );
         }
     }
     Ok(())
@@ -764,7 +786,7 @@ pub fn render(
         return Err("output_path must not be the original media file".to_string());
     }
     let partial = partial_path(output);
-    let result = render_to(original, clips, &partial, output, options, sink);
+    let result = render_to(original, clips, &partial, output, options, sink, None);
     match result {
         Ok(report) => {
             fs::rename(&partial, output).map_err(|e| {
@@ -780,6 +802,135 @@ pub fn render(
     }
 }
 
+/// Renders `[start_ms, end_ms)` of exactly what [`render`] would export for
+/// the same `original`, `clips` and `options` (the context preview, docs/20 §
+/// Preview). Same code path: every clip is prepared whole (loudness from its
+/// full source sentence, its own fades, peak ceiling and gain), summed at its
+/// real position and passed through the same limiter, whose state at
+/// `start_ms` is reproduced by starting the pass where it is provably idle.
+/// The window is clamped to the export's length. Pass all export clips; the
+/// ones that cannot sound in (or affect) the window are skipped.
+pub fn render_window(
+    original: &Path,
+    clips: &[MixClip],
+    output: &Path,
+    options: &MixOptions,
+    window_ms: (i64, i64),
+    sink: &dyn ProgressSink,
+) -> Result<MixReport, String> {
+    options.validate()?;
+    if same_file(original, output) || original == output {
+        return Err("output_path must not be the original media file".to_string());
+    }
+    let partial = partial_path(output);
+    let result = render_to(
+        original,
+        clips,
+        &partial,
+        output,
+        options,
+        sink,
+        Some(window_ms),
+    );
+    match result {
+        Ok(report) => {
+            fs::rename(&partial, output).map_err(|e| {
+                let _ = fs::remove_file(&partial);
+                e.to_string()
+            })?;
+            Ok(report)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            Err(error)
+        }
+    }
+}
+
+/// Frames a clip occupies at the output rate (header read only; equals
+/// `PreparedClip::frames`).
+fn clip_frames(clip: &MixClip, out_rate: u32) -> Result<u64, String> {
+    let reader = open_wav(&clip.path)?;
+    let spec = reader.spec();
+    Ok(resampled_len(reader.duration() as usize, spec.sample_rate, out_rate) as u64)
+}
+
+/// Frames without any contribution after which the limiter is idle again
+/// (gain within 1e-6 of unity from any starting gain): `1 - g` decays by the
+/// release coefficient `r = exp(-1/τ)` per frame, and `r^n < 1e-6` for
+/// `n > 13.82 τ`.
+fn limiter_settle_frames(options: &MixOptions, rate: u32) -> u64 {
+    let tau = (rate as f64 * options.limiter_release_ms / 1000.0).max(1.0);
+    (14.0 * tau).ceil() as u64 + 2
+}
+
+/// Earliest frame a windowed pass must start at so that the limiter state at
+/// `write_from` equals the export's: walk back while a clip sounds at, or
+/// settles less than `settle` frames before, the current start.
+fn limiter_settle_start(intervals: &[(u64, u64)], write_from: u64, settle: u64) -> u64 {
+    let mut first = write_from;
+    loop {
+        let earlier = intervals
+            .iter()
+            .filter(|(start, end)| *start < first && end.saturating_add(settle) > first)
+            .map(|(start, _)| *start)
+            .min();
+        match earlier {
+            Some(start) => first = start,
+            None => return first,
+        }
+    }
+}
+
+/// Source levels for only the 50 ms analysis frames in `ranges` (frame
+/// indices of the original); identical values to [`analyse_source`] there.
+fn analyse_source_ranges<S: Pcm, R: Read + Seek>(
+    reader: &mut WavReader<R>,
+    ranges: &[(u64, u64)],
+) -> Result<SourceLevels, String> {
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let total = reader.duration() as u64;
+    let frame = ((spec.sample_rate as f64 * ACTIVE_RMS_FRAME_MS / 1000.0).round() as u64).max(1);
+    let mut mean_squares = vec![0.0; total.div_ceil(frame) as usize];
+    let mut done = vec![false; mean_squares.len()];
+    for &(start, end) in ranges {
+        let first = (start / frame) as usize;
+        let last = (end.div_ceil(frame) as usize).min(mean_squares.len());
+        for chunk in first..last {
+            if done[chunk] {
+                continue;
+            }
+            done[chunk] = true;
+            let at = chunk as u64 * frame;
+            let frames = frame.min(total - at);
+            reader
+                .seek(u32::try_from(at).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            let mut samples = reader.samples::<S>();
+            let mut acc = 0.0;
+            for _ in 0..frames {
+                let mut mono = 0.0;
+                for _ in 0..channels {
+                    mono += samples
+                        .next()
+                        .ok_or_else(|| "unexpected end of WAV data".to_string())?
+                        .map_err(|e| e.to_string())?
+                        .to_unit(spec.bits_per_sample);
+                }
+                let value = mono / channels as f64;
+                acc += value * value;
+            }
+            mean_squares[chunk] = acc / frame as f64;
+        }
+    }
+    Ok(SourceLevels {
+        frame,
+        mean_squares,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_to(
     original: &Path,
     clips: &[MixClip],
@@ -787,27 +938,81 @@ fn render_to(
     output: &Path,
     options: &MixOptions,
     sink: &dyn ProgressSink,
+    window_ms: Option<(i64, i64)>,
 ) -> Result<MixReport, String> {
     let mut reader = open_wav(original)?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
     let original_frames = reader.duration() as u64;
-    let analyse = options.loudness_match && !clips.is_empty();
+
+    // Windowed render: the export's frame range, and only the clips that can
+    // sound in it or shape the limiter state at its start.
+    let mut window: Option<FrameRange> = None;
+    let mut selected: Vec<&MixClip> = clips.iter().collect();
+    if let Some((start_ms, end_ms)) = window_ms {
+        let mut intervals = Vec::with_capacity(clips.len());
+        for clip in clips {
+            let start = ms_to_frames(clip.dub_start_ms, spec.sample_rate);
+            intervals.push((start, start + clip_frames(clip, spec.sample_rate)?));
+        }
+        let export_frames = intervals
+            .iter()
+            .map(|(_, end)| *end)
+            .fold(original_frames, u64::max);
+        let write_from = ms_to_frames(start_ms, spec.sample_rate).min(export_frames);
+        let end = ms_to_frames(end_ms, spec.sample_rate).clamp(write_from, export_frames);
+        let first = if options.limiter && options.kind == ExportKind::Mix {
+            limiter_settle_start(
+                &intervals,
+                write_from,
+                limiter_settle_frames(options, spec.sample_rate),
+            )
+        } else {
+            write_from
+        };
+        selected = clips
+            .iter()
+            .zip(&intervals)
+            .filter(|(_, (s, e))| *s < end && *e > first)
+            .map(|(clip, _)| clip)
+            .collect();
+        window = Some(FrameRange {
+            first,
+            write_from,
+            end,
+        });
+    }
+
+    let analyse = options.loudness_match && !selected.is_empty();
     let total_guess = original_frames * if analyse { 2 } else { 1 };
 
-    let levels = if analyse {
+    let levels = if !analyse {
+        None
+    } else if window.is_some() {
+        let ranges = selected
+            .iter()
+            .map(|clip| {
+                (
+                    ms_to_frames(clip.src_start_ms, spec.sample_rate),
+                    ms_to_frames(clip.src_end_ms, spec.sample_rate),
+                )
+            })
+            .collect::<Vec<_>>();
+        Some(match spec.sample_format {
+            SampleFormat::Float => analyse_source_ranges::<f32, _>(&mut reader, &ranges)?,
+            SampleFormat::Int => analyse_source_ranges::<i32, _>(&mut reader, &ranges)?,
+        })
+    } else {
         let levels = match spec.sample_format {
             SampleFormat::Float => analyse_source::<f32, _>(&mut reader, sink, total_guess)?,
             SampleFormat::Int => analyse_source::<i32, _>(&mut reader, sink, total_guess)?,
         };
         reader.seek(0).map_err(|e| e.to_string())?;
         Some(levels)
-    } else {
-        None
     };
 
-    let mut prepared = Vec::with_capacity(clips.len());
-    for clip in clips {
+    let mut prepared = Vec::with_capacity(selected.len());
+    for clip in selected {
         if sink.is_cancelled() {
             return Err(ERR_CANCELLED.to_string());
         }
@@ -834,12 +1039,27 @@ fn render_to(
         .iter()
         .map(|c| c.report.clone())
         .collect::<Vec<_>>();
+    let range = window.unwrap_or(FrameRange {
+        first: 0,
+        write_from: 0,
+        end: output_frames,
+    });
+    let windowed = window.is_some();
     let ctx = RenderCtx {
         clips: prepared,
         options,
         sink,
-        total_work: output_frames + if analyse { original_frames } else { 0 },
-        work_offset: if analyse { original_frames } else { 0 },
+        total_work: (range.end - range.first)
+            + if analyse && !windowed {
+                original_frames
+            } else {
+                0
+            },
+        work_offset: if analyse && !windowed {
+            original_frames
+        } else {
+            0
+        },
     };
 
     let mut limited = 0;
@@ -848,12 +1068,16 @@ fn render_to(
             let file = fs::File::create(partial).map_err(|e| e.to_string())?;
             let mut writer =
                 WavWriter::new(BufWriter::new(file), spec).map_err(|e| e.to_string())?;
+            // Past the original's end the pass reads silence (seek clamps).
+            reader
+                .seek(u32::try_from(range.first.min(original_frames)).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
             limited = match spec.sample_format {
                 SampleFormat::Float => {
-                    render_mix_pass::<f32, _, _>(&mut reader, &mut writer, &ctx, output_frames)?
+                    render_mix_pass::<f32, _, _>(&mut reader, &mut writer, &ctx, range)?
                 }
                 SampleFormat::Int => {
-                    render_mix_pass::<i32, _, _>(&mut reader, &mut writer, &ctx, output_frames)?
+                    render_mix_pass::<i32, _, _>(&mut reader, &mut writer, &ctx, range)?
                 }
             };
             writer.finalize().map_err(|e| e.to_string())?;
@@ -868,7 +1092,7 @@ fn render_to(
             let file = fs::File::create(partial).map_err(|e| e.to_string())?;
             let mut writer =
                 WavWriter::new(BufWriter::new(file), stem_spec).map_err(|e| e.to_string())?;
-            render_stem_pass(&mut writer, &ctx, channels, output_frames)?;
+            render_stem_pass(&mut writer, &ctx, channels, range)?;
             writer.finalize().map_err(|e| e.to_string())?;
         }
     }
@@ -880,7 +1104,7 @@ fn render_to(
         sample_rate: spec.sample_rate,
         channels: spec.channels,
         original_frames,
-        output_frames,
+        output_frames: range.end - range.write_from,
         limited_frames: limited,
         clips: reports,
     })
@@ -891,46 +1115,6 @@ pub fn wav_duration_ms(path: &Path) -> Result<i64, String> {
     let reader = open_wav(path)?;
     let rate = reader.spec().sample_rate.max(1) as u64;
     Ok((reader.duration() as u64 * 1000 / rate) as i64)
-}
-
-fn copy_frames<S: hound::Sample + Copy, R: Read + Seek, W: Write + Seek>(
-    reader: &mut WavReader<R>,
-    writer: &mut WavWriter<W>,
-    samples: u64,
-) -> Result<(), String> {
-    for sample in reader.samples::<S>().take(samples as usize) {
-        writer
-            .write_sample(sample.map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// Copies `[start_ms, end_ms)` of a WAV into `output` in the same format
-/// (rate, channels, bit depth, int/float). The window is clamped to the file;
-/// returns the number of frames written. Used by the context preview
-/// (docs/20 § Preview), never on the original in place.
-pub fn crop_wav(input: &Path, output: &Path, start_ms: i64, end_ms: i64) -> Result<u64, String> {
-    if same_file(input, output) || input == output {
-        return Err("crop output must not be the input file".to_string());
-    }
-    let mut reader = open_wav(input)?;
-    let spec = reader.spec();
-    let total = reader.duration() as u64;
-    let start = ms_to_frames(start_ms.max(0), spec.sample_rate).min(total);
-    let end = ms_to_frames(end_ms.max(0), spec.sample_rate).clamp(start, total);
-    reader
-        .seek(u32::try_from(start).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let file = fs::File::create(output).map_err(|e| e.to_string())?;
-    let mut writer = WavWriter::new(BufWriter::new(file), spec).map_err(|e| e.to_string())?;
-    let samples = (end - start) * spec.channels.max(1) as u64;
-    match spec.sample_format {
-        SampleFormat::Float => copy_frames::<f32, _, _>(&mut reader, &mut writer, samples)?,
-        SampleFormat::Int => copy_frames::<i32, _, _>(&mut reader, &mut writer, samples)?,
-    }
-    writer.finalize().map_err(|e| e.to_string())?;
-    Ok(end - start)
 }
 
 // ---------------------------------------------------------------------------
@@ -983,6 +1167,75 @@ pub fn export_inputs(
         original_path: PathBuf::from(original_path),
         plan,
         clips,
+    })
+}
+
+/// The export's clip list for a media item, exactly as `export_dub_mix` mixes
+/// it: placed with `options.placement`, clip paths absolute in the asset store
+/// and, when `options.use_spatial`, each clip swapped for its verified spatial
+/// render of `options.spatial_mode` (current render key). Shared by the export
+/// job and the context preview so both mix the same audio.
+#[derive(Debug, Clone)]
+pub struct ResolvedExport {
+    pub inputs: ExportInputs,
+    /// Clips whose spatial render replaced the raw TTS clip.
+    pub spatial_segment_ids: Vec<i64>,
+}
+
+pub fn resolve_export(
+    db: &std::sync::Mutex<crate::db::MediaDb>,
+    assets: &crate::tts::AssetStore,
+    media_id: i64,
+    options: &MixOptions,
+    sink: &dyn ProgressSink,
+) -> Result<ResolvedExport, crate::jobs::JobError> {
+    use crate::jobs::JobError;
+    let db_error = |e: &dyn std::fmt::Display| JobError::new("db", true, e.to_string());
+    let (mut inputs, spatial_candidates) = {
+        let guard = db.lock().map_err(|e| db_error(&e))?;
+        let mut inputs = export_inputs(guard.connection(), media_id, &options.placement)
+            .map_err(|e| JobError::new("invalid_input", false, e))?;
+        // `tts_assets.path` is relative to the asset store.
+        for clip in &mut inputs.clips {
+            if clip.path.is_relative() {
+                clip.path = assets.root.join(&clip.path);
+            }
+        }
+        let candidates = options.use_spatial
+            && crate::spatial::has_renders(guard.connection(), media_id)
+                .map_err(|e| db_error(&e))?;
+        (inputs, candidates)
+    };
+    let mut spatial_segment_ids = Vec::new();
+    if spatial_candidates {
+        // Hash the original without the DB lock; renders are keyed on its track key.
+        sink.progress("spatial", 0, 1);
+        let (_, track_key) = crate::spatial::current_track_key(&inputs.original_path)?;
+        let guard = db.lock().map_err(|e| db_error(&e))?;
+        let before = inputs
+            .clips
+            .iter()
+            .map(|clip| clip.path.clone())
+            .collect::<Vec<_>>();
+        crate::spatial::apply_spatial_renders(
+            guard.connection(),
+            assets,
+            &mut inputs.clips,
+            &track_key,
+            options.spatial_mode,
+        )
+        .map_err(|e| db_error(&e))?;
+        spatial_segment_ids = inputs
+            .clips
+            .iter()
+            .zip(before)
+            .filter(|(clip, path)| clip.path != *path)
+            .map(|(clip, _)| clip.segment_id)
+            .collect();
+    }
+    Ok(ResolvedExport {
+        inputs,
+        spatial_segment_ids,
     })
 }
 
@@ -1535,5 +1788,108 @@ mod tests {
         assert_eq!(inputs.clips[1].expected_duration_ms, Some(500));
         assert_eq!(inputs.clips[1].tts_asset_key.as_deref(), Some("b"));
         assert!(export_inputs(&conn, 9, &PlacementParams::default()).is_err());
+    }
+
+    /// A windowed render equals the same window of the full export, bit for
+    /// bit: loudness from each clip's full source sentence, clips straddling
+    /// the window start and the limiter state carried in from earlier frames.
+    #[test]
+    fn render_window_equals_the_export_slice() {
+        let dir = TempDir::new();
+        let rate = 16_000;
+        let original = dir.path("original.wav");
+        let mut source = noise(rate as usize * 2 * 6, 0.25, 11);
+        // A louder stretch so the loudness targets differ per sentence.
+        for v in &mut source[rate as usize * 2..rate as usize * 4] {
+            *v = v.saturating_mul(3);
+        }
+        write_i16(&original, rate, 2, &source);
+        let clip_a = dir.path("a.wav");
+        let clip_b = dir.path("b.wav");
+        let clip_c = dir.path("c.wav");
+        write_i16(&clip_a, 24_000, 1, &noise(24_000 * 3 / 2, 0.6, 3));
+        write_i16(&clip_b, 16_000, 2, &noise(16_000 * 2, 0.5, 5));
+        write_i16(&clip_c, 8_000, 1, &noise(8_000 / 2, 0.7, 7));
+        let clip = |id, path: &Path, dub_start_ms, src_start_ms, src_end_ms| MixClip {
+            segment_id: id,
+            path: path.to_path_buf(),
+            dub_start_ms,
+            src_start_ms,
+            src_end_ms,
+            expected_duration_ms: None,
+            tts_asset_key: None,
+        };
+        let clips = vec![
+            clip(1, &clip_a, 500, 0, 400),
+            clip(2, &clip_b, 1_800, 1_900, 3_500),
+            clip(3, &clip_c, 5_700, 5_000, 5_600), // runs past the original's end
+        ];
+        let loud = MixOptions {
+            dub_gain_db: 18.0,
+            clip_peak_dbfs: None,
+            ..MixOptions::default()
+        };
+        let stem = MixOptions {
+            kind: ExportKind::DubStem,
+            ..MixOptions::default()
+        };
+        for options in [
+            MixOptions::default(),
+            loud.clone(),
+            MixOptions {
+                limiter: false,
+                ..loud.clone()
+            },
+            stem,
+        ] {
+            let full = dir.path("full.wav");
+            let report = render(&original, &clips, &full, &options, &NoopSink).unwrap();
+            if options.dub_gain_db > 0.0 && options.limiter {
+                assert!(report.limited_frames > 0, "the limiter engages");
+            }
+            let read = |path: &Path| -> Vec<f64> {
+                if options.kind == ExportKind::DubStem {
+                    read_f32(path).into_iter().map(f64::from).collect()
+                } else {
+                    read_i16(path).1.into_iter().map(f64::from).collect()
+                }
+            };
+            let export = read(&full);
+            for (start_ms, end_ms) in [(0, 900), (1_000, 2_600), (2_400, 4_100), (5_500, 9_000)] {
+                let out = dir.path("window.wav");
+                let window = render_window(
+                    &original,
+                    &clips,
+                    &out,
+                    &options,
+                    (start_ms, end_ms),
+                    &NoopSink,
+                )
+                .unwrap();
+                let rendered = read(&out);
+                let from = ms_to_frames(start_ms, rate) as usize * 2;
+                let to = (ms_to_frames(end_ms, rate) as usize * 2).min(export.len());
+                assert_eq!(
+                    rendered.len(),
+                    to - from,
+                    "{start_ms}..{end_ms} {options:?}"
+                );
+                assert!(
+                    rendered == export[from..to],
+                    "window {start_ms}..{end_ms} differs from the export with {options:?}"
+                );
+                assert_eq!(window.output_frames as usize * 2, rendered.len());
+            }
+        }
+    }
+
+    #[test]
+    fn limiter_settle_start_walks_back_over_close_clips() {
+        // Clips [100,200) and [250,400); settle 60 frames.
+        let intervals = [(100, 200), (250, 400), (1_000, 1_100)];
+        assert_eq!(limiter_settle_start(&intervals, 300, 60), 100);
+        assert_eq!(limiter_settle_start(&intervals, 455, 60), 100);
+        assert_eq!(limiter_settle_start(&intervals, 461, 60), 461);
+        assert_eq!(limiter_settle_start(&intervals, 50, 60), 50);
     }
 }

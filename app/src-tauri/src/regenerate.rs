@@ -39,7 +39,7 @@ pub const STAGE_COUNT: i64 = 3;
 pub const DEFAULT_PRE_ROLL_MS: i64 = 1_000;
 pub const MAX_PRE_ROLL_MS: i64 = 30_000;
 /// Silence/original kept after the placed dub ends.
-pub const PREVIEW_TAIL_MS: i64 = 250;
+pub const PREVIEW_TAIL_MS: i64 = 1_000;
 /// Newest preview files kept in `<assets>/preview`.
 pub const MAX_PREVIEW_FILES: usize = 8;
 
@@ -908,9 +908,12 @@ pub struct SegmentPreview {
     pub solo: bool,
     /// The spatial render of this Segment was used (else the raw TTS clip).
     pub spatial: bool,
-    /// Segments whose placed dub is layered into the preview (this one and
-    /// every neighbour overlapping the window), in placement order.
+    /// Segments whose placed dub sounds in the preview (this one and every
+    /// neighbour overlapping the window), in placement order.
     pub layered_segment_ids: Vec<i64>,
+    /// The layered Segments mixed from their raw TTS clip (Spatial follow off,
+    /// or a neighbour without a current render — exactly as the export does).
+    pub raw_segment_ids: Vec<i64>,
     pub duration_ms: i64,
 }
 
@@ -954,175 +957,166 @@ fn overlaps_window(dub_start_ms: i64, dub_end_ms: i64, start: i64, end: i64) -> 
     dub_start_ms < end && dub_end_ms > start
 }
 
+fn job_to_tts(error: JobError) -> TtsError {
+    TtsError::new(&error.code, error.message, error.retryable)
+}
+
 /// Renders the context preview of one Segment (docs/20 § Preview) and clears
-/// its pushed flag. Every placed dub overlapping the window is layered (the
-/// edited one and its neighbours), so the preview sounds like the final mix.
+/// its pushed flag.
+///
+/// - Full mix (`solo = false`): the window `[src_start − pre_roll, dub_end +
+///   tail)` of exactly what `export_dub_mix` would write with `options` —
+///   the same clip resolution ([`mix::resolve_export`]: placement, spatial
+///   renders) and the same mixer ([`mix::render_window`]: loudness match,
+///   fades, peak ceiling, limiter). Every placed dub that sounds in the window
+///   is in it. With `options.use_spatial`, a Segment whose spatial render is
+///   not ready fails with `spatial_pending` instead of silently playing its
+///   raw clip.
+/// - Dub only (`solo = true`): the Segment's raw TTS clip alone, as stored.
 pub fn render_preview(
     db: &Mutex<MediaDb>,
     store: &AssetStore,
     segment_id: i64,
     pre_roll_ms: i64,
     solo: bool,
-    mode: SpatialMode,
+    options: &MixOptions,
 ) -> Result<SegmentPreview, TtsError> {
     if !(0..=MAX_PRE_ROLL_MS).contains(&pre_roll_ms) {
         return Err(input_err(format!(
             "pre_roll_ms must be within 0..={MAX_PRE_ROLL_MS}"
         )));
     }
-    let (original, mut clips, placed, window, has_renders) = {
-        let guard = tts::lock(db)?;
-        let segment = guard
-            .get_segment(segment_id)
-            .map_err(dberr)?
-            .ok_or_else(|| not_found("segment not found"))?;
-        let inputs = mix::export_inputs(
-            guard.connection(),
-            segment.media_id,
-            &PlacementParams::default(),
-        )
-        .map_err(preview_err)?;
-        let placed = inputs
-            .plan
-            .iter()
-            .find(|p| p.segment_id == segment_id && p.is_placed())
-            .cloned()
-            .ok_or_else(|| TtsError::new("not_placed", "sentence has no placed dub", false))?;
-        let edited = inputs
-            .clips
-            .iter()
-            .find(|clip| clip.segment_id == segment_id)
-            .ok_or_else(|| TtsError::new("not_placed", "sentence has no placed dub", false))?;
-        let window = preview_window(edited.src_start_ms, placed.dub_end_ms, pre_roll_ms);
-        // Placed dubs only (`dub_skip` and unsynthesized sentences are not
-        // placed), overlapping the window, as `(clip, dub_end_ms)`.
-        let mut clips = Vec::new();
-        for mut clip in inputs.clips {
-            let Some(p) = inputs
-                .plan
-                .iter()
-                .find(|p| p.segment_id == clip.segment_id && p.is_placed())
-            else {
-                continue;
-            };
-            if clip.segment_id != segment_id
-                && !overlaps_window(p.dub_start_ms, p.dub_end_ms, window.0, window.1)
-            {
-                continue;
-            }
-            if clip.path.is_relative() {
-                clip.path = store.absolute(&clip.path.to_string_lossy())?;
-            }
-            if !clip.path.is_file() {
-                if clip.segment_id == segment_id {
-                    return Err(TtsError::new(
-                        "asset_missing",
-                        "TTS asset file is missing; synthesize the sentence again",
-                        true,
-                    ));
-                }
-                continue;
-            }
-            clips.push((clip, p.dub_end_ms));
-        }
-        let has_renders =
-            spatial::has_renders(guard.connection(), segment.media_id).map_err(dberr)?;
-        (inputs.original_path, clips, placed, window, has_renders)
+    let options = MixOptions {
+        kind: ExportKind::Mix,
+        ..options.clone()
     };
-    let mut spatial_used = false;
-    if has_renders {
-        let (_, track_key) = spatial::current_track_key(&original)
-            .map_err(|e| TtsError::new(&e.code, e.message, e.retryable))?;
-        let guard = tts::lock(db)?;
-        let mut mix_clips = clips.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
-        spatial::apply_spatial_renders(guard.connection(), store, &mut mix_clips, &track_key, mode)
-            .map_err(dberr)?;
-        for ((clip, _), swapped) in clips.iter_mut().zip(mix_clips) {
-            if clip.segment_id == segment_id && clip.path != swapped.path {
-                spatial_used = true;
-            }
-            *clip = swapped;
-        }
-    }
-
-    let (window_start, window_end) = window;
-    let original_ms = mix::wav_duration_ms(&original).map_err(preview_err)?;
-    let dir = store.root.join("preview");
-    std::fs::create_dir_all(&dir).map_err(preview_err)?;
-    let crop = dir.join(format!(".crop-{}.wav", uuid::Uuid::new_v4()));
-    let output = dir.join(format!("preview-{segment_id}-{}.wav", uuid::Uuid::new_v4()));
-    let mut scratch = vec![crop.clone()];
-    let layered = clips.iter().map(|(c, _)| c.segment_id).collect::<Vec<_>>();
-    let result = (|| -> Result<(), String> {
-        mix::crop_wav(&original, &crop, window_start, window_end.min(original_ms))?;
-        let mut shifted = Vec::with_capacity(clips.len());
-        for (clip, dub_end_ms) in &clips {
-            let mut clip = clip.clone();
-            // Neighbours that start before / end after the window are trimmed
-            // to it, so they sound at their real position.
-            let head = (window_start - clip.dub_start_ms).max(0);
-            let tail = (*dub_end_ms - window_end).max(0);
-            if clip.segment_id != segment_id && (head > 0 || tail > 0) {
-                let trimmed = dir.join(format!(".crop-{}.wav", uuid::Uuid::new_v4()));
-                scratch.push(trimmed.clone());
-                let frames = mix::crop_wav(
-                    &clip.path,
-                    &trimmed,
-                    head,
-                    *dub_end_ms - clip.dub_start_ms - tail,
-                )?;
-                if frames == 0 {
-                    continue;
-                }
-                clip.path = trimmed;
-                clip.dub_start_ms += head;
-                clip.expected_duration_ms = None;
-            }
-            shifted.push(mix::MixClip {
-                dub_start_ms: clip.dub_start_ms - window_start,
-                src_start_ms: (clip.src_start_ms - window_start).max(0),
-                src_end_ms: (clip.src_end_ms - window_start).max(0),
-                ..clip
-            });
-        }
-        let options = MixOptions {
-            kind: if solo {
-                ExportKind::DubStem
-            } else {
-                ExportKind::Mix
-            },
-            ..MixOptions::default()
-        };
-        mix::render(&crop, &shifted, &output, &options, &NoopSink)?;
-        Ok(())
-    })();
-    for path in &scratch {
-        let _ = std::fs::remove_file(path);
-    }
-    result.map_err(preview_err)?;
-    cleanup_previews(&dir, MAX_PREVIEW_FILES, &output);
-    let duration_ms = mix::wav_duration_ms(&output).map_err(preview_err)?;
-    {
+    options.validate().map_err(input_err)?;
+    let media_id = {
         let guard = tts::lock(db)?;
         guard
+            .get_segment(segment_id)
+            .map_err(dberr)?
+            .ok_or_else(|| not_found("segment not found"))?
+            .media_id
+    };
+    let resolved =
+        mix::resolve_export(db, store, media_id, &options, &NoopSink).map_err(job_to_tts)?;
+    let inputs = &resolved.inputs;
+    let not_placed = || TtsError::new("not_placed", "sentence has no placed dub", false);
+    let placed = inputs
+        .plan
+        .iter()
+        .find(|p| p.segment_id == segment_id && p.is_placed())
+        .cloned()
+        .ok_or_else(not_placed)?;
+    let edited = inputs
+        .clips
+        .iter()
+        .find(|clip| clip.segment_id == segment_id)
+        .ok_or_else(not_placed)?;
+    let clear_pushed = || -> Result<(), TtsError> {
+        tts::lock(db)?
             .connection()
             .execute(
                 "UPDATE segments SET dub_pushed_ms=0 WHERE id=?1",
                 [segment_id],
             )
             .map_err(dberr)?;
+        Ok(())
+    };
+
+    if solo {
+        // "Dub only": the raw TTS clip of this sentence, never a render.
+        let asset = tts::resolve_segment_tts_asset(&*tts::lock(db)?, store, segment_id)?
+            .ok_or_else(not_placed)?;
+        clear_pushed()?;
+        return Ok(SegmentPreview {
+            segment_id,
+            path: asset.path.to_string_lossy().into_owned(),
+            window_start_ms: placed.dub_start_ms,
+            window_end_ms: placed.dub_end_ms,
+            dub_start_ms: placed.dub_start_ms,
+            dub_end_ms: placed.dub_end_ms,
+            dub_offset_ms: 0,
+            solo: true,
+            spatial: false,
+            layered_segment_ids: vec![segment_id],
+            raw_segment_ids: vec![segment_id],
+            duration_ms: asset.duration_ms,
+        });
     }
+
+    let spatial = resolved.spatial_segment_ids.contains(&segment_id);
+    if options.use_spatial && !spatial {
+        return Err(TtsError::new(
+            "spatial_pending",
+            "the spatial render of this sentence is not ready, so the mix preview would not \
+             sound like the export; wait for spatialize to finish, re-spatialize, play \
+             \"Dub only\" or turn Spatial follow off",
+            true,
+        ));
+    }
+    let window = preview_window(edited.src_start_ms, placed.dub_end_ms, pre_roll_ms);
+    // Placed dubs that sound in the window (`dub_skip` and unsynthesized
+    // sentences are not placed, so they are never in it).
+    let mut layered = Vec::new();
+    for clip in &inputs.clips {
+        let Some(p) = inputs
+            .plan
+            .iter()
+            .find(|p| p.segment_id == clip.segment_id && p.is_placed())
+        else {
+            continue;
+        };
+        if !overlaps_window(p.dub_start_ms, p.dub_end_ms, window.0, window.1) {
+            continue;
+        }
+        if !clip.path.is_file() {
+            return Err(TtsError::new(
+                "asset_missing",
+                format!(
+                    "the dub clip of sentence {} is missing, so the export would fail too; \
+                     synthesize it again",
+                    clip.segment_id
+                ),
+                true,
+            ));
+        }
+        layered.push(clip.segment_id);
+    }
+    let raw_segment_ids = layered
+        .iter()
+        .copied()
+        .filter(|id| !resolved.spatial_segment_ids.contains(id))
+        .collect::<Vec<_>>();
+
+    let dir = store.root.join("preview");
+    std::fs::create_dir_all(&dir).map_err(preview_err)?;
+    let output = dir.join(format!("preview-{segment_id}-{}.wav", uuid::Uuid::new_v4()));
+    mix::render_window(
+        &inputs.original_path,
+        &inputs.clips,
+        &output,
+        &options,
+        window,
+        &NoopSink,
+    )
+    .map_err(preview_err)?;
+    cleanup_previews(&dir, MAX_PREVIEW_FILES, &output);
+    let duration_ms = mix::wav_duration_ms(&output).map_err(preview_err)?;
+    clear_pushed()?;
     Ok(SegmentPreview {
         segment_id,
         path: output.to_string_lossy().into_owned(),
-        window_start_ms: window_start,
-        window_end_ms: window_end,
+        window_start_ms: window.0,
+        window_end_ms: window.0 + duration_ms,
         dub_start_ms: placed.dub_start_ms,
         dub_end_ms: placed.dub_end_ms,
-        dub_offset_ms: placed.dub_start_ms - window_start,
-        solo,
-        spatial: spatial_used,
+        dub_offset_ms: placed.dub_start_ms - window.0,
+        solo: false,
+        spatial,
         layered_segment_ids: layered,
+        raw_segment_ids,
         duration_ms,
     })
 }
@@ -1212,6 +1206,8 @@ pub fn acknowledge_pushed(
 }
 
 /// Renders the context preview WAV (not a job; runs on a blocking thread).
+/// `options` are the export's mix options (the Studio passes the same ones it
+/// exports with); `spatial_mode`, when given, overrides `options.spatial_mode`.
 #[tauri::command]
 pub async fn preview_segment_context(
     app: tauri::AppHandle,
@@ -1219,8 +1215,13 @@ pub async fn preview_segment_context(
     pre_roll_ms: Option<i64>,
     solo: Option<bool>,
     spatial_mode: Option<SpatialMode>,
+    options: Option<MixOptions>,
 ) -> Result<SegmentPreview, String> {
     let store = tts::asset_store(&app)?;
+    let mut options = options.unwrap_or_default();
+    if let Some(mode) = spatial_mode {
+        options.spatial_mode = mode;
+    }
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let state = app.state::<crate::AppState>();
@@ -1230,7 +1231,7 @@ pub async fn preview_segment_context(
             segment_id,
             pre_roll_ms.unwrap_or(DEFAULT_PRE_ROLL_MS),
             solo.unwrap_or(false),
-            spatial_mode.unwrap_or_default(),
+            &options,
         )
         .map_err(|e| e.to_string())
     })

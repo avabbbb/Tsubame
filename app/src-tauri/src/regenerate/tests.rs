@@ -968,9 +968,9 @@ fn preview_window_clamps_and_adds_tail() {
         preview_window(500, 2_000, 1_000),
         (0, 2_000 + PREVIEW_TAIL_MS)
     );
-    assert_eq!(preview_window(5_000, 7_000, 1_000), (4_000, 7_250));
-    assert_eq!(preview_window(5_000, 7_000, 0), (5_000, 7_250));
-    assert_eq!(preview_window(5_000, 7_000, -50), (5_000, 7_250));
+    assert_eq!(preview_window(5_000, 7_000, 1_000), (4_000, 8_000));
+    assert_eq!(preview_window(5_000, 7_000, 0), (5_000, 8_000));
+    assert_eq!(preview_window(5_000, 7_000, -50), (5_000, 8_000));
 }
 
 fn read_i16(path: &Path) -> Vec<i16> {
@@ -981,32 +981,58 @@ fn read_i16(path: &Path) -> Vec<i16> {
         .collect()
 }
 
+/// The export's options with Spatial follow off (no renders in these fixtures).
+fn raw_mix() -> MixOptions {
+    MixOptions {
+        use_spatial: false,
+        ..MixOptions::default()
+    }
+}
+
+/// What `export_dub_mix` writes for the media with `options`.
+fn export_now(fx: &Fixture, options: &MixOptions) -> (Vec<i16>, mix::MixReport) {
+    let resolved = mix::resolve_export(&fx.db, &fx.store, fx.media_id, options, &NoopSink).unwrap();
+    let out = fx
+        .root
+        .0
+        .join(format!("export-{}.wav", uuid::Uuid::new_v4()));
+    let report = mix::render(
+        &resolved.inputs.original_path,
+        &resolved.inputs.clips,
+        &out,
+        options,
+        &NoopSink,
+    )
+    .unwrap();
+    (read_i16(&out), report)
+}
+
 #[test]
-fn preview_renders_context_solo_and_cleans_up() {
+fn preview_renders_context_dub_only_and_cleans_up() {
     let fx = fixture(&[(500, 1_500, "晚安。"), (5_000, 6_000, "好梦。")], 10);
     let (a, b) = (fx.ids[0], fx.ids[1]);
     synth(&fx, a, 0);
-    synth(&fx, b, 0);
+    let b_clip = synth(&fx, b, 0);
     let plan = placement::plan_dub(fx.db.lock().unwrap().connection(), fx.media_id, None).unwrap();
 
-    // Pre-roll clamped at 0 for A (starts at 500 ms).
-    let preview =
-        render_preview(&fx.db, &fx.store, a, 1_000, false, SpatialMode::default()).unwrap();
+    // Pre-roll clamped at 0 for A (starts at 500 ms); 1 s tail after the dub.
+    let preview = render_preview(&fx.db, &fx.store, a, 1_000, false, &raw_mix()).unwrap();
     assert_eq!(preview.window_start_ms, 0);
     assert_eq!(preview.dub_start_ms, plan.placements[0].dub_start_ms);
     assert_eq!(
         preview.window_end_ms,
         plan.placements[0].dub_end_ms + PREVIEW_TAIL_MS
     );
+    assert_eq!(PREVIEW_TAIL_MS, 1_000);
     assert_eq!(preview.dub_offset_ms, preview.dub_start_ms);
     assert!(!preview.spatial && !preview.solo);
     assert_eq!(preview.layered_segment_ids, vec![a]);
+    assert_eq!(preview.raw_segment_ids, vec![a]);
     assert!((preview.duration_ms - (preview.window_end_ms - preview.window_start_ms)).abs() <= 1);
 
     // B: window starts 1000 ms before the sentence; the original part before
     // the dub is bit-identical to the source.
-    let preview =
-        render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap();
+    let preview = render_preview(&fx.db, &fx.store, b, 1_000, false, &raw_mix()).unwrap();
     assert_eq!(preview.window_start_ms, 4_000);
     assert_eq!(
         preview.dub_offset_ms,
@@ -1025,61 +1051,77 @@ fn preview_renders_context_solo_and_cleans_up() {
         .zip(&original[start_frame + offset_frames..])
         .any(|(r, o)| r != o));
 
-    // Solo: dub only, silent before the dub.
-    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, SpatialMode::default()).unwrap();
-    assert!(solo.solo);
-    let stem: Vec<f32> = hound::WavReader::open(&solo.path)
-        .unwrap()
-        .samples::<f32>()
-        .map(|s| s.unwrap())
-        .collect();
-    let solo_offset = (solo.dub_offset_ms as usize) * MEDIA_RATE as usize / 1000;
-    assert!(stem[..solo_offset].iter().all(|v| *v == 0.0));
-    assert!(stem[solo_offset..].iter().any(|v| *v != 0.0));
+    // Dub only: the raw TTS clip of this sentence, as stored.
+    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, &MixOptions::default()).unwrap();
+    assert!(solo.solo && !solo.spatial);
+    assert_eq!(solo.path, b_clip.path);
+    assert_eq!(solo.layered_segment_ids, vec![b]);
+    assert_eq!(solo.duration_ms, b_clip.asset.duration_ms);
 
     // Bounds.
     assert_eq!(
-        render_preview(
-            &fx.db,
-            &fx.store,
-            b,
-            MAX_PRE_ROLL_MS + 1,
-            false,
-            SpatialMode::default()
-        )
-        .unwrap_err()
-        .code,
+        render_preview(&fx.db, &fx.store, b, MAX_PRE_ROLL_MS + 1, false, &raw_mix())
+            .unwrap_err()
+            .code,
         "invalid_input"
     );
     // Cleanup: only the newest previews are kept.
     for _ in 0..MAX_PREVIEW_FILES + 3 {
-        render_preview(&fx.db, &fx.store, a, 0, true, SpatialMode::default()).unwrap();
+        render_preview(&fx.db, &fx.store, a, 0, false, &raw_mix()).unwrap();
     }
-    let count = std::fs::read_dir(fx.store.root.join("preview"))
+    let names = std::fs::read_dir(fx.store.root.join("preview"))
         .unwrap()
-        .filter(|e| {
-            e.as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("preview-")
-        })
-        .count();
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let count = names.iter().filter(|n| n.starts_with("preview-")).count();
     assert!(count <= MAX_PREVIEW_FILES, "{count} previews kept");
     assert!(count >= 1);
-    // No crop scratch files are left behind.
-    assert!(std::fs::read_dir(fx.store.root.join("preview"))
-        .unwrap()
-        .all(|e| !e
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".crop-")));
+    // No scratch files are left behind.
+    assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
 }
 
 #[test]
-fn preview_layers_every_overlapping_dub_and_respects_dub_skip() {
-    // A's long dub runs into B's window; B is pushed behind A.
+fn preview_is_the_export_window_bit_for_bit() {
+    // A's long dub runs into B's window; B is pushed behind A. A loud dub gain
+    // makes the limiter work, so its state at the window start matters.
+    let long = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";
+    let fx = fixture(&[(1_000, 2_000, long), (4_000, 4_500, "好梦。")], 12);
+    let (a, b) = (fx.ids[0], fx.ids[1]);
+    synth(&fx, a, 0);
+    synth(&fx, b, 0);
+    let loud = MixOptions {
+        dub_gain_db: 24.0,
+        clip_peak_dbfs: None,
+        loudness_match: false,
+        ..raw_mix()
+    };
+    for options in [
+        raw_mix(),
+        loud.clone(),
+        MixOptions {
+            limiter: false,
+            ..loud.clone()
+        },
+    ] {
+        let (export, report) = export_now(&fx, &options);
+        if options.limiter && options.dub_gain_db > 0.0 {
+            assert!(report.limited_frames > 0, "the limiter engages");
+        }
+        for id in [a, b] {
+            let preview = render_preview(&fx.db, &fx.store, id, 1_000, false, &options).unwrap();
+            let rendered = read_i16(Path::new(&preview.path));
+            let from = (preview.window_start_ms as usize) * MEDIA_RATE as usize / 1000;
+            assert_eq!(
+                rendered[..],
+                export[from..from + rendered.len()],
+                "segment {id} with {options:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn preview_layers_every_dub_that_sounds_and_respects_dub_skip() {
     let long = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";
     let fx = fixture(&[(1_000, 2_000, long), (4_000, 4_500, "好梦。")], 12);
     let (a, b) = (fx.ids[0], fx.ids[1]);
@@ -1089,54 +1131,102 @@ fn preview_layers_every_overlapping_dub_and_respects_dub_skip() {
     let (pa, pb) = (&plan.placements[0], &plan.placements[1]);
     assert!(pa.dub_start_ms < 3_000 && pa.dub_end_ms > 3_000, "{pa:?}");
 
-    let stem = |path: &str| -> Vec<f32> {
-        hound::WavReader::open(path)
-            .unwrap()
-            .samples::<f32>()
-            .map(|s| s.unwrap())
-            .collect()
-    };
-    let frames = |ms: i64| (ms as usize) * MEDIA_RATE as usize / 1000;
+    // B's window starts at 3000 ms, inside A's dub: A sounds there.
+    let preview = render_preview(&fx.db, &fx.store, b, 1_000, false, &raw_mix()).unwrap();
+    assert_eq!(preview.window_start_ms, 3_000);
+    assert_eq!(preview.layered_segment_ids, vec![a, b]);
+    assert_eq!(preview.dub_offset_ms, pb.dub_start_ms - 3_000);
+    assert!((preview.duration_ms - (preview.window_end_ms - preview.window_start_ms)).abs() <= 1);
 
-    // B's window starts at 3000 ms, inside A's dub: A is layered (head trimmed).
-    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, SpatialMode::default()).unwrap();
-    assert_eq!(solo.window_start_ms, 3_000);
-    assert_eq!(solo.layered_segment_ids, vec![a, b]);
-    let samples = stem(&solo.path);
-    let a_end = frames(pa.dub_end_ms - 3_000);
-    assert!(samples[..a_end - 1_000].iter().any(|v| *v != 0.0));
-    assert!((solo.duration_ms - (solo.window_end_ms - solo.window_start_ms)).abs() <= 1);
-    assert_eq!(solo.dub_offset_ms, pb.dub_start_ms - 3_000);
-
-    // A's window reaches into B's dub: B is layered with its tail trimmed, so
-    // the preview keeps its window length.
-    let preview =
-        render_preview(&fx.db, &fx.store, a, 1_000, true, SpatialMode::default()).unwrap();
+    // A's window reaches into B's dub when B starts before A's tail ends.
+    let preview = render_preview(&fx.db, &fx.store, a, 1_000, false, &raw_mix()).unwrap();
     if pb.dub_start_ms < preview.window_end_ms {
         assert_eq!(preview.layered_segment_ids, vec![a, b]);
     } else {
         assert_eq!(preview.layered_segment_ids, vec![a]);
     }
-    assert!((preview.duration_ms - (preview.window_end_ms - preview.window_start_ms)).abs() <= 1);
 
     // dub_skip on A: A is no longer placed, so B's preview carries only B and
-    // is silent before B's dub.
+    // the part before B's dub is the untouched original.
     fx.db
         .lock()
         .unwrap()
         .connection()
         .execute("UPDATE segments SET dub_skip=1 WHERE id=?1", [a])
         .unwrap();
-    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, SpatialMode::default()).unwrap();
-    assert_eq!(solo.layered_segment_ids, vec![b]);
-    let samples = stem(&solo.path);
-    assert!(samples[..frames(solo.dub_offset_ms)]
-        .iter()
-        .all(|v| *v == 0.0));
-    // Context mode with the same layering renders the original underneath.
-    let mixed = render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap();
-    assert!(!mixed.solo);
+    let mixed = render_preview(&fx.db, &fx.store, b, 1_000, false, &raw_mix()).unwrap();
     assert_eq!(mixed.layered_segment_ids, vec![b]);
+    let original = read_i16(&fx.media_path);
+    let rendered = read_i16(Path::new(&mixed.path));
+    let start = (mixed.window_start_ms as usize) * MEDIA_RATE as usize / 1000;
+    let before = (mixed.dub_offset_ms as usize) * MEDIA_RATE as usize / 1000;
+    assert_eq!(rendered[..before], original[start..start + before]);
+}
+
+/// Stores `bytes` as a verified spatial render under `key`.
+fn put_render(fx: &Fixture, segment_id: i64, key: &str, bytes: &[u8]) {
+    let rel = spatial::render_relative_path(key).unwrap();
+    let path = fx.store.absolute(&rel).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    spatial::upsert_asset(
+        fx.db.lock().unwrap().connection(),
+        &spatial::SpatialAsset {
+            key: key.into(),
+            kind: spatial::KIND_RENDER.into(),
+            media_id: fx.media_id,
+            segment_id: Some(segment_id),
+            path: rel,
+            sha256: tts::sha256_hex(bytes),
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// The current `source_trajectory` render key of a Segment's active clip.
+fn st_render_key(fx: &Fixture, segment_id: i64) -> String {
+    let seg = segment(fx, segment_id);
+    let (_, track) = spatial::current_track_key(&fx.media_path).unwrap();
+    spatial::render_key(
+        seg.tts_asset_key.as_deref().unwrap(),
+        &track,
+        SpatialMode::SourceTrajectory,
+        &RenderWindow {
+            src_start_ms: seg.start_ms,
+            src_end_ms: seg.end_ms,
+            dub_start_ms: 0,
+        },
+        &Strengths::default(),
+        spatial::RENDERER_VERSION,
+    )
+    .unwrap()
+}
+
+#[test]
+fn mix_preview_never_falls_back_to_the_raw_clip_silently() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。"), (2_100, 2_400, "好梦。")], 8);
+    let (a, b) = (fx.ids[0], fx.ids[1]);
+    synth(&fx, a, 0);
+    let b_clip = synth(&fx, b, 0);
+    // Spatial follow on (the export default) and no render of B yet.
+    let err =
+        render_preview(&fx.db, &fx.store, b, 1_000, false, &MixOptions::default()).unwrap_err();
+    assert_eq!(err.code, "spatial_pending");
+    assert!(err.retryable);
+    // "Dub only" still plays the raw clip, explicitly.
+    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, &MixOptions::default()).unwrap();
+    assert!(solo.solo && !solo.spatial);
+
+    // Once B's render exists the mix preview uses it, like the export.
+    let render = std::fs::read(&b_clip.path).unwrap();
+    put_render(&fx, b, &st_render_key(&fx, b), &render);
+    let preview =
+        render_preview(&fx.db, &fx.store, b, 1_000, false, &MixOptions::default()).unwrap();
+    assert!(preview.spatial);
+    assert!(preview.layered_segment_ids.contains(&a));
+    // A has no render: mixed raw exactly as the export does, and reported.
+    assert_eq!(preview.raw_segment_ids, vec![a]);
 }
 
 #[test]
@@ -1144,8 +1234,7 @@ fn preview_clears_pushed_flag_and_needs_a_placed_dub() {
     let fx = fixture(&[(500, 1_500, "晚安。"), (5_000, 6_000, "好梦。")], 10);
     let (a, b) = (fx.ids[0], fx.ids[1]);
     synth(&fx, a, 0);
-    let err =
-        render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap_err();
+    let err = render_preview(&fx.db, &fx.store, b, 1_000, false, &raw_mix()).unwrap_err();
     assert_eq!(err.code, "not_placed");
     fx.db
         .lock()
@@ -1153,7 +1242,7 @@ fn preview_clears_pushed_flag_and_needs_a_placed_dub() {
         .connection()
         .execute("UPDATE segments SET dub_pushed_ms=420 WHERE id=?1", [a])
         .unwrap();
-    render_preview(&fx.db, &fx.store, a, 1_000, false, SpatialMode::default()).unwrap();
+    render_preview(&fx.db, &fx.store, a, 1_000, false, &raw_mix()).unwrap();
     assert_eq!(segment(&fx, a).dub_pushed_ms, 0);
 }
 

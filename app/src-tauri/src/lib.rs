@@ -1251,36 +1251,11 @@ fn mix_runner(app: AppHandle) -> JobRunner {
         input.options.validate().map_err(invalid_input)?;
         let assets = tts::asset_store(&app).map_err(|e| JobError::new("io", true, e))?;
         let state = app.state::<AppState>();
-        let (mut inputs, spatial_candidates) = {
-            let db = state.db.lock().map_err(db_error)?;
-            let mut inputs =
-                mix::export_inputs(db.connection(), input.media_id, &input.options.placement)
-                    .map_err(invalid_input)?;
-            // `tts_assets.path` is relative to the asset store.
-            for clip in &mut inputs.clips {
-                if clip.path.is_relative() {
-                    clip.path = assets.root.join(&clip.path);
-                }
-            }
-            let candidates = input.options.use_spatial
-                && spatial::has_renders(db.connection(), input.media_id).map_err(db_error)?;
-            (inputs, candidates)
-        };
-        let mut spatial_clips = 0;
-        if spatial_candidates {
-            // Hash the original without the DB lock; renders are keyed on its track key.
-            job.progress(0, 1, "spatial");
-            let (_, track_key) = spatial::current_track_key(&inputs.original_path)?;
-            let db = state.db.lock().map_err(db_error)?;
-            spatial_clips = spatial::apply_spatial_renders(
-                db.connection(),
-                &assets,
-                &mut inputs.clips,
-                &track_key,
-                input.options.spatial_mode,
-            )
-            .map_err(db_error)?;
-        }
+        // Same clip resolution as the context preview (docs/20 § Preview).
+        let resolved =
+            mix::resolve_export(&state.db, &assets, input.media_id, &input.options, job)?;
+        let spatial_clips = resolved.spatial_segment_ids.len();
+        let inputs = resolved.inputs;
         let report = mix::render(
             &inputs.original_path,
             &inputs.clips,
