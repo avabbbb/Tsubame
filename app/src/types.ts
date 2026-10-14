@@ -400,8 +400,15 @@ export interface SpatialStageReport {
 /** `regenerate_segment` result (job kind `regenerate`). */
 export interface RegenerateOutcome {
   segment: Segment;
+  /** The active take after the job (new, or the existing take with identical audio). */
   take: TakeInfo | null;
   take_index: number;
+  /** A take row was added (false when the audio equals an existing take). */
+  new_take: boolean;
+  /** The provider returned audio identical to this existing take. */
+  duplicate_of_take: number | null;
+  /** The audio matched an existing asset, so its file is shared. */
+  shared_asset: boolean;
   cache_hit: boolean;
   previous_tts_asset_key: string | null;
   plan_change: PlanChange;
@@ -431,7 +438,9 @@ export interface SegmentPreview {
   solo: boolean;
   /** This Segment's spatial render was used instead of its raw TTS clip. */
   spatial: boolean;
-  /** Segments whose placed dub is layered (this one + overlapping neighbours). */
+  /** Segments whose placed dub sounds in the window (this one + neighbours). */
   layered_segment_ids: number[];
+  /** Layered Segments mixed from their raw clip, exactly as the export does. */
+  raw_segment_ids: number[];
   duration_ms: number;
 }

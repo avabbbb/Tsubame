@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { canCancel, useJobs } from "./jobs";
+import { canCancel, jobProgress, useJobs } from "./jobs";
 import {
   REGENERATE_JOB_KIND,
   REGENERATE_SHORTCUT,
@@ -10,7 +10,12 @@ import {
   VOICE_KEY,
   acknowledgePushed,
   claimPlayback,
+  confirmTranslation,
   isRevisionConflict,
+  isSpatialPending,
+  isSuperseded,
+  loadMixSettings,
+  onMixSettingsChange,
   listTakes,
   playExclusive,
   previewSegmentContext,
@@ -52,18 +57,25 @@ type Playing =
   | { kind: "take"; key: string }
   | null;
 
-function spatialNote(report: SpatialStageReport): string | null {
+/** Says what a skipped/failed spatial stage means for listening. */
+function spatialNote(report: SpatialStageReport, spatialFollow: boolean): string | null {
+  const then = spatialFollow
+    ? " Play in context needs it: re-spatialize (⋯ below), use Dub only, or turn Spatial follow off in the export bar."
+    : "";
   if (report.status === "skipped") {
     return report.reason?.startsWith("spatial_worker_unavailable")
-      ? "Spatial audio skipped: the spatial worker is not available, so the raw voice clip is used."
-      : `Spatial audio skipped${report.reason ? `: ${report.reason}` : "."}`;
+      ? `Spatial audio skipped: the spatial worker is not available.${then}`
+      : `Spatial audio skipped${report.reason ? `: ${report.reason}` : "."}${then}`;
   }
   if (report.status === "failed") {
     const first = report.errors[0];
-    return `Spatial audio could not be rendered${first ? ` (${first.code})` : ""}; the raw voice clip is used.`;
+    return `Spatial audio could not be rendered${first ? ` (${first.code})` : ""}.${then}`;
   }
   return null;
 }
+
+const SPATIAL_PENDING_NOTE =
+  "The spatial audio for this sentence is not ready, so Play in context would not sound like the export. Wait for it, re-spatialize (⋯ below), or play Dub only.";
 
 function takeTitle(take: TakeInfo) {
   return `Take ${take.take_index + 1}`;
@@ -103,6 +115,15 @@ export default function SegmentRegeneratePanel({
   const { jobs, cancel } = useJobs({ segment_id: segment.id, kind: REGENERATE_JOB_KIND });
   const job = jobs.find(canCancel) ?? null;
   const busy = running || job !== null;
+  // A re-spatialize of this sentence (⋯ menu) in progress.
+  const { jobs: spatialJobs } = useJobs({ segment_id: segment.id, kind: "spatial" });
+  const spatialJob = spatialJobs.find(canCancel) ?? null;
+  const spatialFraction = spatialJob ? jobProgress(spatialJob) : null;
+  const [spatialFollow, setSpatialFollow] = useState(() => loadMixSettings().spatial);
+  useEffect(() => onMixSettingsChange(() => setSpatialFollow(loadMixSettings().spatial)), []);
+  /** The mix preview refused (`spatial_pending`); cleared on the next attempt. */
+  const [spatialPending, setSpatialPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const reloadTakes = useCallback(() => {
     void listTakes(segment.id)
@@ -133,6 +154,7 @@ export default function SegmentRegeneratePanel({
     setCompareKey(null);
     setPlaying(null);
     setVoiceOverride(null);
+    setSpatialPending(false);
     stopPlayback();
   }, [segment.id]);
 
@@ -181,15 +203,35 @@ export default function SegmentRegeneratePanel({
   async function playContext(solo = dubOnly, target: Segment = segment) {
     setPreviewBusy(true);
     setError(null);
+    setSpatialPending(false);
     try {
       const preview = await previewSegmentContext(target.id, solo);
       await playSrc(preview.path, { kind: "context", solo });
       // Previewing clears the pushed mark (docs/20 § Preview).
       if (target.dub_pushed_ms > 0) onUpdated({ ...target, dub_pushed_ms: 0 });
     } catch (err) {
-      setError(String(err));
+      // No silent raw-clip fallback: say why and offer Dub only.
+      if (isSpatialPending(err)) setSpatialPending(true);
+      else setError(String(err));
     } finally {
       setPreviewBusy(false);
+    }
+  }
+
+  async function keepTranslation() {
+    setConfirming(true);
+    setError(null);
+    try {
+      onUpdated(await confirmTranslation(segment));
+      setNote("Translation kept. Regenerate when you want a new take.");
+    } catch (err) {
+      if (isRevisionConflict(err)) {
+        await reloadLatest("This sentence changed after you opened it. Reloaded the latest version.");
+      } else {
+        setError(String(err));
+      }
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -295,11 +337,22 @@ export default function SegmentRegeneratePanel({
       if (moved.length) onSegmentsChanged(moved);
       setCompareKey(result.previous_tts_asset_key);
       reloadTakes();
+      if (result.duplicate_of_take !== null) {
+        setNote(
+          result.new_take
+            ? null
+            : `The voice returned the same audio as Take ${result.duplicate_of_take + 1}; no duplicate was kept.`,
+        );
+      }
       await playContext(dubOnly, result.segment);
     } catch (err) {
       const message = String(err);
       if (isRevisionConflict(err)) {
         await reloadLatest("This sentence changed after you opened it. Reloaded the latest version; regenerate again.");
+      } else if (isSuperseded(err)) {
+        // A newer regenerate or a take choice won; this result is not applied.
+        setNote("A newer request replaced this one; its result was not applied.");
+        reloadTakes();
       } else if (message.includes("cancel")) {
         setNote(`${baseHasClip ? "Regenerate" : "Synthesize"} cancelled.`);
       } else {
@@ -315,7 +368,7 @@ export default function SegmentRegeneratePanel({
   useImperativeHandle(controlRef, () => ({ run: () => void runRef.current() }), []);
 
   const stageIndex = job ? REGENERATE_STAGES.indexOf(job.stage as (typeof REGENERATE_STAGES)[number]) : -1;
-  const spatial = outcome ? spatialNote(outcome.spatial) : null;
+  const spatial = outcome ? spatialNote(outcome.spatial, spatialFollow) : null;
   const pushedCount = outcome?.plan_change.pushed.length ?? 0;
 
   return (
@@ -372,6 +425,20 @@ export default function SegmentRegeneratePanel({
         <kbd>{REGENERATE_SHORTCUT}</kbd>
       </button>
       {blocker && <p className="inspector-help">{blocker}</p>}
+      {segment.dirty_translation && !segment.dub_skip && segment.translated_text.trim() !== "" && (
+        <button
+          className="secondary"
+          disabled={busy || confirming || unsaved}
+          title={
+            unsaved
+              ? "Save changes first"
+              : "The translation still fits the edited original: keep it (no new take is made)"
+          }
+          onClick={() => void keepTranslation()}
+        >
+          {confirming ? "…" : "Keep translation"}
+        </button>
+      )}
 
       {busy && (
         <div className="regen-progress">
@@ -402,13 +469,31 @@ export default function SegmentRegeneratePanel({
       )}
       {spatial && <p className="inspector-help subtle-note">{spatial}</p>}
 
+      {spatialJob && (
+        <p className="inspector-help" role="status">
+          {spatialFraction !== null
+            ? `Rendering spatial audio ${Math.round(spatialFraction * 100)}%…`
+            : "Rendering spatial audio…"}{" "}
+          Play in context waits for it; Dub only plays the voice now.
+        </p>
+      )}
       <div className="preview-controls">
         <button
           className="secondary"
-          disabled={previewBusy || !segment.tts_asset_key || segment.dub_skip}
+          disabled={
+            previewBusy ||
+            !segment.tts_asset_key ||
+            segment.dub_skip ||
+            (!dubOnly && spatialFollow && (spatialJob !== null || busy))
+          }
+          title={
+            dubOnly
+              ? "Play this sentence's voice clip alone (no spatial audio, no original)"
+              : `Play from 1 s before the sentence to 1 s after its dub, mixed exactly like the export${spatialFollow ? " (Spatial follow on)" : ""}`
+          }
           onClick={() => void playContext()}
         >
-          {previewBusy ? "Rendering…" : dubOnly ? "▶ Play dub" : "▶ Play in context"}
+          {previewBusy ? "Rendering…" : dubOnly ? "▶ Play dub only" : "▶ Play in context"}
         </button>
         <label className="dub-only-toggle">
           <input
@@ -416,7 +501,7 @@ export default function SegmentRegeneratePanel({
             checked={dubOnly}
             onChange={(event) => setDubOnly(event.target.checked)}
           />
-          Dub only
+          Dub only (raw voice)
         </label>
         {playing && (
           <button className="secondary" onClick={stop}>
@@ -492,6 +577,20 @@ export default function SegmentRegeneratePanel({
         </div>
       )}
 
+      {spatialPending && !dubOnly && (
+        <div className="editor-alert" role="status">
+          <span>{SPATIAL_PENDING_NOTE}</span>
+          <button
+            className="secondary"
+            onClick={() => {
+              setDubOnly(true);
+              void playContext(true);
+            }}
+          >
+            ▶ Play dub only
+          </button>
+        </div>
+      )}
       {note && <p className="inspector-help">{note}</p>}
       {error && (
         <div className="editor-alert">

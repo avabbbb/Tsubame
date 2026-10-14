@@ -71,12 +71,70 @@ export const setActiveTake = (segment: Segment, takeKey: string) =>
 export const acknowledgePushed = (segmentIds: number[]) =>
   invoke<Segment[]>("acknowledge_pushed", { segmentIds });
 
+// ----- export mix settings (shared by export and preview) -----
+
+/** The Studio's export toggles; the context preview mixes with the same ones. */
+export interface MixSettings {
+  limiter: boolean;
+  /** "Spatial follow": use each sentence's current spatial render. */
+  spatial: boolean;
+}
+
+const MIX_SETTINGS_KEY = "tsubame.dub.mixSettings";
+const MIX_SETTINGS_EVENT = "tsubame:mix-settings";
+const DEFAULT_MIX_SETTINGS: MixSettings = { limiter: true, spatial: true };
+
+export function loadMixSettings(): MixSettings {
+  try {
+    const raw = localStorage.getItem(MIX_SETTINGS_KEY);
+    return raw ? { ...DEFAULT_MIX_SETTINGS, ...(JSON.parse(raw) as Partial<MixSettings>) } : DEFAULT_MIX_SETTINGS;
+  } catch {
+    return DEFAULT_MIX_SETTINGS;
+  }
+}
+
+export function saveMixSettings(settings: MixSettings) {
+  localStorage.setItem(MIX_SETTINGS_KEY, JSON.stringify(settings));
+  window.dispatchEvent(new Event(MIX_SETTINGS_EVENT));
+}
+
+/** Calls `listener` whenever the export toggles change. */
+export function onMixSettingsChange(listener: () => void) {
+  window.addEventListener(MIX_SETTINGS_EVENT, listener);
+  return () => window.removeEventListener(MIX_SETTINGS_EVENT, listener);
+}
+
+/** `MixOptions` for `export_dub_mix` / `preview_segment_context`. */
+export const mixOptions = (settings: MixSettings, kind: "mix" | "dub_stem" = "mix") => ({
+  kind,
+  limiter: settings.limiter,
+  use_spatial: settings.spatial,
+});
+
+/**
+ * Context preview: the export window with the export's mix settings
+ * (`solo=false`), or the sentence's raw TTS clip alone ("Dub only").
+ */
 export const previewSegmentContext = (segmentId: number, solo: boolean) =>
   invoke<SegmentPreview>("preview_segment_context", {
     segmentId,
     preRollMs: PREVIEW_PRE_ROLL_MS,
     solo,
+    options: mixOptions(loadMixSettings()),
   });
+
+/** The full-mix preview refused because the sentence's spatial render is not ready. */
+export const isSpatialPending = (error: unknown) => String(error).includes("spatial_pending");
+
+/** Keeps the current translation after a source edit (no TTS is started). */
+export const confirmTranslation = (segment: Segment) =>
+  invoke<Segment>("confirm_translation", {
+    segmentId: segment.id,
+    expectedRevision: segment.revision,
+  });
+
+/** A regenerate that a newer request or a take selection replaced. */
+export const isSuperseded = (error: unknown) => String(error).includes("superseded");
 
 export const isRevisionConflict = (error: unknown) =>
   String(error).includes("revision conflict");
@@ -88,7 +146,7 @@ export const isRevisionConflict = (error: unknown) =>
 export function regenerateBlocker(segment: Segment): string | null {
   if (segment.dub_skip) return "This sentence is excluded from the dub.";
   if (segment.dirty_translation)
-    return "The translation is out of date because the original changed. Re-translate or edit the translation first.";
+    return "The original changed, so the translation may be out of date. Re-translate, edit it, or keep it as is first.";
   if (!segment.translated_text.trim()) return "This sentence has no translation yet.";
   return null;
 }

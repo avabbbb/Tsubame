@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { canCancel, jobProgress, useJobs } from "./jobs";
+import { loadMixSettings, mixOptions, saveMixSettings } from "./regenerate";
 import type { DubExportKind, DubMixReport, DubPlan, MediaItem } from "./types";
 
 type Props = {
@@ -16,8 +17,17 @@ type Props = {
  */
 export default function DubExportActions({ media, plan, onRefreshPlan }: Props) {
   const [kind, setKind] = useState<DubExportKind>("mix");
-  const [limiter, setLimiter] = useState(true);
-  const [spatial, setSpatial] = useState(true);
+  // Shared with the context preview, so preview and export mix alike.
+  const [limiter, setLimiterState] = useState(() => loadMixSettings().limiter);
+  const [spatial, setSpatialState] = useState(() => loadMixSettings().spatial);
+  const setLimiter = (value: boolean) => {
+    setLimiterState(value);
+    saveMixSettings({ limiter: value, spatial });
+  };
+  const setSpatial = (value: boolean) => {
+    setSpatialState(value);
+    saveMixSettings({ limiter, spatial: value });
+  };
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const { jobs, cancel } = useJobs({ media_id: media.id, kind: "mix" });
@@ -40,7 +50,7 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
       const report = await invoke<DubMixReport>("export_dub_mix", {
         mediaId: media.id,
         outputPath: path,
-        options: { kind, limiter, use_spatial: spatial },
+        options: mixOptions({ limiter, spatial }, kind),
       });
       const limited =
         report.limited_frames > 0 ? `, limiter touched ${report.limited_frames} frames` : "";
@@ -83,7 +93,7 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
         <option value="mix">Original + dub</option>
         <option value="dub_stem">Dub stem only</option>
       </select>
-      <label className="dub-limiter-toggle" title="Peak limiter on the sum bus only">
+      <label className="dub-limiter-toggle" title="Peak limiter on the sum bus only (the context preview uses it too)">
         <input
           type="checkbox"
           checked={limiter}
@@ -94,7 +104,7 @@ export default function DubExportActions({ media, plan, onRefreshPlan }: Props) 
       </label>
       <label
         className="dub-limiter-toggle"
-        title="Use each sentence's spatial render when one is current"
+        title="Use each sentence's spatial render when one is current (the context preview uses it too)"
       >
         <input
           type="checkbox"
