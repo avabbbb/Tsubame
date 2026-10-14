@@ -429,7 +429,9 @@ export interface SegmentPreview {
   /** Where the dub starts inside the preview file. */
   dub_offset_ms: number;
   solo: boolean;
-  /** A spatial render was used instead of the raw TTS clip. */
+  /** This Segment's spatial render was used instead of its raw TTS clip. */
   spatial: boolean;
+  /** Segments whose placed dub is layered (this one + overlapping neighbours). */
+  layered_segment_ids: number[];
   duration_ms: number;
 }

@@ -193,17 +193,25 @@ blocking thread):
 - The original window is cropped (same WAV format) into the preview area; when the window
   reaches past the end of the original the render extends with silence on the original side
   (mix rule).
-- The Segment's dub is layered at `dub_offset_ms = dub_start_ms − start` through
-  `mix::render` (same loudness match, fades, limiter defaults as export). The spatial render
-  for the clip's current render key is used when one is verified, otherwise the raw TTS clip
-  (`spatial: true|false` in the result). Only this Segment's dub is layered; neighbouring
-  dubs are not included in v1.
-- `solo = true` renders the dub only (`ExportKind::DubStem`, 32-bit float, same window).
+- The preview sounds like the final film: **every placed dub that overlaps the window** is
+  layered, not only the edited Segment's. That is the edited dub at `dub_offset_ms =
+  dub_start_ms − start` plus each neighbour whose placement `[dub_start_ms, dub_end_ms)`
+  intersects `[start, end)`, all through `mix::render` (same loudness match, fades, limiter
+  defaults as export). Placement decides what counts: `dub_skip` sentences and sentences
+  without a clip are not placed and therefore never layered. A neighbour that starts before
+  the window or ends after it is trimmed to the window (head/tail cropped from its clip), so
+  it sounds at its real position and the preview keeps its window length. For every layered
+  clip the spatial render for its current render key is used when one is verified, otherwise
+  its raw TTS clip; `spatial: true|false` reports it for the edited Segment.
+  `layered_segment_ids` lists the layered Segments in placement order. A neighbour whose
+  clip file is missing is left out (the edited Segment's missing file is `asset_missing`).
+- `solo = true` renders the dubs only (`ExportKind::DubStem`, 32-bit float, same window,
+  same layering).
 - Files go to `<app data>/assets/preview/` (`preview-<segment>-<uuid>.wav`); after each
   render only the newest 8 previews are kept (`MAX_PREVIEW_FILES`).
 - Previewing clears the Segment's `dub_pushed_ms`.
 - Result `SegmentPreview {segment_id, path, window_start_ms, window_end_ms, dub_start_ms,
-  dub_end_ms, dub_offset_ms, solo, spatial, duration_ms}`.
+  dub_end_ms, dub_offset_ms, solo, spatial, layered_segment_ids, duration_ms}`.
 - WAV only, like mix (`unsupported_source_format` for compressed originals).
 
 ## Agent / CLI surface
@@ -224,7 +232,8 @@ directory.
   another Segment;
 - `set_active_take` revision conflicts, unknown keys, dirty_tts recomputation;
 - replan touches only downstream Segments and flags pushed ones; acknowledge clears;
-- preview window bounds and clamping at 0; solo vs mix output; cleanup;
+- preview window bounds and clamping at 0; solo vs mix output; cleanup; neighbouring dubs
+  overlapping the window are layered (trimmed to it) and `dub_skip` ones are not;
 - regenerate job progress stages and cancel; migration backfill idempotent;
 - with python3 + numpy available: the real spatial worker renders the new take and
   re-renders a moved downstream `concurrent` render (skipped otherwise).

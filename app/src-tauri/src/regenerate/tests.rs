@@ -746,6 +746,7 @@ fn preview_renders_context_solo_and_cleans_up() {
     );
     assert_eq!(preview.dub_offset_ms, preview.dub_start_ms);
     assert!(!preview.spatial && !preview.solo);
+    assert_eq!(preview.layered_segment_ids, vec![a]);
     assert!((preview.duration_ms - (preview.window_end_ms - preview.window_start_ms)).abs() <= 1);
 
     // B: window starts 1000 ms before the sentence; the original part before
@@ -820,6 +821,68 @@ fn preview_renders_context_solo_and_cleans_up() {
             .file_name()
             .to_string_lossy()
             .starts_with(".crop-")));
+}
+
+#[test]
+fn preview_layers_every_overlapping_dub_and_respects_dub_skip() {
+    // A's long dub runs into B's window; B is pushed behind A.
+    let long = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";
+    let fx = fixture(&[(1_000, 2_000, long), (4_000, 4_500, "好梦。")], 12);
+    let (a, b) = (fx.ids[0], fx.ids[1]);
+    synth(&fx, a, 0);
+    synth(&fx, b, 0);
+    let plan = placement::plan_dub(fx.db.lock().unwrap().connection(), fx.media_id, None).unwrap();
+    let (pa, pb) = (&plan.placements[0], &plan.placements[1]);
+    assert!(pa.dub_start_ms < 3_000 && pa.dub_end_ms > 3_000, "{pa:?}");
+
+    let stem = |path: &str| -> Vec<f32> {
+        hound::WavReader::open(path)
+            .unwrap()
+            .samples::<f32>()
+            .map(|s| s.unwrap())
+            .collect()
+    };
+    let frames = |ms: i64| (ms as usize) * MEDIA_RATE as usize / 1000;
+
+    // B's window starts at 3000 ms, inside A's dub: A is layered (head trimmed).
+    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, SpatialMode::default()).unwrap();
+    assert_eq!(solo.window_start_ms, 3_000);
+    assert_eq!(solo.layered_segment_ids, vec![a, b]);
+    let samples = stem(&solo.path);
+    let a_end = frames(pa.dub_end_ms - 3_000);
+    assert!(samples[..a_end - 1_000].iter().any(|v| *v != 0.0));
+    assert!((solo.duration_ms - (solo.window_end_ms - solo.window_start_ms)).abs() <= 1);
+    assert_eq!(solo.dub_offset_ms, pb.dub_start_ms - 3_000);
+
+    // A's window reaches into B's dub: B is layered with its tail trimmed, so
+    // the preview keeps its window length.
+    let preview =
+        render_preview(&fx.db, &fx.store, a, 1_000, true, SpatialMode::default()).unwrap();
+    if pb.dub_start_ms < preview.window_end_ms {
+        assert_eq!(preview.layered_segment_ids, vec![a, b]);
+    } else {
+        assert_eq!(preview.layered_segment_ids, vec![a]);
+    }
+    assert!((preview.duration_ms - (preview.window_end_ms - preview.window_start_ms)).abs() <= 1);
+
+    // dub_skip on A: A is no longer placed, so B's preview carries only B and
+    // is silent before B's dub.
+    fx.db
+        .lock()
+        .unwrap()
+        .connection()
+        .execute("UPDATE segments SET dub_skip=1 WHERE id=?1", [a])
+        .unwrap();
+    let solo = render_preview(&fx.db, &fx.store, b, 1_000, true, SpatialMode::default()).unwrap();
+    assert_eq!(solo.layered_segment_ids, vec![b]);
+    let samples = stem(&solo.path);
+    assert!(samples[..frames(solo.dub_offset_ms)]
+        .iter()
+        .all(|v| *v == 0.0));
+    // Context mode with the same layering renders the original underneath.
+    let mixed = render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap();
+    assert!(!mixed.solo);
+    assert_eq!(mixed.layered_segment_ids, vec![b]);
 }
 
 #[test]

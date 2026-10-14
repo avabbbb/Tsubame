@@ -740,8 +740,11 @@ pub struct SegmentPreview {
     /// Where the dub starts inside the preview file.
     pub dub_offset_ms: i64,
     pub solo: bool,
-    /// The spatial render was used (else the raw TTS clip).
+    /// The spatial render of this Segment was used (else the raw TTS clip).
     pub spatial: bool,
+    /// Segments whose placed dub is layered into the preview (this one and
+    /// every neighbour overlapping the window), in placement order.
+    pub layered_segment_ids: Vec<i64>,
     pub duration_ms: i64,
 }
 
@@ -780,8 +783,14 @@ pub fn cleanup_previews(dir: &Path, keep: usize, current: &Path) {
     }
 }
 
+/// Whether a placed dub `[dub_start, dub_end)` overlaps the window `[start, end)`.
+fn overlaps_window(dub_start_ms: i64, dub_end_ms: i64, start: i64, end: i64) -> bool {
+    dub_start_ms < end && dub_end_ms > start
+}
+
 /// Renders the context preview of one Segment (docs/20 § Preview) and clears
-/// its pushed flag.
+/// its pushed flag. Every placed dub overlapping the window is layered (the
+/// edited one and its neighbours), so the preview sounds like the final mix.
 pub fn render_preview(
     db: &Mutex<MediaDb>,
     store: &AssetStore,
@@ -795,7 +804,7 @@ pub fn render_preview(
             "pre_roll_ms must be within 0..={MAX_PRE_ROLL_MS}"
         )));
     }
-    let (original, mut clip, placed, has_renders) = {
+    let (original, mut clips, placed, window, has_renders) = {
         let guard = tts::lock(db)?;
         let segment = guard
             .get_segment(segment_id)
@@ -813,54 +822,103 @@ pub fn render_preview(
             .find(|p| p.segment_id == segment_id && p.is_placed())
             .cloned()
             .ok_or_else(|| TtsError::new("not_placed", "sentence has no placed dub", false))?;
-        let mut clip = inputs
+        let edited = inputs
             .clips
-            .into_iter()
+            .iter()
             .find(|clip| clip.segment_id == segment_id)
             .ok_or_else(|| TtsError::new("not_placed", "sentence has no placed dub", false))?;
-        if clip.path.is_relative() {
-            clip.path = store.absolute(&clip.path.to_string_lossy())?;
-        }
-        if !clip.path.is_file() {
-            return Err(TtsError::new(
-                "asset_missing",
-                "TTS asset file is missing; synthesize the sentence again",
-                true,
-            ));
+        let window = preview_window(edited.src_start_ms, placed.dub_end_ms, pre_roll_ms);
+        // Placed dubs only (`dub_skip` and unsynthesized sentences are not
+        // placed), overlapping the window, as `(clip, dub_end_ms)`.
+        let mut clips = Vec::new();
+        for mut clip in inputs.clips {
+            let Some(p) = inputs
+                .plan
+                .iter()
+                .find(|p| p.segment_id == clip.segment_id && p.is_placed())
+            else {
+                continue;
+            };
+            if clip.segment_id != segment_id
+                && !overlaps_window(p.dub_start_ms, p.dub_end_ms, window.0, window.1)
+            {
+                continue;
+            }
+            if clip.path.is_relative() {
+                clip.path = store.absolute(&clip.path.to_string_lossy())?;
+            }
+            if !clip.path.is_file() {
+                if clip.segment_id == segment_id {
+                    return Err(TtsError::new(
+                        "asset_missing",
+                        "TTS asset file is missing; synthesize the sentence again",
+                        true,
+                    ));
+                }
+                continue;
+            }
+            clips.push((clip, p.dub_end_ms));
         }
         let has_renders =
             spatial::has_renders(guard.connection(), segment.media_id).map_err(dberr)?;
-        (inputs.original_path, clip, placed, has_renders)
+        (inputs.original_path, clips, placed, window, has_renders)
     };
     let mut spatial_used = false;
     if has_renders {
         let (_, track_key) = spatial::current_track_key(&original)
             .map_err(|e| TtsError::new(&e.code, e.message, e.retryable))?;
         let guard = tts::lock(db)?;
-        let mut clips = [clip];
-        spatial_used =
-            spatial::apply_spatial_renders(guard.connection(), store, &mut clips, &track_key, mode)
-                .map_err(dberr)?
-                > 0;
-        let [swapped] = clips;
-        clip = swapped;
+        let mut mix_clips = clips.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+        spatial::apply_spatial_renders(guard.connection(), store, &mut mix_clips, &track_key, mode)
+            .map_err(dberr)?;
+        for ((clip, _), swapped) in clips.iter_mut().zip(mix_clips) {
+            if clip.segment_id == segment_id && clip.path != swapped.path {
+                spatial_used = true;
+            }
+            *clip = swapped;
+        }
     }
 
-    let (window_start, window_end) =
-        preview_window(clip.src_start_ms, placed.dub_end_ms, pre_roll_ms);
+    let (window_start, window_end) = window;
     let original_ms = mix::wav_duration_ms(&original).map_err(preview_err)?;
     let dir = store.root.join("preview");
     std::fs::create_dir_all(&dir).map_err(preview_err)?;
     let crop = dir.join(format!(".crop-{}.wav", uuid::Uuid::new_v4()));
     let output = dir.join(format!("preview-{segment_id}-{}.wav", uuid::Uuid::new_v4()));
+    let mut scratch = vec![crop.clone()];
+    let layered = clips.iter().map(|(c, _)| c.segment_id).collect::<Vec<_>>();
     let result = (|| -> Result<(), String> {
         mix::crop_wav(&original, &crop, window_start, window_end.min(original_ms))?;
-        let shifted = mix::MixClip {
-            dub_start_ms: clip.dub_start_ms - window_start,
-            src_start_ms: (clip.src_start_ms - window_start).max(0),
-            src_end_ms: (clip.src_end_ms - window_start).max(0),
-            ..clip.clone()
-        };
+        let mut shifted = Vec::with_capacity(clips.len());
+        for (clip, dub_end_ms) in &clips {
+            let mut clip = clip.clone();
+            // Neighbours that start before / end after the window are trimmed
+            // to it, so they sound at their real position.
+            let head = (window_start - clip.dub_start_ms).max(0);
+            let tail = (*dub_end_ms - window_end).max(0);
+            if clip.segment_id != segment_id && (head > 0 || tail > 0) {
+                let trimmed = dir.join(format!(".crop-{}.wav", uuid::Uuid::new_v4()));
+                scratch.push(trimmed.clone());
+                let frames = mix::crop_wav(
+                    &clip.path,
+                    &trimmed,
+                    head,
+                    *dub_end_ms - clip.dub_start_ms - tail,
+                )?;
+                if frames == 0 {
+                    continue;
+                }
+                clip.path = trimmed;
+                clip.dub_start_ms += head;
+                clip.expected_duration_ms = None;
+            }
+            shifted.push(mix::MixClip {
+                dub_start_ms: clip.dub_start_ms - window_start,
+                src_start_ms: (clip.src_start_ms - window_start).max(0),
+                src_end_ms: (clip.src_end_ms - window_start).max(0),
+                ..clip
+            });
+        }
         let options = MixOptions {
             kind: if solo {
                 ExportKind::DubStem
@@ -869,10 +927,12 @@ pub fn render_preview(
             },
             ..MixOptions::default()
         };
-        mix::render(&crop, &[shifted], &output, &options, &NoopSink)?;
+        mix::render(&crop, &shifted, &output, &options, &NoopSink)?;
         Ok(())
     })();
-    let _ = std::fs::remove_file(&crop);
+    for path in &scratch {
+        let _ = std::fs::remove_file(path);
+    }
     result.map_err(preview_err)?;
     cleanup_previews(&dir, MAX_PREVIEW_FILES, &output);
     let duration_ms = mix::wav_duration_ms(&output).map_err(preview_err)?;
@@ -896,6 +956,7 @@ pub fn render_preview(
         dub_offset_ms: placed.dub_start_ms - window_start,
         solo,
         spatial: spatial_used,
+        layered_segment_ids: layered,
         duration_ms,
     })
 }
