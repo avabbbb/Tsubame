@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { canCancel, jobProgress, useJobs } from "./jobs";
+import { claimPlayback } from "./regenerate";
 import type {
   ResolvedTtsAsset,
   Segment,
@@ -16,7 +17,7 @@ type Props = {
   onUpdated: (segment: Segment) => void;
 };
 
-const VOICE_KEY = "tsubame.dub.voiceProfileId";
+export const VOICE_KEY = "tsubame.dub.voiceProfileId";
 
 /** Inspector section: synthesize one sentence and preview the clip alone. */
 export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) {
@@ -151,6 +152,7 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
             controls
             preload="none"
             src={convertFileSrc(asset.path)}
+            onPlay={(event) => claimPlayback(event.currentTarget)}
             style={{ width: "100%" }}
           />
           <p className="inspector-help">
@@ -189,6 +191,7 @@ export default function SegmentDubPanel({ segment, unsaved, onUpdated }: Props) 
               controls
               preload="none"
               src={convertFileSrc(render.path)}
+              onPlay={(event) => claimPlayback(event.currentTarget)}
               style={{ width: "100%" }}
             />
           )}
