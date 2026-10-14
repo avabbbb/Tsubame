@@ -749,6 +749,14 @@ textarea:focus, input:focus, select:focus {
   background: color-mix(in srgb, #ff453a 13%, var(--surface));
   color: color-mix(in srgb, #ff453a 76%, var(--text));
 }
+/* Pushed (yellow, docs/20) vs drift (red): different hue and a leading arrow. */
+.pushed-badge {
+  align-self: flex-start;
+  background: color-mix(in srgb, #ffd60a 22%, var(--surface));
+  color: color-mix(in srgb, #b38f00 70%, var(--text));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #ffd60a 55%, transparent);
+}
+.pushed-badge::before { content: "\21A6\00A0"; }
 .pushed-notice {
   display: flex;
   align-items: center;
