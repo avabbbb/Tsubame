@@ -7,6 +7,7 @@ import {
   REGENERATE_SHORTCUT,
   REGENERATE_STAGES,
   STAGE_LABELS,
+  VOICE_KEY,
   acknowledgePushed,
   claimPlayback,
   isRevisionConflict,
@@ -16,12 +17,18 @@ import {
   pushedLabel,
   regenerateBlocker,
   regenerateSegment,
+  regenerateVoice,
   setActiveTake,
   stopPlayback,
   visibleTakes,
 } from "./regenerate";
-import { VOICE_KEY } from "./SegmentDubPanel";
-import type { RegenerateOutcome, Segment, SpatialStageReport, TakeInfo } from "./types";
+import type {
+  RegenerateOutcome,
+  Segment,
+  SpatialStageReport,
+  TakeInfo,
+  VoiceProfile,
+} from "./types";
 
 /** What the Inspector's Ctrl/Cmd+Enter binding calls. */
 export interface RegenerateControl {
@@ -63,8 +70,9 @@ function takeTitle(take: TakeInfo) {
 }
 
 /**
- * Inspector section for the single-sentence regenerate loop: regenerate with
- * stage progress, context preview, takes (A/B, revert) and the pushed mark.
+ * Inspector section for the single-sentence dub loop: the Dub voice selector,
+ * the one Synthesize/Regenerate action with stage progress, context preview,
+ * takes (A/B, revert) and the pushed mark.
  */
 export default function SegmentRegeneratePanel({
   segment,
@@ -85,10 +93,16 @@ export default function SegmentRegeneratePanel({
   const [playing, setPlaying] = useState<Playing>(null);
   const [compareKey, setCompareKey] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
+  /** The selector's last choice; the voice for sentences without a clip. */
+  const [preferredVoice, setPreferredVoice] = useState<string>(
+    () => localStorage.getItem(VOICE_KEY) ?? "",
+  );
+  /** A voice picked for this sentence that differs from its active take's. */
+  const [voiceOverride, setVoiceOverride] = useState<string | null>(null);
   const { jobs, cancel } = useJobs({ segment_id: segment.id, kind: REGENERATE_JOB_KIND });
   const job = jobs.find(canCancel) ?? null;
   const busy = running || job !== null;
-  const blocker = regenerateBlocker(segment);
 
   const reloadTakes = useCallback(() => {
     void listTakes(segment.id)
@@ -101,12 +115,24 @@ export default function SegmentRegeneratePanel({
   }, [reloadTakes, segment.revision, segment.tts_asset_key]);
 
   useEffect(() => {
+    void invoke<VoiceProfile[]>("list_voice_profiles")
+      .then((rows) => {
+        setProfiles(rows);
+        setPreferredVoice((current) =>
+          rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? ""),
+        );
+      })
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  useEffect(() => {
     // A new selection starts clean and silences the previous sentence.
     setOutcome(null);
     setNote(null);
     setError(null);
     setCompareKey(null);
     setPlaying(null);
+    setVoiceOverride(null);
     stopPlayback();
   }, [segment.id]);
 
@@ -115,6 +141,24 @@ export default function SegmentRegeneratePanel({
     takes.find((take) => take.tts_asset_key === compareKey && !take.active) ??
     takes.find((take) => !take.active && take.available) ??
     null;
+
+  const hasClip = segment.tts_asset_key !== null;
+  const activeVoice = active?.voice_profile_id ?? "";
+  const activeVoiceKnown = profiles.some((profile) => profile.id === activeVoice);
+  // With a clip the selector shows the active take's voice until the user
+  // picks another one for this sentence.
+  const selectedVoice =
+    voiceOverride ?? (hasClip && activeVoiceKnown ? activeVoice : preferredVoice);
+  const voiceBlocker =
+    !hasClip && !preferredVoice ? "Create a dub voice in Settings first." : null;
+  const blocker = regenerateBlocker(segment) ?? voiceBlocker;
+  const action = hasClip ? "Regenerate" : "Synthesize";
+
+  function chooseVoice(id: string) {
+    setPreferredVoice(id);
+    localStorage.setItem(VOICE_KEY, id);
+    setVoiceOverride(hasClip && !(activeVoiceKnown && id === activeVoice) ? id : null);
+  }
 
   async function playSrc(path: string, next: Playing, offset = 0) {
     const audio = audioRef.current;
@@ -224,7 +268,10 @@ export default function SegmentRegeneratePanel({
       base = await saveFirst();
       if (!base) return;
     }
-    const reason = regenerateBlocker(base);
+    const baseHasClip = base.tts_asset_key !== null;
+    const reason =
+      regenerateBlocker(base) ??
+      (!baseHasClip && !preferredVoice ? "Create a dub voice in Settings first." : null);
     if (reason) {
       setError(reason);
       return;
@@ -232,10 +279,16 @@ export default function SegmentRegeneratePanel({
     setRunning(true);
     stop();
     try {
-      // Without a clip yet, use the voice chosen above; otherwise the backend
-      // keeps the active take's voice.
-      const voice = base.tts_asset_key ? undefined : (localStorage.getItem(VOICE_KEY) ?? undefined);
+      // docs/20 § Frontend: the selected voice without a clip; otherwise the
+      // active take's voice unless the selector was changed for this sentence.
+      const voice = regenerateVoice({
+        hasClip: baseHasClip,
+        selected: preferredVoice,
+        override: voiceOverride,
+        activeVoiceKnown,
+      });
       const result = await regenerateSegment(base, voice);
+      setVoiceOverride(null);
       setOutcome(result);
       onUpdated(result.segment);
       const moved = result.plan_change.moved.map((row) => row.segment_id);
@@ -248,7 +301,7 @@ export default function SegmentRegeneratePanel({
       if (isRevisionConflict(err)) {
         await reloadLatest("This sentence changed after you opened it. Reloaded the latest version; regenerate again.");
       } else if (message.includes("cancel")) {
-        setNote("Regenerate cancelled.");
+        setNote(`${baseHasClip ? "Regenerate" : "Synthesize"} cancelled.`);
       } else {
         setError(message);
       }
@@ -267,7 +320,28 @@ export default function SegmentRegeneratePanel({
 
   return (
     <div className="segment-state regenerate-panel">
-      <p className="section-label">REGENERATE</p>
+      <p className="section-label">DUB VOICE</p>
+      {profiles.length ? (
+        <label>
+          Voice
+          <select
+            value={selectedVoice}
+            disabled={busy}
+            onChange={(event) => chooseVoice(event.target.value)}
+          >
+            {profiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name} · {profile.kind}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="inspector-help">Create a dub voice in Settings first.</p>
+      )}
+      {voiceOverride && (
+        <p className="inspector-help">The next take uses this voice instead of the active take's.</p>
+      )}
 
       {segment.dub_pushed_ms > 0 && (
         <div className="pushed-notice">
@@ -280,10 +354,21 @@ export default function SegmentRegeneratePanel({
       <button
         className="secondary wide regenerate-button"
         disabled={busy || blocker !== null}
-        title={blocker ?? `Synthesize a new take, then re-place later sentences (${REGENERATE_SHORTCUT})`}
+        title={
+          blocker ??
+          (hasClip
+            ? `Synthesize a new take, then re-place later sentences (${REGENERATE_SHORTCUT})`
+            : `Synthesize this sentence, then place it and re-place later sentences (${REGENERATE_SHORTCUT})`)
+        }
         onClick={() => void run()}
       >
-        <span>{busy ? "Regenerating…" : unsaved ? "Save & Regenerate" : "Regenerate Segment"}</span>
+        <span>
+          {busy
+            ? hasClip
+              ? "Regenerating…"
+              : "Synthesizing…"
+            : `${unsaved ? "Save & " : ""}${action}`}
+        </span>
         <kbd>{REGENERATE_SHORTCUT}</kbd>
       </button>
       {blocker && <p className="inspector-help">{blocker}</p>}
@@ -410,7 +495,7 @@ export default function SegmentRegeneratePanel({
       {note && <p className="inspector-help">{note}</p>}
       {error && (
         <div className="editor-alert">
-          <strong>Regenerate</strong>
+          <strong>{action}</strong>
           <span>{error}</span>
         </div>
       )}

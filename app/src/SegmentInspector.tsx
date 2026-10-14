@@ -339,8 +339,6 @@ export default function SegmentInspector({ segment, onUpdated, onSegmentsChanged
         <div><span>TTS</span><strong>{segment.tts_provenance || "—"}</strong></div>
       </div>
 
-      <SegmentDubPanel segment={segment} unsaved={dirty} onUpdated={onUpdated} />
-
       <SegmentRegeneratePanel
         segment={segment}
         unsaved={dirty}
@@ -349,6 +347,8 @@ export default function SegmentInspector({ segment, onUpdated, onSegmentsChanged
         onSegmentsChanged={onSegmentsChanged}
         controlRef={regenerateRef}
       />
+
+      <SegmentDubPanel segment={segment} unsaved={dirty} />
 
       <button className="primary wide" disabled={saving || !dirty || !draft} onClick={() => void save()}>
         {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}

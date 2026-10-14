@@ -240,10 +240,18 @@ directory.
 
 ## Frontend (Sentence Inspector)
 
-- `Ctrl/Cmd+Enter` (focus in the Inspector, segment list/waveform or nowhere): saves
-  pending edits first, then runs `regenerate_segment` with `expected_revision`. A stale
-  translation, an empty translation or `dub_skip` shows the reason and does not run. The
-  "Regenerate Segment" button carries the shortcut hint.
+- **One primary dub action.** The Inspector has a single button, labelled "Synthesize"
+  while the Segment has no clip (`tts_asset_key` null) and "Regenerate" once it has one
+  ("Save & …" while edits are pending), with the `Ctrl/Cmd+↵` hint. Both run
+  `regenerate_segment` (a Segment without a take gets take 0, the PR #11 key, so a later
+  `synthesize_segment` of take 0 is a cache hit); the PR #11 "Synthesize again" button and
+  its single-clip / spatial-render players are gone (the takes list plays each clip, the
+  context preview / "Dub only" plays the placed dub with its verified spatial render).
+  `synthesize_segment` stays as a command for the agent/CLI surface.
+- `Ctrl/Cmd+Enter` (focus in the Inspector, segment list/waveform or nowhere) triggers the
+  same action: saves pending edits first, then runs `regenerate_segment` with
+  `expected_revision`. A stale translation, an empty translation, `dub_skip` or (without a
+  clip) no voice profile shows the reason and does not run.
 - While the job runs the stages `tts → spatialize → replan` are shown with Cancel
   (`cancel_job`); on success the context preview plays automatically.
 - Preview: "Play in context" (1 s pre-roll) by default, "Dub only" toggle (`solo`); one
@@ -256,5 +264,12 @@ directory.
   context preview or the Inspector's OK (`acknowledge_pushed`). PR #10's red drift badges
   stay; the two differ in hue, outline and a leading arrow.
 - A skipped spatial stage (`spatial_worker_unavailable`) is a subtle note, not an error.
-- The regenerate voice: when the Segment already has a clip the backend default (the active
-  take's voice) is used; otherwise the voice chosen in the Dub voice section.
+- The voice (`voice_profile_id`): the Dub voice selector sits above the action. Without a
+  clip the selected voice is sent (the selector's last choice is remembered for new
+  sentences). With an active take the selector shows the take's voice and nothing is sent,
+  so the backend keeps it; if the user changes the selector for this sentence the selected
+  voice is sent instead (a note says the next take uses it) and the choice resets when
+  another sentence is selected or the take is created. If the active take's voice is
+  unknown (legacy empty) or no longer exists, the selected voice is sent.
+- A "Spatial audio" section under it shows the active clip's format and keeps the explicit
+  "Spatialize" (re-render without a new take, with Cancel); listen via the context preview.

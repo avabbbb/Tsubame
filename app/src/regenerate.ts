@@ -30,6 +30,28 @@ export const REGENERATE_SHORTCUT = isMac ? "⌘↵" : "Ctrl+↵";
 export const isRegenerateShortcut = (event: KeyboardEvent) =>
   event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
 
+/** localStorage key of the Dub voice selector's last choice (new sentences use it). */
+export const VOICE_KEY = "tsubame.dub.voiceProfileId";
+
+/**
+ * The `voice_profile_id` the Inspector's single Synthesize/Regenerate action
+ * sends (docs/20 § Frontend). Without a clip yet: the selected voice. With an
+ * active take: undefined, so the backend keeps the take's voice, unless the
+ * user changed the selector for this sentence (`override`) or the take's voice
+ * is unknown / no longer exists (`activeVoiceKnown` false).
+ */
+export function regenerateVoice(options: {
+  hasClip: boolean;
+  selected: string;
+  override: string | null;
+  activeVoiceKnown: boolean;
+}): string | undefined {
+  const { hasClip, selected, override, activeVoiceKnown } = options;
+  if (!hasClip) return selected || undefined;
+  if (override) return override;
+  return activeVoiceKnown ? undefined : selected || undefined;
+}
+
 export const regenerateSegment = (segment: Segment, voiceProfileId?: string) =>
   invoke<RegenerateOutcome>("regenerate_segment", {
     segmentId: segment.id,
