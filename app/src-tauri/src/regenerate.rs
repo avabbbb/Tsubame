@@ -443,6 +443,49 @@ pub fn activate_take(
     })
 }
 
+// ----- translation confirmation -----
+
+/// The user confirms that the current translation still fits after a source
+/// edit (docs/20 § Product rules 3): clears `dirty_translation` (revision
+/// checked, bumps `revision`) and touches nothing else. It starts no TTS;
+/// the user then regenerates explicitly. The translation text is unchanged,
+/// so `dirty_tts` keeps whatever it was.
+pub fn confirm_segment_translation(
+    db: &MediaDb,
+    segment_id: i64,
+    expected_revision: i64,
+) -> Result<Segment, TtsError> {
+    let segment = db
+        .get_segment(segment_id)
+        .map_err(dberr)?
+        .ok_or_else(|| not_found("segment not found"))?;
+    if segment.revision != expected_revision {
+        return Err(revision_conflict(expected_revision, segment.revision));
+    }
+    if !segment.dirty_translation {
+        return Ok(segment);
+    }
+    if segment.translated_text.trim().is_empty() {
+        return Err(input_err(
+            "the sentence has no translation to confirm; translate it first",
+        ));
+    }
+    let changed = db
+        .connection()
+        .execute(
+            "UPDATE segments SET dirty_translation=0, revision=revision+1
+              WHERE id=?1 AND revision=?2",
+            params![segment_id, expected_revision],
+        )
+        .map_err(dberr)?;
+    if changed == 0 {
+        return Err(tts::conflict_or_missing(db, segment_id));
+    }
+    db.get_segment(segment_id)
+        .map_err(dberr)?
+        .ok_or_else(|| not_found("segment not found"))
+}
+
 // ----- regenerate job -----
 
 /// `input_json` of a `regenerate` job.
@@ -1193,6 +1236,18 @@ pub fn set_active_take(
     let store = tts::asset_store(&app)?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     activate_take(&db, &store, segment_id, &take_key, expected_revision).map_err(|e| e.to_string())
+}
+
+/// Keeps the current translation after a source edit (clears
+/// `dirty_translation`; no TTS is started).
+#[tauri::command]
+pub fn confirm_translation(
+    state: tauri::State<'_, crate::AppState>,
+    segment_id: i64,
+    expected_revision: i64,
+) -> Result<Segment, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    confirm_segment_translation(&db, segment_id, expected_revision).map_err(|e| e.to_string())
 }
 
 /// Clears the pushed flag (UI yellow mark) of the given Segments.

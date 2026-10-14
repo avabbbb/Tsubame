@@ -368,6 +368,179 @@ fn regenerate_refuses_stale_translation_and_stale_revision() {
     assert!(take_rows(&fx, seg.id).is_empty());
 }
 
+// ----- source edits -----
+
+#[test]
+fn a_source_edit_never_reaches_tts_until_the_translation_is_confirmed() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。"), (2_100, 2_400, "好梦。")], 6);
+    let (a, b) = (fx.ids[0], fx.ids[1]);
+    let first = regen(&fx, a);
+    regen(&fx, b);
+    // The user edits the source text only.
+    let seg = segment(&fx, a);
+    let edited = fx
+        .db
+        .lock()
+        .unwrap()
+        .update_segment(
+            a,
+            seg.revision,
+            "新しい原文",
+            &seg.translated_text,
+            seg.start_ms,
+            seg.end_ms,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(edited.dirty_translation);
+    // Regenerate refuses the stale translation and calls no provider.
+    let mock = MockTts::new();
+    let jobs = JobStore::open_in_memory().unwrap();
+    let (job, result) = regen_with(&fx, &jobs, a, &mock, |_| {});
+    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(result.unwrap_err().code, "invalid_input");
+    assert_eq!(mock.call_count(), 0);
+    let after = segment(&fx, a);
+    assert_eq!(after.tts_asset_key, first.segment.tts_asset_key);
+    assert_eq!(
+        after.translated_text, seg.translated_text,
+        "translation untouched"
+    );
+
+    // Confirming is revision-checked and starts no synthesis.
+    let err =
+        confirm_segment_translation(&fx.db.lock().unwrap(), a, after.revision - 1).unwrap_err();
+    assert_eq!(err.code, "revision_conflict");
+    let confirmed = confirm_segment_translation(&fx.db.lock().unwrap(), a, after.revision).unwrap();
+    assert!(!confirmed.dirty_translation);
+    assert_eq!(confirmed.revision, after.revision + 1);
+    assert_eq!(confirmed.translated_text, seg.translated_text);
+    assert_eq!(confirmed.tts_asset_key, first.segment.tts_asset_key);
+    assert_eq!(take_rows(&fx, a).len(), 1);
+    // Confirming again is a no-op.
+    let again = confirm_segment_translation(&fx.db.lock().unwrap(), a, confirmed.revision).unwrap();
+    assert_eq!(again.revision, confirmed.revision);
+
+    // Now the user regenerates explicitly: one provider call, a new take.
+    let mock = MockTts::new();
+    let (job, result) = regen_with(&fx, &jobs, a, &mock, |_| {});
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert!(result.unwrap().new_take);
+    assert_eq!(mock.call_count(), 1);
+}
+
+// ----- end to end -----
+
+/// Acceptance flow (docs/20): select a sentence → edit → regenerate → new take
+/// → replan → immediate preview → one-click revert. Never overwrites the
+/// user's translation, never modifies the original audio, never
+/// re-synthesizes other sentences.
+#[test]
+fn regenerate_loop_end_to_end() {
+    let fx = fixture(
+        &[
+            (0, 1_000, "一二"),
+            (1_100, 1_300, "三四"),
+            (1_400, 1_600, "五六"),
+            (1_700, 1_900, "七八"),
+        ],
+        10,
+    );
+    let media_sha = tts::sha256_hex(&std::fs::read(&fx.media_path).unwrap());
+    for id in &fx.ids {
+        synth(&fx, *id, 0);
+    }
+    let (a, b, c, d) = (fx.ids[0], fx.ids[1], fx.ids[2], fx.ids[3]);
+    let keys_before = fx
+        .ids
+        .iter()
+        .map(|id| segment(&fx, *id).tts_asset_key)
+        .collect::<Vec<_>>();
+    let plan_before =
+        placement::plan_dub(fx.db.lock().unwrap().connection(), fx.media_id, None).unwrap();
+
+    // Edit B's translation (a user edit) and regenerate through the job.
+    let edited = set_translation(&fx, b, "三四五六七八九十一二三四五");
+    assert_eq!(edited.translation_provenance, "human");
+    let mock = MockTts::new();
+    let jobs = JobStore::open_in_memory().unwrap();
+    let (job, result) = regen_with(&fx, &jobs, b, &mock, |_| {});
+    assert_eq!(job.status, JobStatus::Succeeded, "{:?}", job.error_message);
+    let outcome = result.unwrap();
+    assert_eq!(mock.call_count(), 1, "only B is synthesized");
+    assert_eq!(
+        mock.last_request.lock().unwrap().as_ref().unwrap().text,
+        "三四五六七八九十一二三四五"
+    );
+    assert!(outcome.new_take);
+    assert_eq!(outcome.take_index, 1);
+    assert_eq!(outcome.spatial.status, SPATIAL_SKIPPED);
+    // The user's translation is untouched; the other sentences keep their clips.
+    let b_now = segment(&fx, b);
+    assert_eq!(b_now.translated_text, "三四五六七八九十一二三四五");
+    assert_eq!(b_now.translation_provenance, "human");
+    assert!(!b_now.dirty_tts);
+    for (i, id) in fx.ids.iter().enumerate() {
+        if *id != b {
+            assert_eq!(segment(&fx, *id).tts_asset_key, keys_before[i]);
+        }
+    }
+    // Replan: later sentences only get new positions; A is untouched.
+    let plan_after =
+        placement::plan_dub(fx.db.lock().unwrap().connection(), fx.media_id, None).unwrap();
+    assert_eq!(plan_after.placements[0], plan_before.placements[0]);
+    assert!(outcome.plan_change.pushed.iter().any(|s| s.segment_id == c));
+    assert!(outcome
+        .plan_change
+        .moved
+        .iter()
+        .all(|s| s.segment_id != a && s.segment_id != b));
+    for i in [2usize, 3] {
+        let (before, after) = (&plan_before.placements[i], &plan_after.placements[i]);
+        assert_eq!(
+            after.dub_end_ms - after.dub_start_ms,
+            before.dub_end_ms - before.dub_start_ms,
+            "clip lengths never change"
+        );
+    }
+    assert!(segment(&fx, c).dub_pushed_ms > 0);
+
+    // Immediate preview (the export window; no renders → Spatial follow off).
+    let preview = render_preview(&fx.db, &fx.store, b, 1_000, false, &raw_mix()).unwrap();
+    assert!(preview.layered_segment_ids.contains(&b));
+    assert!(Path::new(&preview.path).is_file());
+
+    // One-click revert to the previous take: no provider call, C moves back.
+    let previous = outcome.previous_tts_asset_key.clone().unwrap();
+    let reverted = {
+        let guard = fx.db.lock().unwrap();
+        activate_take(&guard, &fx.store, b, &previous, b_now.revision).unwrap()
+    };
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(
+        reverted.segment.tts_asset_key.as_deref(),
+        Some(previous.as_str())
+    );
+    assert!(
+        reverted.segment.dirty_tts,
+        "the old take speaks the old text"
+    );
+    assert_eq!(
+        reverted.segment.translated_text,
+        "三四五六七八九十一二三四五"
+    );
+    let plan_reverted =
+        placement::plan_dub(fx.db.lock().unwrap().connection(), fx.media_id, None).unwrap();
+    assert_eq!(plan_reverted.placements, plan_before.placements);
+    let _ = d;
+
+    // The original media file was never modified.
+    assert_eq!(
+        tts::sha256_hex(&std::fs::read(&fx.media_path).unwrap()),
+        media_sha
+    );
+}
+
 // ----- pruning -----
 
 #[test]

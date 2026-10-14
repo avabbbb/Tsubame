@@ -1371,6 +1371,7 @@ pub fn run() {
             regenerate::list_takes,
             regenerate::set_active_take,
             regenerate::acknowledge_pushed,
+            regenerate::confirm_translation,
             regenerate::preview_segment_context,
             // PR #10: jobs
             jobs::list_jobs,
