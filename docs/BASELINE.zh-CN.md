@@ -1,8 +1,8 @@
-# Tsubame 初始产品与架构基线
+# YUZUKI 初始产品与架构基线
 
 ## 一句话定位
 
-**Tsubame 是一个 Local-first 的 ASMR 媒体库、播放器与 AI 配音工作台。**
+**YUZUKI 是一个 Local-first 的 ASMR 媒体库、播放器与 AI 配音工作台。**
 
 它不是把“下载器 / 播放器 / ASMR-Dubber”做成三个页面，而是让一个作品从发现、下载、播放、字幕、逐句编辑、翻译、配音到导出始终处于同一个本地工作台里。
 
@@ -64,7 +64,7 @@ ASR 可以来自 Whisper.cpp、Faster-Whisper、SenseVoice、Apple Speech、阿�
 
 ### BYOK
 
-远端 Provider 使用用户自己的 Key。支持的 Provider 应尽可能自动读取当前 Key 可用的模型列表，再结合 Tsubame 的 capability catalog 判断模型能力。
+远端 Provider 使用用户自己的 Key。支持的 Provider 应尽可能自动读取当前 Key 可用的模型列表，再结合 YUZUKI 的 capability catalog 判断模型能力。
 
 Key 不存 SQLite，只存系统凭据管理器，数据库只保存 `secret_ref`。
 
@@ -90,7 +90,7 @@ Provider 的执行方式可以是：
 
 - `remote_api`：OpenAI、阿里等付费/BYOK API；
 - `local_server`：LM Studio、Ollama、llama.cpp server 等 localhost/LAN 服务；
-- `local_runtime`：Faster-Whisper、SenseVoice、whisper.cpp 等 Tsubame 本地 Runtime；
+- `local_runtime`：Faster-Whisper、SenseVoice、whisper.cpp 等 YUZUKI 本地 Runtime；
 - `native_os`：Apple SpeechAnalyzer 等系统原生能力。
 
 因此 ASR、翻译、精修、TTS 都可以在同一个能力选择器中同时出现“本地模型”和“远端 API”。功能代码不能写 `if local` / `if online` 两套逻辑，而是解析满足 Capability 的 Provider + Model。
@@ -98,7 +98,7 @@ Provider 的执行方式可以是：
 
 ## Desktop 与模型安装
 
-普通用户只安装 Tsubame Desktop。
+普通用户只安装 YUZUKI Desktop。
 
 不要让用户自己安装：
 
@@ -108,11 +108,11 @@ Provider 的执行方式可以是：
 - FFmpeg；
 - CUDA 开发工具链。
 
-大型 Runtime / Model 由 Desktop 按 Processing Profile 按需下载，经过哈希验证后安装到 Tsubame 自己的目录。
+大型 Runtime / Model 由 Desktop 按 Processing Profile 按需下载，经过哈希验证后安装到 YUZUKI 自己的目录。
 
 ## Skill 与本地 Agent
 
-仓库提供 `$tsubame` Skill。
+仓库提供 `$yuzuki` Skill。
 
 它负责：
 
@@ -121,10 +121,10 @@ Provider 的执行方式可以是：
 3. `doctor` 检测硬件和运行时；
 4. 解析 Processing Profile；
 5. 规划缺少的 Runtime / Model；
-6. 让 Tsubame Desktop 自己完成安装；
+6. 让 YUZUKI Desktop 自己完成安装；
 7. 通过 CLI / MCP / local RPC 操作 Desktop。
 
-Agent 不通过屏幕点击来控制 Tsubame。
+Agent 不通过屏幕点击来控制 YUZUKI。
 
 ## 下载源
 
@@ -139,7 +139,7 @@ Agent 不通过屏幕点击来控制 Tsubame。
 
 ## 实现与参考边界
 
-Tsubame 的正式 Desktop 技术栈：
+YUZUKI 的正式 Desktop 技术栈：
 
 ```text
 React + TypeScript
@@ -159,11 +159,11 @@ SQLite / 本地文件 / Job / Runtime Manager
 
 ## 名称与声优
 
-项目名 **Tsubame** 是因为作者喜欢声优 **柚木つばめ（Yuzuki Tsubame）**，属于个人致敬命名。
+项目名 **YUZUKI** 是因为作者喜欢声优 **柚木つばめ（Yuzuki Tsubame）**，属于个人致敬命名。
 
 项目与她本人没有官方关联，也不会因为这个名字而内置她的声音、模型、录音或形象素材。
 
-她的官方站明确声明禁止将其声音用于 AI 学习/使用，所以 Tsubame 的 Voice Clone 功能不能把她作为内置/默认/示例声线。
+她的官方站明确声明禁止将其声音用于 AI 学习/使用，所以 YUZUKI 的 Voice Clone 功能不能把她作为内置/默认/示例声线。
 
 ## 开发优先级
 

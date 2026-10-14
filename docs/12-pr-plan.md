@@ -1,6 +1,6 @@
 # Pull Request Plan
 
-This document tracks the review-sized implementation sequence for Tsubame.
+This document tracks the review-sized implementation sequence for YUZUKI.
 
 ## PR #4 — React + Tauri/Rust + MIT clean-room foundation
 
@@ -171,7 +171,7 @@ Scope:
 **Status:** implemented on `feat/segment-regenerate` (stacked on `feat/dubbing-pipeline`);
 will open as GitHub PR #12. Contract: [Segment regenerate](20-segment-regenerate.md).
 
-Goal: prove Tsubame's defining editing experience.
+Goal: prove YUZUKI's defining editing experience.
 
 ```text
 select Segment
@@ -262,7 +262,7 @@ Scope:
 
 ## PR #18 — Packaging, updater and first distributable release
 
-Exit criteria: a non-developer can install Tsubame, acquire/import media, choose/install an ASR profile, transcribe, edit, translate, synthesize one sentence and continue playback without configuring a development toolchain.
+Exit criteria: a non-developer can install YUZUKI, acquire/import media, choose/install an ASR profile, transcribe, edit, translate, synthesize one sentence and continue playback without configuring a development toolchain.
 
 ## Parallelization
 

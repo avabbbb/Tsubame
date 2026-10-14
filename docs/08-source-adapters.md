@@ -2,7 +2,7 @@
 
 ## Goal
 
-Tsubame must not become “an ASMR.one client”.
+YUZUKI must not become “an ASMR.one client”.
 
 Content acquisition is a pluggable source capability.
 
@@ -27,7 +27,7 @@ acquire(asset_id, destination)
 refresh(record)
 ```
 
-Adapters normalize remote metadata into Tsubame domain objects.
+Adapters normalize remote metadata into YUZUKI domain objects.
 
 ## Normalized Work
 

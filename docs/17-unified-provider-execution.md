@@ -1,6 +1,6 @@
 # Unified Provider Execution
 
-Tsubame uses **one Provider Registry** for both local and remote inference.
+YUZUKI uses **one Provider Registry** for both local and remote inference.
 
 There is no product-level “ASR engine registry” beside the Provider Registry.
 
@@ -44,7 +44,7 @@ Typical concerns:
 
 ### local_server
 
-A model runs locally, but Tsubame talks to it through a localhost/LAN API.
+A model runs locally, but YUZUKI talks to it through a localhost/LAN API.
 
 Examples:
 - LM Studio;
@@ -66,7 +66,7 @@ without any special translation UI.
 
 ### local_runtime
 
-Tsubame owns/launches a local runtime or sidecar.
+YUZUKI owns/launches a local runtime or sidecar.
 
 Examples:
 - Faster-Whisper;
@@ -150,7 +150,7 @@ may return:
 - Alibaba/OpenAI-compatible model;
 - a local LM Studio model;
 - another localhost model server;
-- a future Tsubame-managed local LLM runtime.
+- a future YUZUKI-managed local LLM runtime.
 
 No translation feature should contain an “online vs local” branch. It selects a Provider + Model that satisfies the requested capability.
 

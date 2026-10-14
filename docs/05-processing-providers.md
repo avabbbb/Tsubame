@@ -98,7 +98,7 @@ After a user connects a user-configured Provider:
 
 1. validate credentials;
 2. call provider model-list API when available;
-3. merge provider metadata with Tsubame's model catalog;
+3. merge provider metadata with YUZUKI's model catalog;
 4. optionally run lightweight capability probes;
 5. expose unknown models with explicit “unverified capability” state;
 6. allow manual override for advanced users.
@@ -127,7 +127,7 @@ Provider execution mode is explicit:
 
 - `remote_api` — paid/hosted API;
 - `local_server` — localhost/LAN API such as LM Studio;
-- `local_runtime` — Tsubame-managed worker/CLI runtime;
+- `local_runtime` — YUZUKI-managed worker/CLI runtime;
 - `native_os` — OS-provided model/runtime such as Apple Speech.
 
 Local provider examples:
@@ -168,4 +168,4 @@ Profiles can be cloned/edited but execution records the exact resolved providers
 
 ## Failure rule
 
-If the selected provider/model is missing, unsupported or unavailable, Tsubame shows the failure and explicit alternatives. It must not silently switch to another model.
+If the selected provider/model is missing, unsupported or unavailable, YUZUKI shows the failure and explicit alternatives. It must not silently switch to another model.

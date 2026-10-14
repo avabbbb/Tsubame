@@ -71,7 +71,7 @@ The project name is a homage only and does not grant permission to use the names
 
 ## ADR-012 — Product name is Tsubame
 
-Accepted.
+Superseded by ADR-017 (2026-10-14).
 
 The repository and product name are **Tsubame**, a personal homage to **Yuzuki Tsubame / 柚木つばめ**. The shorter name is more distinctive than “Yuzuki” while still pointing to the intended namesake. This naming decision does not imply affiliation or permission to use her voice; `docs/09-security-rights.md` remains authoritative for that boundary.
 
@@ -134,3 +134,12 @@ Faster-Whisper, SenseVoice/FunASR, whisper.cpp and Apple Speech are system-manag
 Feature code, Processing Profiles, provenance, CLI and MCP identify **Provider + Model**. Adapter identity is internal execution metadata.
 
 This applies equally to ASR, translation, transcript refinement, TTS and future capabilities.
+
+
+## ADR-017 — Restore YUZUKI as the product name
+
+Accepted on 2026-10-14. Supersedes ADR-012.
+
+The user-facing product name is **YUZUKI** (uppercase in application branding); the GitHub repository is `avabbbb/Yuzuki`. The planned agent Skill and CLI command use lowercase `yuzuki`. This is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)** and does not imply affiliation, endorsement or rights to her name, likeness, recordings or voice model. `docs/09-security-rights.md` continues to govern those boundaries.
+
+For compatibility, existing Tauri bundle identifier `com.avabbbb.tsubame`, Rust crate/module identifiers, worker protocol namespaces, existing localStorage keys, asset/database paths and cache key domains are **not renamed** in this branding-only change. Any future internal rename requires explicit migration and compatibility tests to prevent loss of existing state and credentials.

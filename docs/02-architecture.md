@@ -27,29 +27,29 @@ Adapters  providers       ASMR-Dubber adapter        providers
 ## Planned repository structure
 
 ```text
-Tsubame/
+YUZUKI/
 ├─ app/                         # Tauri 2 + React workbench
 ├─ crates/
-│  ├─ tsubame-domain/
-│  ├─ tsubame-library/
-│  ├─ tsubame-jobs/
-│  ├─ tsubame-providers/
-│  ├─ tsubame-sources/
-│  ├─ tsubame-runtime/
-│  └─ tsubame-control/
+│  ├─ yuzuki-domain/
+│  ├─ yuzuki-library/
+│  ├─ yuzuki-jobs/
+│  ├─ yuzuki-providers/
+│  ├─ yuzuki-sources/
+│  ├─ yuzuki-runtime/
+│  └─ yuzuki-control/
 ├─ workers/
 │  ├─ dubber/
 │  └─ provider-packs/
 ├─ schemas/
 ├─ examples/
-├─ .agents/skills/tsubame/
+├─ .agents/skills/yuzuki/
 ├─ docs/
 └─ scripts/
 ```
 
 ## State ownership
 
-**Tsubame SQLite is the canonical product state.**
+**YUZUKI SQLite is the canonical product state.**
 
 Worker project files, caches and manifests may exist for execution/recovery but never become the source of truth for user-edited segments.
 
@@ -88,7 +88,7 @@ Use isolated workers when an AI ecosystem is materially better outside Rust. Wor
 
 ASMR-Dubber is treated as an execution-engine lineage, not a second product UI.
 
-Tsubame should reuse/adapt its strongest ideas:
+YUZUKI should reuse/adapt its strongest ideas:
 - VAD/segmentation;
 - ASR backends;
 - review/alignment;
@@ -97,7 +97,7 @@ Tsubame should reuse/adapt its strongest ideas:
 - timing/mixing;
 - recoverable runtime/model management.
 
-Its Gradio UI is not the user-facing Tsubame product.
+Its Gradio UI is not the user-facing YUZUKI product.
 
 ## ASPlayer boundary
 
@@ -109,7 +109,7 @@ It may be used only as a product/interaction reference for ideas such as:
 - subtitle ergonomics;
 - media-learning workflows.
 
-Tsubame implements these capabilities independently. No GPL-licensed ASPlayer source may be copied, adapted, vendored or linked into the MIT codebase.
+YUZUKI implements these capabilities independently. No GPL-licensed ASPlayer source may be copied, adapted, vendored or linked into the MIT codebase.
 
 ## Desktop stack
 
