@@ -286,6 +286,31 @@ fn regenerate_creates_next_take_and_lists_takes() {
 }
 
 #[test]
+fn regenerate_without_a_clip_creates_take_zero() {
+    // The Inspector's single "Synthesize" action goes through regenerate even
+    // when the sentence has never been synthesized.
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let id = fx.ids[0];
+    assert!(segment(&fx, id).tts_asset_key.is_none());
+    assert!(take_rows(&fx, id).is_empty());
+    let outcome = regen(&fx, id);
+    assert_eq!(outcome.take_index, 0);
+    assert!(!outcome.cache_hit);
+    assert_eq!(outcome.previous_tts_asset_key, None);
+    let key = outcome.segment.tts_asset_key.clone().unwrap();
+    assert!(!outcome.segment.dirty_tts);
+    let listed = takes::list_takes(fx.db.lock().unwrap().connection(), &fx.store, id).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].active && listed[0].available);
+    assert_eq!(listed[0].tts_asset_key, key);
+    assert_eq!(listed[0].voice_profile_id, fx.profile.id);
+    // Take 0 is the PR #11 clip: synthesizing take 0 afterwards reuses it.
+    let again = synth(&fx, id, 0);
+    assert!(again.cache_hit);
+    assert_eq!(again.asset.key, key);
+}
+
+#[test]
 fn regenerate_refuses_stale_translation_and_stale_revision() {
     let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
     // Source edit → translation stale, never re-translated automatically.
