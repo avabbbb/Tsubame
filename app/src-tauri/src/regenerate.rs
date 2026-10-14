@@ -1004,3 +1004,6 @@ pub async fn preview_segment_context(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests;
