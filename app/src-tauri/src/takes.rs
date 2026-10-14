@@ -32,7 +32,11 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            created_at TEXT NOT NULL DEFAULT (datetime('now')),
            PRIMARY KEY (segment_id, take_index)
          );
-         CREATE INDEX IF NOT EXISTS idx_tts_takes_key ON tts_takes(tts_asset_key);",
+         CREATE INDEX IF NOT EXISTS idx_tts_takes_key ON tts_takes(tts_asset_key);
+         CREATE TABLE IF NOT EXISTS regen_generations (
+           segment_id INTEGER PRIMARY KEY,
+           generation INTEGER NOT NULL DEFAULT 0
+         );",
     )?;
     let has_pushed = {
         let mut stmt = conn.prepare("PRAGMA table_info(segments)")?;
@@ -83,6 +87,30 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The Segment's current regenerate generation (0 before the first bump).
+pub fn generation(conn: &Connection, segment_id: i64) -> rusqlite::Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT generation FROM regen_generations WHERE segment_id=?1",
+            [segment_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+/// Starts a new generation for the Segment and returns it. Every regenerate
+/// request and every take selection bumps it, so an older in-flight
+/// regenerate job can tell that a newer user action superseded it.
+pub fn bump_generation(conn: &Connection, segment_id: i64) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO regen_generations(segment_id, generation) VALUES(?1, 1)
+         ON CONFLICT(segment_id) DO UPDATE SET generation = generation + 1",
+        [segment_id],
+    )?;
+    generation(conn, segment_id)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

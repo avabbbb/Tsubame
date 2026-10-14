@@ -319,6 +319,8 @@ pub fn is_loopback_url(url: &str) -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct MockTts {
     pub sample_rate: u32,
+    /// Same audio for every take (a deterministic provider).
+    pub deterministic: bool,
     pub calls: std::sync::atomic::AtomicUsize,
     pub last_request: Mutex<Option<TtsRequest>>,
 }
@@ -328,6 +330,7 @@ impl MockTts {
     pub fn new() -> Self {
         Self {
             sample_rate: 24_000,
+            deterministic: false,
             calls: std::sync::atomic::AtomicUsize::new(0),
             last_request: Mutex::new(None),
         }
@@ -355,10 +358,18 @@ impl TtsAdapter for MockTts {
             }
             let chars = request.text.chars().count().max(1) as u32;
             let frames = self.sample_rate / 10 * chars.min(200); // 100 ms per char
+                                                                 // Like a sampling TTS model, a later take sounds different (a
+                                                                 // slightly higher pitch); take 0 is the PR #10 tone. A
+                                                                 // deterministic mock returns the same audio for every take.
+            let pitch = if self.deterministic {
+                440.0
+            } else {
+                440.0 + 10.0 * request.take.min(1_000) as f32
+            };
             let samples = (0..frames)
                 .map(|i| {
                     let t = i as f32 / self.sample_rate as f32;
-                    ((t * 440.0 * std::f32::consts::TAU).sin() * 8_000.0) as i16
+                    ((t * pitch * std::f32::consts::TAU).sin() * 8_000.0) as i16
                 })
                 .collect::<Vec<_>>();
             Ok(encode_pcm16_wav(self.sample_rate, 1, &samples))
@@ -1024,25 +1035,32 @@ pub(crate) fn lock(db: &Mutex<MediaDb>) -> Result<std::sync::MutexGuard<'_, Medi
         .map_err(|e| TtsError::new("db", e.to_string(), true))
 }
 
-/// Cache miss path: asks the adapter, validates/normalizes the WAV, stores it
-/// atomically and records the `tts_assets` row. Holds the DB lock only for the
-/// final insert. Shared by `run_synthesis` and the `regenerate` job.
-pub(crate) async fn synthesize_asset<A: TtsAdapter>(
-    db: &Mutex<MediaDb>,
-    store: &AssetStore,
+/// Asks the adapter and validates/normalizes the WAV (no storage, no DB).
+pub(crate) async fn synthesize_wav<A: TtsAdapter>(
     adapter: &A,
     prepared: &PreparedSynthesis,
     sink: &dyn ProgressSink,
-) -> Result<TtsAsset, TtsError> {
+) -> Result<(Vec<u8>, WavInfo), TtsError> {
     let raw = adapter.synthesize(&prepared.request, sink).await?;
     check_cancelled(sink)?;
-    let (bytes, info) = normalize_wav(&raw)?;
+    normalize_wav(&raw)
+}
+
+/// Stores normalized WAV bytes atomically under `prepared.key` and records the
+/// `tts_assets` row. Takes the DB lock only for the insert.
+pub(crate) fn store_asset(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    prepared: &PreparedSynthesis,
+    bytes: &[u8],
+    info: &WavInfo,
+) -> Result<TtsAsset, TtsError> {
     let relative = AssetStore::relative_path(&prepared.key)?;
-    store.write_atomic(&relative, &bytes)?;
+    store.write_atomic(&relative, bytes)?;
     let asset = TtsAsset {
         key: prepared.key.clone(),
         path: relative,
-        sha256: sha256_hex(&bytes),
+        sha256: sha256_hex(bytes),
         duration_ms: info.duration_ms,
         sample_rate: info.sample_rate as i64,
         channels: info.channels as i64,
@@ -1056,6 +1074,47 @@ pub(crate) async fn synthesize_asset<A: TtsAdapter>(
     Ok(get_asset(guard.connection(), &asset.key)
         .map_err(TtsError::db)?
         .unwrap_or(asset))
+}
+
+/// A verified asset (row + file + sha256) whose audio content is `sha256`,
+/// oldest first. Used to share identical audio instead of storing it twice.
+pub fn verified_asset_by_sha(
+    conn: &Connection,
+    store: &AssetStore,
+    sha256: &str,
+) -> Result<Option<TtsAsset>, TtsError> {
+    let keys = {
+        let mut stmt = conn
+            .prepare("SELECT key FROM tts_assets WHERE sha256=?1 ORDER BY created_at, key")
+            .map_err(TtsError::db)?;
+        let keys = stmt
+            .query_map([sha256], |row| row.get::<_, String>(0))
+            .map_err(TtsError::db)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(TtsError::db)?;
+        keys
+    };
+    for key in keys {
+        if let Some(asset) = verified_asset(conn, store, &key)? {
+            return Ok(Some(asset));
+        }
+    }
+    Ok(None)
+}
+
+/// Cache miss path: asks the adapter, validates/normalizes the WAV, stores it
+/// atomically and records the `tts_assets` row. Holds the DB lock only for the
+/// final insert. Used by `run_synthesis` (the regenerate job uses the two
+/// halves directly to share identical audio).
+pub(crate) async fn synthesize_asset<A: TtsAdapter>(
+    db: &Mutex<MediaDb>,
+    store: &AssetStore,
+    adapter: &A,
+    prepared: &PreparedSynthesis,
+    sink: &dyn ProgressSink,
+) -> Result<TtsAsset, TtsError> {
+    let (bytes, info) = synthesize_wav(adapter, prepared, sink).await?;
+    store_asset(db, store, prepared, &bytes, &info)
 }
 
 /// Single-sentence synthesis. Holds the DB lock only for short synchronous

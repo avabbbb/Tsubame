@@ -206,28 +206,141 @@ pub struct Committed {
     pub change: PlanChange,
     pub prune: PruneResult,
     pub snapshot: PlanSnapshot,
+    /// Key the Segment points at after the commit (the new take's, or the
+    /// existing take whose audio is identical).
+    pub active_key: String,
+    /// Take index of the active take after the commit.
+    pub take_index: i64,
+    /// False when the audio was identical to one of the Segment's takes, so no
+    /// take row was added (see [`Committed::duplicate_of_take`]).
+    pub new_take: bool,
+    /// The existing take whose audio is byte-identical to the new synthesis.
+    pub duplicate_of_take: Option<i64>,
+}
+
+/// The Segment's take whose asset has exactly this audio content.
+fn take_with_sha(
+    conn: &Connection,
+    segment_id: i64,
+    sha256: &str,
+) -> Result<Option<takes::TakeRow>, TtsError> {
+    let rows = takes::takes_for_segment(conn, segment_id).map_err(dberr)?;
+    for row in rows {
+        if let Some(asset) = tts::get_asset(conn, &row.tts_asset_key).map_err(dberr)? {
+            if asset.sha256 == sha256 {
+                return Ok(Some(row));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn revision_conflict(expected: i64, actual: i64) -> TtsError {
+    TtsError::new(
+        "revision_conflict",
+        format!("expected r{expected}, sentence is at r{actual}"),
+        false,
+    )
 }
 
 /// One transaction: point the Segment at the new take (revision-checked),
 /// record the take, prune old takes, replan downstream and persist pushed flags.
+///
+/// Identical audio is never stored twice: `asset` may be an existing asset with
+/// the same content (its key then differs from `prepared.key`), and when the
+/// Segment already has a take with this exact audio no take row is added: that
+/// take becomes (or stays) active and [`Committed::duplicate_of_take`] says so.
 pub fn commit_regenerated(
     db: &MediaDb,
     prepared: &PreparedSynthesis,
     take: u32,
     asset: &TtsAsset,
     expected_revision: i64,
+    generation: Option<i64>,
 ) -> Result<Committed, TtsError> {
     let conn = db.connection();
     let tx = conn.unchecked_transaction().map_err(dberr)?;
-    let snap = snapshot(conn, prepared.segment.media_id, prepared.segment.id)?;
+    let segment_id = prepared.segment.id;
+    if let Some(token) = generation {
+        let current = takes::generation(conn, segment_id).map_err(dberr)?;
+        if current != token {
+            return Err(TtsError::new(
+                "superseded",
+                "a newer regenerate or take selection for this sentence replaced this one; \
+                 its audio stays cached but is not applied",
+                false,
+            ));
+        }
+    }
+    let current = db
+        .get_segment(segment_id)
+        .map_err(dberr)?
+        .ok_or_else(|| not_found("segment not found"))?;
+    if current.revision != expected_revision {
+        return Err(revision_conflict(expected_revision, current.revision));
+    }
+    let snap = snapshot(conn, prepared.segment.media_id, segment_id)?;
     let previous_key = snap.rows[snap.index].tts_asset_key.clone();
-    tts::commit_segment(db, prepared, expected_revision)?;
-    takes::record_take(conn, prepared, take).map_err(dberr)?;
-    let prune = takes::prune(conn, prepared.segment.id).map_err(dberr)?;
+    let duplicate = take_with_sha(conn, segment_id, &asset.sha256)?;
+
+    let (active_key, take_index, new_take, prune) = match &duplicate {
+        // Same audio as the active take: nothing changes.
+        Some(row) if previous_key.as_deref() == Some(row.tts_asset_key.as_str()) => {
+            let segment = current.clone();
+            tx.commit().map_err(dberr)?;
+            return Ok(Committed {
+                segment,
+                previous_key,
+                change: PlanChange::unchanged(snap.index),
+                prune: PruneResult::default(),
+                snapshot: snap,
+                active_key: row.tts_asset_key.clone(),
+                take_index: row.take_index,
+                new_take: false,
+                duplicate_of_take: Some(row.take_index),
+            });
+        }
+        // Same audio as an older take: that take becomes active again.
+        Some(row) => {
+            let dirty_tts = row.text.is_empty() || row.text != prepared.request.text;
+            let changed = conn
+                .execute(
+                    "UPDATE segments
+                        SET tts_asset_key=?1, tts_provenance=?2, dirty_tts=?3, dirty_mix=1,
+                            revision=revision+1
+                      WHERE id=?4 AND revision=?5",
+                    params![
+                        row.tts_asset_key,
+                        format!("tts:{}:{}", asset.provider_id, asset.model_id),
+                        dirty_tts,
+                        segment_id,
+                        expected_revision
+                    ],
+                )
+                .map_err(dberr)?;
+            if changed == 0 {
+                return Err(tts::conflict_or_missing(db, segment_id));
+            }
+            (
+                row.tts_asset_key.clone(),
+                row.take_index,
+                false,
+                PruneResult::default(),
+            )
+        }
+        None => {
+            let mut prepared = prepared.clone();
+            prepared.key = asset.key.clone();
+            tts::commit_segment(db, &prepared, expected_revision)?;
+            takes::record_take(conn, &prepared, take).map_err(dberr)?;
+            let prune = takes::prune(conn, segment_id).map_err(dberr)?;
+            (asset.key.clone(), i64::from(take), true, prune)
+        }
+    };
     let change = apply_plan_change(conn, &snap, Some(asset.duration_ms))?;
     tx.commit().map_err(dberr)?;
     let segment = db
-        .get_segment(prepared.segment.id)
+        .get_segment(segment_id)
         .map_err(dberr)?
         .ok_or_else(|| not_found("segment not found"))?;
     Ok(Committed {
@@ -236,6 +349,10 @@ pub fn commit_regenerated(
         change,
         prune,
         snapshot: snap,
+        active_key,
+        take_index,
+        new_take,
+        duplicate_of_take: duplicate.map(|row| row.take_index),
     })
 }
 
@@ -312,6 +429,8 @@ pub fn activate_take(
     if changed == 0 {
         return Err(tts::conflict_or_missing(db, segment_id));
     }
+    // The user's choice supersedes any regenerate still in flight.
+    takes::bump_generation(conn, segment_id).map_err(dberr)?;
     let change = apply_plan_change(conn, &snap, Some(asset.duration_ms))?;
     tx.commit().map_err(dberr)?;
     Ok(ActiveTakeOutcome {
@@ -332,6 +451,17 @@ pub struct RegenerateInput {
     pub segment_id: i64,
     pub expected_revision: i64,
     pub voice_profile_id: String,
+    /// Generation token taken when the request was made
+    /// ([`takes::bump_generation`]). The commit refuses (`superseded`) when a
+    /// newer regenerate request or a take selection happened meanwhile, so a
+    /// stale job never overwrites a newer user choice. `None` skips the check
+    /// (agent/CLI callers that serialize their own requests).
+    #[serde(default)]
+    pub generation: Option<i64>,
+    /// Spatial mode the job renders in (default `source_trajectory`, the
+    /// confirmed default; see `spatial_work`).
+    #[serde(default)]
+    pub spatial_mode: SpatialMode,
 }
 
 /// Whether the spatialize stage can run.
@@ -419,8 +549,18 @@ impl SpatialStageReport {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RegenerateOutcome {
     pub segment: Segment,
+    /// The active take after the job (the new one, or the existing take with
+    /// identical audio).
     pub take: Option<TakeInfo>,
-    pub take_index: u32,
+    pub take_index: i64,
+    /// A take row was added.
+    pub new_take: bool,
+    /// The provider returned audio identical to this existing take; no
+    /// duplicate was stored and that take is active.
+    pub duplicate_of_take: Option<i64>,
+    /// The audio matched an existing asset (another take or Segment), so its
+    /// file is shared instead of written twice.
+    pub shared_asset: bool,
     pub cache_hit: bool,
     pub previous_tts_asset_key: Option<String>,
     pub plan_change: PlanChange,
@@ -480,10 +620,11 @@ fn concurrent_key(
     .map_err(|e| JobError::new("internal", false, e))
 }
 
-/// Moved downstream Segments whose `concurrent` render must be redone: a
-/// verified render exists under the old key (old `dub_start_ms`) and none under
-/// the new one. `source_trajectory` keys do not contain the start, so they are
-/// never redone for a move.
+/// Moved downstream Segments whose `concurrent` render must be (re)made:
+/// their start changed, so their concurrent render key changed, and no
+/// verified render exists under the new key yet. Segments that did not move
+/// keep their key (a render key depends only on the Segment's own clip and
+/// window, never on the neighbours it overlaps), so they are never redone.
 pub fn concurrent_rerender_targets(
     conn: &Connection,
     store: &AssetStore,
@@ -503,22 +644,28 @@ pub fn concurrent_rerender_targets(
         let Some(tts_key) = row.tts_asset_key.as_deref() else {
             continue;
         };
-        let old = concurrent_key(tts_key, track_key, row, shift.old_start_ms)?;
         let new = concurrent_key(tts_key, track_key, row, shift.new_start_ms)?;
-        if verified_render(conn, store, &old)? && !verified_render(conn, store, &new)? {
+        if !verified_render(conn, store, &new)? {
             targets.push(shift.segment_id);
         }
     }
     Ok(targets)
 }
 
-/// Spatial work of a regenerate after the commit. Returns `Err` only on cancel.
+/// Spatial work of a regenerate after the commit, in the job's spatial mode.
+/// Returns `Err` only on cancel.
+///
+/// - `source_trajectory`: only the edited Segment's new clip is rendered;
+///   shifted Segments keep their renders (the key has no start time).
+/// - `concurrent`: the edited Segment and every shifted Segment without a
+///   render under its new key are rendered; nothing else.
 fn spatial_work(
     db: &Mutex<MediaDb>,
     store: &AssetStore,
     spec: &WorkerSpec,
     job: &JobHandle,
     committed: &Committed,
+    mode: SpatialMode,
 ) -> Result<SpatialStageReport, JobError> {
     let mut report = SpatialStageReport {
         status: SPATIAL_DONE.into(),
@@ -556,33 +703,22 @@ fn spatial_work(
         }
     };
     job.progress(1, STAGE_COUNT, STAGE_SPATIALIZE);
-    render(&mut report, segment.id, SpatialMode::SourceTrajectory)?;
-    if let Some(previous) = committed.previous_key.as_deref() {
-        let snap = &committed.snapshot;
-        let old_key = concurrent_key(
-            previous,
-            &analysis.spatial_track_key,
-            &snap.rows[snap.index],
-            snap.plan[snap.index].dub_start_ms,
-        )?;
-        let had_concurrent = verified_render(tts::lock(db)?.connection(), store, &old_key)?;
-        if had_concurrent {
-            render(&mut report, segment.id, SpatialMode::Concurrent)?;
-        }
-    }
+    render(&mut report, segment.id, mode)?;
 
-    // Stage `replan`: concurrent renders of moved downstream Segments.
+    // Stage `replan`: shifted Segments, concurrent mode only.
     check_job_cancelled(job)?;
     job.progress(2, STAGE_COUNT, STAGE_REPLAN);
-    let targets = concurrent_rerender_targets(
-        tts::lock(db)?.connection(),
-        store,
-        &analysis.spatial_track_key,
-        committed,
-    )?;
-    for segment_id in targets {
-        check_job_cancelled(job)?;
-        render(&mut report, segment_id, SpatialMode::Concurrent)?;
+    if mode == SpatialMode::Concurrent {
+        let targets = concurrent_rerender_targets(
+            tts::lock(db)?.connection(),
+            store,
+            &analysis.spatial_track_key,
+            committed,
+        )?;
+        for segment_id in targets {
+            check_job_cancelled(job)?;
+            render(&mut report, segment_id, SpatialMode::Concurrent)?;
+        }
     }
     Ok(report)
 }
@@ -616,28 +752,50 @@ pub fn run_regenerate<A: TtsAdapter>(
         (prepared, take, cached)
     };
     let sink = TtsStageSink(job);
-    let (asset, cache_hit) = match cached {
-        Some(asset) => (asset, true),
+    let (asset, cache_hit, shared_asset) = match cached {
+        Some(asset) => (asset, true, false),
         None => {
             tts::check_cancelled(&sink)?;
-            let asset = tauri::async_runtime::block_on(tts::synthesize_asset(
-                db, store, adapter, &prepared, &sink,
-            ))?;
-            (asset, false)
+            let (bytes, info) =
+                tauri::async_runtime::block_on(tts::synthesize_wav(adapter, &prepared, &sink))?;
+            tts::check_cancelled(&sink)?;
+            // Identical audio is stored once: reuse an existing asset with the
+            // same content instead of writing a second copy.
+            let existing = {
+                let guard = tts::lock(db)?;
+                tts::verified_asset_by_sha(guard.connection(), store, &tts::sha256_hex(&bytes))?
+            };
+            match existing {
+                Some(asset) => (asset, false, true),
+                None => (
+                    tts::store_asset(db, store, &prepared, &bytes, &info)?,
+                    false,
+                    false,
+                ),
+            }
         }
     };
     // A cancel during `tts` commits nothing.
     tts::check_cancelled(&sink)?;
     let committed = {
         let guard = tts::lock(db)?;
-        commit_regenerated(&guard, &prepared, take, &asset, input.expected_revision)?
+        commit_regenerated(
+            &guard,
+            &prepared,
+            take,
+            &asset,
+            input.expected_revision,
+            input.generation,
+        )?
     };
     takes::delete_files(store, &committed.prune.deleted_paths);
 
     // Stages `spatialize` + `replan`.
     check_job_cancelled(job)?;
     let spatial = match spatial_availability {
-        SpatialAvailability::Available(spec) => spatial_work(db, store, spec, job, &committed)?,
+        SpatialAvailability::Available(spec) => {
+            spatial_work(db, store, spec, job, &committed, input.spatial_mode)?
+        }
         SpatialAvailability::Unavailable(reason) => {
             job.progress(1, STAGE_COUNT, STAGE_SPATIALIZE);
             SpatialStageReport::skipped(reason.clone())
@@ -653,14 +811,22 @@ pub fn run_regenerate<A: TtsAdapter>(
             .get_segment(input.segment_id)
             .map_err(|e| JobError::new("db", true, e.to_string()))?
             .unwrap_or_else(|| committed.segment.clone());
-        let info = takes::take_info(guard.connection(), store, input.segment_id, &prepared.key)
-            .map_err(|e| JobError::new("db", true, e.to_string()))?;
+        let info = takes::take_info(
+            guard.connection(),
+            store,
+            input.segment_id,
+            &committed.active_key,
+        )
+        .map_err(|e| JobError::new("db", true, e.to_string()))?;
         (segment, info)
     };
     Ok(RegenerateOutcome {
         segment,
         take: take_info,
-        take_index: take,
+        take_index: committed.take_index,
+        new_take: committed.new_take,
+        duplicate_of_take: committed.duplicate_of_take,
+        shared_asset,
         cache_hit,
         previous_tts_asset_key: committed.previous_key.clone(),
         plan_change: committed.change.clone(),
@@ -974,8 +1140,9 @@ pub async fn regenerate_segment(
     segment_id: i64,
     expected_revision: i64,
     voice_profile_id: Option<String>,
+    spatial_mode: Option<SpatialMode>,
 ) -> Result<Value, String> {
-    let (media_id, voice_profile_id) = {
+    let (media_id, voice_profile_id, generation) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let segment = db
             .get_segment(segment_id)
@@ -987,12 +1154,17 @@ pub async fn regenerate_segment(
                 default_voice_profile(db.connection(), segment_id).map_err(|e| e.to_string())?
             }
         };
-        (segment.media_id, voice)
+        // This request supersedes any regenerate of the Segment still running.
+        let generation =
+            takes::bump_generation(db.connection(), segment_id).map_err(|e| e.to_string())?;
+        (segment.media_id, voice, generation)
     };
     let input = serde_json::to_value(RegenerateInput {
         segment_id,
         expected_revision,
         voice_profile_id,
+        generation: Some(generation),
+        spatial_mode: spatial_mode.unwrap_or_default(),
     })
     .map_err(|e| e.to_string())?;
     crate::jobs::run_to_completion(

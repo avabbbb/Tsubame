@@ -164,6 +164,8 @@ fn regen_with<A: TtsAdapter>(
         segment_id: id,
         expected_revision: seg.revision,
         voice_profile_id: fx.profile.id.clone(),
+        generation: None,
+        spatial_mode: SpatialMode::SourceTrajectory,
     };
     let job_id = jobs
         .create(
@@ -342,6 +344,8 @@ fn regenerate_refuses_stale_translation_and_stale_revision() {
         segment_id: seg.id,
         expected_revision: seg.revision - 1,
         voice_profile_id: fx.profile.id.clone(),
+        generation: None,
+        spatial_mode: SpatialMode::SourceTrajectory,
     };
     let id = jobs
         .create(NewJob::new(REGENERATE_JOB, fx.media_id))
@@ -440,6 +444,234 @@ fn pruning_never_removes_the_active_take() {
     let result = takes::prune(conn, a).unwrap();
     assert!(result.pruned_takes.is_empty());
     assert_eq!(takes::takes_for_segment(conn, a).unwrap().len(), 5);
+}
+
+// ----- content dedupe -----
+
+fn deterministic() -> MockTts {
+    let mut mock = MockTts::new();
+    mock.deterministic = true;
+    mock
+}
+
+fn regen_using<A: TtsAdapter>(fx: &Fixture, id: i64, adapter: &A) -> RegenerateOutcome {
+    let jobs = JobStore::open_in_memory().unwrap();
+    let (job, result) = regen_with(fx, &jobs, id, adapter, |_| {});
+    assert_eq!(job.status, JobStatus::Succeeded, "{:?}", job.error_message);
+    result.unwrap()
+}
+
+/// Every `.wav` under the TTS asset store.
+fn tts_files(fx: &Fixture) -> Vec<std::path::PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "wav") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&fx.store.root.join("tts"), &mut out);
+    out
+}
+
+#[test]
+fn identical_audio_is_not_stored_or_listed_twice() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let mock = deterministic();
+    let first = regen_using(&fx, a, &mock);
+    assert!(first.new_take);
+    assert_eq!(first.take_index, 0);
+    let rev = segment(&fx, a).revision;
+
+    // Nothing changed and the provider returns the same audio: no new take,
+    // no second file, the Segment is not rewritten.
+    let again = regen_using(&fx, a, &mock);
+    assert_eq!(
+        mock.call_count(),
+        2,
+        "a regenerate always asks the provider"
+    );
+    assert!(!again.new_take);
+    assert_eq!(again.duplicate_of_take, Some(0));
+    assert!(again.shared_asset);
+    assert_eq!(again.take_index, 0);
+    assert_eq!(take_rows(&fx, a).len(), 1);
+    assert_eq!(tts_files(&fx).len(), 1);
+    assert_eq!(segment(&fx, a).revision, rev);
+    assert_eq!(again.plan_change.moved.len(), 0);
+
+    // A different text is a new take; back to the first text the provider
+    // returns take 0's audio again → take 0 becomes active, nothing is added.
+    set_translation(&fx, a, "晚安，好梦。");
+    let second = regen_using(&fx, a, &mock);
+    assert!(second.new_take);
+    assert_eq!(take_rows(&fx, a).len(), 2);
+    set_translation(&fx, a, "晚安。");
+    let back = regen_using(&fx, a, &mock);
+    assert!(!back.new_take);
+    assert_eq!(back.duplicate_of_take, Some(0));
+    assert_eq!(
+        segment(&fx, a).tts_asset_key.as_deref(),
+        Some(first.take.as_ref().unwrap().tts_asset_key.as_str())
+    );
+    assert!(!segment(&fx, a).dirty_tts);
+    assert_eq!(take_rows(&fx, a).len(), 2);
+    assert_eq!(tts_files(&fx).len(), 2);
+}
+
+#[test]
+fn identical_audio_of_another_sentence_shares_its_asset() {
+    let fx = fixture(&[(1_000, 2_000, "同じ"), (5_000, 6_000, "別")], 10);
+    let (a, b) = (fx.ids[0], fx.ids[1]);
+    let mock = deterministic();
+    let a0 = regen_using(&fx, a, &mock);
+    regen_using(&fx, b, &mock); // B take 0: other text
+    set_translation(&fx, b, "同じ");
+    let b1 = regen_using(&fx, b, &mock); // B take 1: A's text → A's audio
+    assert!(b1.new_take);
+    assert!(b1.shared_asset);
+    assert_eq!(b1.take_index, 1);
+    let a_key = a0.take.unwrap().tts_asset_key;
+    assert_eq!(
+        segment(&fx, b).tts_asset_key.as_deref(),
+        Some(a_key.as_str())
+    );
+    assert_eq!(tts_files(&fx).len(), 2, "A's file is shared, not copied");
+    // The shared asset survives while B still uses it.
+    let guard = fx.db.lock().unwrap();
+    assert!(takes::key_is_referenced(guard.connection(), &a_key).unwrap());
+}
+
+// ----- stale jobs (generation token) -----
+
+/// Runs a regenerate job for an explicit input.
+fn run_input<A: TtsAdapter>(
+    fx: &Fixture,
+    input: &RegenerateInput,
+    adapter: &A,
+) -> Result<RegenerateOutcome, JobError> {
+    let jobs = JobStore::open_in_memory().unwrap();
+    let job_id = jobs
+        .create(
+            NewJob::new(REGENERATE_JOB, fx.media_id)
+                .segment(input.segment_id)
+                .input(serde_json::to_value(input).unwrap()),
+        )
+        .unwrap()
+        .id;
+    let slot: Mutex<Option<Result<RegenerateOutcome, JobError>>> = Mutex::new(None);
+    jobs.execute(&job_id, &|handle: &JobHandle| {
+        let result = run_regenerate(
+            &fx.db,
+            &fx.store,
+            adapter,
+            &fx.profile,
+            &no_spatial(),
+            handle,
+            input,
+        );
+        *slot.lock().unwrap() = Some(result.clone());
+        result.map(|outcome| serde_json::to_value(outcome).unwrap())
+    })
+    .unwrap();
+    slot.into_inner().unwrap().unwrap()
+}
+
+/// A request as the `regenerate_segment` command makes it (bumps the token).
+fn request(fx: &Fixture, id: i64) -> RegenerateInput {
+    let seg = segment(fx, id);
+    let generation = takes::bump_generation(fx.db.lock().unwrap().connection(), id).unwrap();
+    RegenerateInput {
+        segment_id: id,
+        expected_revision: seg.revision,
+        voice_profile_id: fx.profile.id.clone(),
+        generation: Some(generation),
+        spatial_mode: SpatialMode::SourceTrajectory,
+    }
+}
+
+/// Runs `during` while the provider is synthesizing (the job is in flight).
+struct ActsDuringTts<'a> {
+    inner: MockTts,
+    during: Mutex<Option<Box<dyn FnOnce() + Send + 'a>>>,
+}
+
+impl TtsAdapter for ActsDuringTts<'_> {
+    fn adapter_version(&self) -> &'static str {
+        MOCK_ADAPTER_VERSION
+    }
+    fn synthesize<'b>(
+        &'b self,
+        request: &'b TtsRequest,
+        sink: &'b dyn crate::jobs::ProgressSink,
+    ) -> impl Future<Output = Result<Vec<u8>, TtsError>> + Send + 'b {
+        if let Some(during) = self.during.lock().unwrap().take() {
+            during();
+        }
+        self.inner.synthesize(request, sink)
+    }
+}
+
+#[test]
+fn a_newer_request_supersedes_an_older_job_in_flight() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    regen(&fx, a);
+    let before = segment(&fx, a);
+    let old = request(&fx, a);
+    // While the old job synthesizes, the user starts another regenerate.
+    let newer: Mutex<Option<RegenerateInput>> = Mutex::new(None);
+    let adapter = ActsDuringTts {
+        inner: MockTts::new(),
+        during: Mutex::new(Some(Box::new(|| {
+            *newer.lock().unwrap() = Some(request(&fx, a));
+        }))),
+    };
+    let error = run_input(&fx, &old, &adapter).unwrap_err();
+    assert_eq!(error.code, "superseded");
+    assert!(!error.retryable);
+    // The stale job changed nothing the user can see.
+    let after = segment(&fx, a);
+    assert_eq!(after.tts_asset_key, before.tts_asset_key);
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(take_rows(&fx, a).len(), 1);
+    // The newer request still applies.
+    drop(adapter);
+    let newer = newer.into_inner().unwrap().unwrap();
+    let outcome = run_input(&fx, &newer, &MockTts::new()).unwrap();
+    assert!(outcome.new_take);
+    assert_eq!(take_rows(&fx, a).len(), 2);
+}
+
+#[test]
+fn a_take_selection_supersedes_a_regenerate_in_flight() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let take0 = regen(&fx, a).take.unwrap().tts_asset_key;
+    regen(&fx, a);
+    let mut stale = request(&fx, a);
+    // The user switches back to take 0 while the job runs.
+    let switched = {
+        let guard = fx.db.lock().unwrap();
+        activate_take(&guard, &fx.store, a, &take0, stale.expected_revision).unwrap()
+    };
+    // Even with a revision that matches the new state, the token refuses.
+    stale.expected_revision = switched.segment.revision;
+    let error = run_input(&fx, &stale, &MockTts::new()).unwrap_err();
+    assert_eq!(error.code, "superseded");
+    assert_eq!(
+        segment(&fx, a).tts_asset_key.as_deref(),
+        Some(take0.as_str())
+    );
+    assert_eq!(take_rows(&fx, a).len(), 2);
 }
 
 // ----- set_active_take -----
@@ -573,7 +805,7 @@ fn replan_touches_only_downstream_and_flags_pushed() {
 }
 
 #[test]
-fn concurrent_renders_are_redone_only_when_their_key_changed() {
+fn concurrent_renders_are_made_only_for_shifted_segments_without_one() {
     let fx = fixture(&[(0, 1_000, "一二"), (1_100, 1_300, "三四")], 10);
     for id in &fx.ids {
         synth(&fx, *id, 0);
@@ -591,15 +823,18 @@ fn concurrent_renders_are_redone_only_when_their_key_changed() {
         change: change.clone(),
         prune: PruneResult::default(),
         snapshot: snap.clone(),
+        active_key: snap.rows[0].tts_asset_key.clone().unwrap(),
+        take_index: 0,
+        new_take: true,
+        duplicate_of_take: None,
     };
-    // No render at all → nothing to redo (source_trajectory never depends on start).
-    assert!(
-        concurrent_rerender_targets(conn, &fx.store, &track, &committed)
-            .unwrap()
-            .is_empty()
-    );
     let b_row = &snap.rows[1];
     let b_key = b_row.tts_asset_key.clone().unwrap();
+    // B moved and has no render under its new concurrent key → render it.
+    assert_eq!(
+        concurrent_rerender_targets(conn, &fx.store, &track, &committed).unwrap(),
+        vec![b]
+    );
     let put_render = |key: &str| {
         let rel = spatial::render_relative_path(key).unwrap();
         let path = fx.store.absolute(&rel).unwrap();
@@ -619,27 +854,7 @@ fn concurrent_renders_are_redone_only_when_their_key_changed() {
         )
         .unwrap();
     };
-    // A source_trajectory render of B does not trigger a re-render.
-    let st_key = spatial::render_key(
-        &b_key,
-        &track,
-        SpatialMode::SourceTrajectory,
-        &RenderWindow {
-            src_start_ms: 1_100,
-            src_end_ms: 1_300,
-            dub_start_ms: 0,
-        },
-        &Strengths::default(),
-        spatial::RENDERER_VERSION,
-    )
-    .unwrap();
-    put_render(&st_key);
-    assert!(
-        concurrent_rerender_targets(conn, &fx.store, &track, &committed)
-            .unwrap()
-            .is_empty()
-    );
-    // A concurrent render under B's old start → redo.
+    // A render under the old start does not count: the key changed.
     let old_key = concurrent_key(&b_key, &track, b_row, change.moved[0].old_start_ms).unwrap();
     put_render(&old_key);
     assert_eq!(
@@ -654,6 +869,8 @@ fn concurrent_renders_are_redone_only_when_their_key_changed() {
             .unwrap()
             .is_empty()
     );
+    // A Segment that did not move is never a target (its key is unchanged).
+    assert!(committed.change.moved.iter().all(|m| m.segment_id != a));
 }
 
 // ----- job progress + cancel -----
@@ -1028,12 +1245,9 @@ fn python_with_numpy() -> Option<String> {
         .map(|_| python)
 }
 
-#[test]
-fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
-    let Some(python) = python_with_numpy() else {
-        eprintln!("skipping: python3 with numpy not available");
-        return;
-    };
+/// Three chained sentences over a stereo reference (the spatial analysis wants
+/// one), every clip synthesized as take 0, and a worker spec.
+fn spatial_fixture(python: String) -> (Fixture, WorkerSpec) {
     let fx = fixture(
         &[
             (0, 1_000, "一二"),
@@ -1042,7 +1256,6 @@ fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
         ],
         6,
     );
-    // The spatial analysis wants a stereo reference: replace the media content.
     {
         let spec = hound::WavSpec {
             channels: 2,
@@ -1066,35 +1279,41 @@ fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
     for id in &fx.ids {
         synth(&fx, *id, 0);
     }
-    let (b, c) = (fx.ids[1], fx.ids[2]);
     let mut spec = WorkerSpec::python(python, spatial::worker_script());
     spec.hello_timeout = std::time::Duration::from_secs(30);
+    (fx, spec)
+}
+
+fn spatialize_now(fx: &Fixture, spec: &WorkerSpec, segment_id: i64, mode: SpatialMode) {
     let jobs = JobStore::open_in_memory().unwrap();
-    // C already has a concurrent render at its current start.
-    {
-        let id = jobs
-            .create(NewJob::new(spatial::SPATIAL_JOB, fx.media_id))
-            .unwrap()
-            .id;
-        let handle = jobs.start(&id).unwrap();
-        spatial::spatialize(
-            &fx.db,
-            &fx.store,
-            &spec,
-            &handle,
-            c,
-            SpatialMode::Concurrent,
-        )
-        .expect("concurrent render through the worker");
-        handle.succeed(serde_json::json!({})).unwrap();
-    }
-    set_translation(&fx, b, "三四五六七八九十一二三四五");
-    let seg = segment(&fx, b);
+    let id = jobs
+        .create(NewJob::new(spatial::SPATIAL_JOB, fx.media_id))
+        .unwrap()
+        .id;
+    let handle = jobs.start(&id).unwrap();
+    spatial::spatialize(&fx.db, &fx.store, spec, &handle, segment_id, mode)
+        .expect("render through the worker");
+    handle.succeed(serde_json::json!({})).unwrap();
+}
+
+/// Regenerates B (longer text, so C is pushed) with the real worker.
+fn regenerate_b_with_worker(
+    fx: &Fixture,
+    spec: &WorkerSpec,
+    mode: SpatialMode,
+    adapter: &MockTts,
+) -> RegenerateOutcome {
+    let b = fx.ids[1];
+    set_translation(fx, b, "三四五六七八九十一二三四五");
+    let seg = segment(fx, b);
     let input = RegenerateInput {
         segment_id: b,
         expected_revision: seg.revision,
         voice_profile_id: fx.profile.id.clone(),
+        generation: None,
+        spatial_mode: mode,
     };
+    let jobs = JobStore::open_in_memory().unwrap();
     let id = jobs
         .create(NewJob::new(REGENERATE_JOB, fx.media_id).segment(b))
         .unwrap()
@@ -1103,9 +1322,9 @@ fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
     let outcome = run_regenerate(
         &fx.db,
         &fx.store,
-        &MockTts::new(),
+        adapter,
         &fx.profile,
-        &SpatialAvailability::Available(spec),
+        &SpatialAvailability::Available(spec.clone()),
         &handle,
         &input,
     )
@@ -1116,23 +1335,63 @@ fn regenerate_spatializes_and_rerenders_moved_concurrent_renders() {
         "{:?}",
         outcome.spatial
     );
+    outcome
+}
+
+#[test]
+fn source_trajectory_regenerate_spatializes_only_the_new_clip() {
+    let Some(python) = python_with_numpy() else {
+        eprintln!("skipping: python3 with numpy not available");
+        return;
+    };
+    let (fx, spec) = spatial_fixture(python);
+    let (a, b, c) = (fx.ids[0], fx.ids[1], fx.ids[2]);
+    spatialize_now(&fx, &spec, c, SpatialMode::SourceTrajectory);
+    let mock = MockTts::new();
+    let outcome = regenerate_b_with_worker(&fx, &spec, SpatialMode::SourceTrajectory, &mock);
+    assert_eq!(mock.call_count(), 1, "only B is synthesized");
     assert!(outcome.plan_change.pushed.iter().any(|s| s.segment_id == c));
+    let renders = &outcome.spatial.renders;
+    assert_eq!(renders.len(), 1, "{renders:?}");
+    assert_eq!(renders[0].segment_id, b);
+    assert_eq!(renders[0].mode, SpatialMode::SourceTrajectory);
+    assert!(!renders[0].cache_hit);
+    assert!(renders
+        .iter()
+        .all(|r| r.segment_id != a && r.segment_id != c));
+}
+
+#[test]
+fn concurrent_regenerate_rerenders_only_shifted_segments() {
+    let Some(python) = python_with_numpy() else {
+        eprintln!("skipping: python3 with numpy not available");
+        return;
+    };
+    let (fx, spec) = spatial_fixture(python);
+    let (a, b, c) = (fx.ids[0], fx.ids[1], fx.ids[2]);
+    for id in [a, c] {
+        spatialize_now(&fx, &spec, id, SpatialMode::Concurrent);
+    }
+    let mock = MockTts::new();
+    let outcome = regenerate_b_with_worker(&fx, &spec, SpatialMode::Concurrent, &mock);
+    assert_eq!(
+        mock.call_count(),
+        1,
+        "C is re-rendered, never re-synthesized"
+    );
     let renders = &outcome.spatial.renders;
     assert!(renders
         .iter()
-        .any(|r| r.segment_id == b && r.mode == SpatialMode::SourceTrajectory && !r.cache_hit));
+        .any(|r| r.segment_id == b && r.mode == SpatialMode::Concurrent && !r.cache_hit));
     assert!(
         renders
             .iter()
             .any(|r| r.segment_id == c && r.mode == SpatialMode::Concurrent && !r.cache_hit),
-        "moved concurrent render is redone: {renders:?}"
+        "shifted C is re-rendered: {renders:?}"
     );
-    // B had no concurrent render before, so none is made for its new take.
-    assert!(!renders
-        .iter()
-        .any(|r| r.segment_id == b && r.mode == SpatialMode::Concurrent));
-    // The preview now picks B's spatial render.
-    let preview =
-        render_preview(&fx.db, &fx.store, b, 1_000, false, SpatialMode::default()).unwrap();
-    assert!(preview.spatial);
+    assert!(
+        renders.iter().all(|r| r.segment_id != a),
+        "A (before the edit, not shifted) is untouched: {renders:?}"
+    );
+    assert!(renders.iter().all(|r| r.mode == SpatialMode::Concurrent));
 }
