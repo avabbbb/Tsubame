@@ -37,6 +37,11 @@ export interface Segment {
   tts_asset_key: string | null;
   /** Excluded from dub placement and mix. */
   dub_skip: boolean;
+  /**
+   * How much later (ms) the dub now starts than when last previewed or
+   * acknowledged; > 0 = "pushed" (docs/20-segment-regenerate.md).
+   */
+  dub_pushed_ms: number;
 }
 
 export interface SegmentDraft {
@@ -345,4 +350,86 @@ export interface SpatialRenderOutcome {
   cache_hit: boolean;
   analysis_cache_hit: boolean;
   report: unknown | null;
+}
+
+// ----- PR plan #11: single-sentence regenerate (docs/20-segment-regenerate.md) -----
+
+/** One synthesized variant of a Segment (`list_takes`). */
+export interface TakeInfo {
+  segment_id: number;
+  take_index: number;
+  tts_asset_key: string;
+  /** Normalized text the take speaks; empty = unknown (legacy). */
+  text: string;
+  voice_profile_id: string;
+  duration_ms: number | null;
+  /** Absolute clip path (use `convertFileSrc`); null if the asset is gone. */
+  path: string | null;
+  available: boolean;
+  /** `segment.tts_asset_key` points at this take. */
+  active: boolean;
+  created_at: string;
+}
+
+export interface PlanShift {
+  segment_id: number;
+  old_start_ms: number;
+  new_start_ms: number;
+  /** > 0 = pushed later. */
+  delta_ms: number;
+  drift_ms: number;
+  drift_exceeded: boolean;
+}
+
+export interface PlanChange {
+  index: number;
+  edited: DubPlacement | null;
+  recomputed_start: number;
+  recomputed_end: number;
+  moved: PlanShift[];
+  pushed: PlanShift[];
+}
+
+export interface SpatialStageReport {
+  status: "done" | "skipped" | "failed";
+  reason: string | null;
+  renders: { segment_id: number; mode: SpatialMode; render_key: string; cache_hit: boolean }[];
+  errors: { segment_id: number | null; code: string; message: string }[];
+}
+
+/** `regenerate_segment` result (job kind `regenerate`). */
+export interface RegenerateOutcome {
+  segment: Segment;
+  take: TakeInfo | null;
+  take_index: number;
+  cache_hit: boolean;
+  previous_tts_asset_key: string | null;
+  plan_change: PlanChange;
+  spatial: SpatialStageReport;
+  pruned_takes: number[];
+  deleted_assets: string[];
+}
+
+/** `set_active_take` result. */
+export interface ActiveTakeOutcome {
+  segment: Segment;
+  take: TakeInfo | null;
+  plan_change: PlanChange;
+}
+
+/** `preview_segment_context` result. */
+export interface SegmentPreview {
+  segment_id: number;
+  /** Absolute path of the preview WAV (use `convertFileSrc`). */
+  path: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  dub_start_ms: number;
+  dub_end_ms: number;
+  /** Where the dub starts inside the preview file. */
+  dub_offset_ms: number;
+  solo: boolean;
+  /** A spatial render was used instead of the raw TTS clip. */
+  spatial: boolean;
+  duration_ms: number;
 }
