@@ -8,6 +8,7 @@ mod providers;
 mod refine;
 mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
+mod takes; // PR plan #11: per-Segment TTS takes
 mod translate;
 mod tts;
 mod voice;
