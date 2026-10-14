@@ -7,8 +7,8 @@
 //!   take 0 is exactly the PR #10 key.
 //! - The active take is the one `segments.tts_asset_key` points at; placement,
 //!   mix and spatial keep reading that column.
-//! - At most [`MAX_TAKES_PER_SEGMENT`] takes are kept per Segment (never the
-//!   active one). A pruned take's asset is deleted only when no take row and no
+//! - At most [`MAX_TAKES_PER_SEGMENT`] takes are kept per Segment in total; the
+//!   active take always survives, however old. A pruned take's asset is deleted only when no take row and no
 //!   Segment references its key any more (assets are shared across Segments by
 //!   content addressing).
 
@@ -205,10 +205,10 @@ pub fn key_is_referenced(conn: &Connection, key: &str) -> rusqlite::Result<bool>
     )
 }
 
-/// Keeps the newest [`MAX_TAKES_PER_SEGMENT`] takes (plus the active take when
-/// it is older) and deletes the `tts_assets` rows of keys nothing references
-/// any more. Files are removed separately with [`delete_files`] (after the
-/// surrounding transaction commits).
+/// Keeps at most [`MAX_TAKES_PER_SEGMENT`] takes **in total**: the active take
+/// (always, however old) plus the newest of the others, and deletes the
+/// `tts_assets` rows of keys nothing references any more. Files are removed
+/// separately with [`delete_files`] (after the surrounding transaction commits).
 pub fn prune(conn: &Connection, segment_id: i64) -> rusqlite::Result<PruneResult> {
     let active: Option<String> = conn
         .query_row(
@@ -219,10 +219,19 @@ pub fn prune(conn: &Connection, segment_id: i64) -> rusqlite::Result<PruneResult
         .optional()?
         .flatten();
     let rows = takes_for_segment(conn, segment_id)?;
+    let has_active = rows
+        .iter()
+        .any(|row| active.as_deref() == Some(row.tts_asset_key.as_str()));
+    // Room left for non-active takes once the active one is counted.
+    let mut room = MAX_TAKES_PER_SEGMENT.saturating_sub(usize::from(has_active));
     let mut result = PruneResult::default();
     let mut candidates: Vec<String> = Vec::new();
-    for row in rows.iter().skip(MAX_TAKES_PER_SEGMENT) {
+    for row in &rows {
         if active.as_deref() == Some(row.tts_asset_key.as_str()) {
+            continue;
+        }
+        if room > 0 {
+            room -= 1;
             continue;
         }
         conn.execute(

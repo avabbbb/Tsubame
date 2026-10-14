@@ -422,12 +422,24 @@ fn pruning_never_removes_the_active_take() {
     )
     .unwrap();
     let result = takes::prune(conn, a).unwrap();
-    assert_eq!(result.pruned_takes, vec![1]);
+    // Five in total: the (old) active take 0 plus the newest four others.
+    assert_eq!(result.pruned_takes, vec![2, 1]);
     let rows = takes::takes_for_segment(conn, a).unwrap();
     assert_eq!(
         rows.iter().map(|r| r.take_index).collect::<Vec<_>>(),
-        vec![6, 5, 4, 3, 2, 0]
+        vec![6, 5, 4, 3, 0]
     );
+    assert_eq!(rows.len(), takes::MAX_TAKES_PER_SEGMENT);
+
+    // When the active take is among the newest five, those five are kept.
+    conn.execute(
+        "UPDATE segments SET tts_asset_key=?1 WHERE id=?2",
+        params![format!("{:064x}", 7), a],
+    )
+    .unwrap();
+    let result = takes::prune(conn, a).unwrap();
+    assert!(result.pruned_takes.is_empty());
+    assert_eq!(takes::takes_for_segment(conn, a).unwrap().len(), 5);
 }
 
 // ----- set_active_take -----
