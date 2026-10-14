@@ -6,6 +6,7 @@ mod mix;
 mod placement;
 mod providers;
 mod refine;
+mod regenerate; // PR plan #11: single-sentence regenerate loop
 mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
 mod takes; // PR plan #11: per-Segment TTS takes
@@ -1342,6 +1343,10 @@ pub fn run() {
             store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
             store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
             store.register_runner(MIX_JOB, mix_runner(handle.clone()));
+            store.register_runner(
+                regenerate::REGENERATE_JOB,
+                regenerate::regenerate_runner(handle.clone()),
+            );
             store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
             Ok(())
         })
@@ -1386,6 +1391,12 @@ pub fn run() {
             export_dub_mix,
             spatial::analyze_spatial,
             spatial::spatialize_segment,
+            // PR plan #11: regenerate loop
+            regenerate::regenerate_segment,
+            regenerate::list_takes,
+            regenerate::set_active_take,
+            regenerate::acknowledge_pushed,
+            regenerate::preview_segment_context,
             // PR #10: jobs
             jobs::list_jobs,
             jobs::cancel_job,

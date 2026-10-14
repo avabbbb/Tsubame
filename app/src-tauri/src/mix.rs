@@ -886,6 +886,53 @@ fn render_to(
     })
 }
 
+/// Duration of a WAV file in ms (header only).
+pub fn wav_duration_ms(path: &Path) -> Result<i64, String> {
+    let reader = open_wav(path)?;
+    let rate = reader.spec().sample_rate.max(1) as u64;
+    Ok((reader.duration() as u64 * 1000 / rate) as i64)
+}
+
+fn copy_frames<S: hound::Sample + Copy, R: Read + Seek, W: Write + Seek>(
+    reader: &mut WavReader<R>,
+    writer: &mut WavWriter<W>,
+    samples: u64,
+) -> Result<(), String> {
+    for sample in reader.samples::<S>().take(samples as usize) {
+        writer
+            .write_sample(sample.map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Copies `[start_ms, end_ms)` of a WAV into `output` in the same format
+/// (rate, channels, bit depth, int/float). The window is clamped to the file;
+/// returns the number of frames written. Used by the context preview
+/// (docs/20 § Preview), never on the original in place.
+pub fn crop_wav(input: &Path, output: &Path, start_ms: i64, end_ms: i64) -> Result<u64, String> {
+    if same_file(input, output) || input == output {
+        return Err("crop output must not be the input file".to_string());
+    }
+    let mut reader = open_wav(input)?;
+    let spec = reader.spec();
+    let total = reader.duration() as u64;
+    let start = ms_to_frames(start_ms.max(0), spec.sample_rate).min(total);
+    let end = ms_to_frames(end_ms.max(0), spec.sample_rate).clamp(start, total);
+    reader
+        .seek(u32::try_from(start).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let file = fs::File::create(output).map_err(|e| e.to_string())?;
+    let mut writer = WavWriter::new(BufWriter::new(file), spec).map_err(|e| e.to_string())?;
+    let samples = (end - start) * spec.channels.max(1) as u64;
+    match spec.sample_format {
+        SampleFormat::Float => copy_frames::<f32, _, _>(&mut reader, &mut writer, samples)?,
+        SampleFormat::Int => copy_frames::<i32, _, _>(&mut reader, &mut writer, samples)?,
+    }
+    writer.finalize().map_err(|e| e.to_string())?;
+    Ok(end - start)
+}
+
 // ---------------------------------------------------------------------------
 // Command core (DB → plan → clips)
 // ---------------------------------------------------------------------------
