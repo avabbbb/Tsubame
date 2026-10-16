@@ -1127,6 +1127,29 @@ fn apply_alignment_result(
         .get_media(result.media_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "media not found".to_string())?;
+    let provider = db
+        .get_provider(&result.provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "alignment Provider not found".to_string())?;
+    if !provider.enabled {
+        return Err("alignment Provider is disabled".into());
+    }
+    let model = db
+        .list_provider_models(&result.provider_id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|model| model.model_id == result.model_id)
+        .ok_or_else(|| "model not found in Provider inventory".to_string())?;
+    if !model.available {
+        return Err("model is currently unavailable".into());
+    }
+    if !model
+        .effective_capabilities
+        .iter()
+        .any(|capability| capability == "speech.align")
+    {
+        return Err("selected model does not resolve speech.align".into());
+    }
     let targets = db
         .get_segments(media.id)
         .map_err(|e| e.to_string())?
@@ -1134,6 +1157,8 @@ fn apply_alignment_result(
         .map(|segment| AlignmentTarget {
             segment_id: segment.id,
             revision: segment.revision,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
         })
         .collect::<Vec<_>>();
     alignment::validate(&result, media.id, media.duration_ms, &targets)?;

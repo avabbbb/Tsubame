@@ -1057,6 +1057,15 @@ impl MediaDb {
                     segment.segment_id
                 ));
             }
+            // Alignment is timing-only: source_text is unchanged, so pending
+            // refine proposals for this Segment stay valid. Rebase them onto the
+            // new revision instead of letting them go stale.
+            tx.execute(
+                "UPDATE refine_proposals SET base_revision=base_revision+1
+                 WHERE segment_id=?1 AND status='pending' AND base_revision=?2",
+                params![segment.segment_id, segment.base_revision],
+            )
+            .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         self.get_segments(result.media_id)
@@ -1563,6 +1572,26 @@ mod tests {
         )?;
         assert!(db.apply_alignment(&result).is_err());
         assert_eq!(db.get_segment(rows[0].id)?.unwrap(), rows[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn timing_only_alignment_keeps_pending_refine_proposals_fresh() -> rusqlite::Result<()> {
+        let (mut db, media) = setup()?;
+        let rows = asr_rows(&mut db, media.id)?;
+        let stored =
+            db.insert_refine_proposals(media.id, REFINE, &[proposal(&rows[0], "こんばんは")])?;
+        db.apply_alignment(&alignment(&rows, media.id)).unwrap();
+        let pending = db.list_refine_proposals(media.id, false)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].base_revision, rows[0].revision + 1);
+
+        let ProposalDecision::Applied { segment } = db.accept_refine_proposal(stored[0].id)? else {
+            panic!("proposal should still apply after a timing-only alignment");
+        };
+        assert_eq!(segment.source_text, "こんばんは");
+        assert_eq!(segment.start_ms, rows[0].start_ms + 40);
+        assert_eq!(segment.align_provenance, "align:local.aligner:fa-1");
         Ok(())
     }
 

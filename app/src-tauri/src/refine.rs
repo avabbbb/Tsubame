@@ -657,4 +657,154 @@ mod tests {
         assert_eq!(value["lines"][1]["segment_id"], 2);
         assert_eq!(value["language"], "ja");
     }
+
+    // ----- Provider conformance: the real HTTP adapter against a mock server -----
+
+    fn provider(base_url: &str, auth_mode: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: "lm-studio-local".into(),
+            name: "LM Studio".into(),
+            kind: "openai-compatible".into(),
+            execution: "local".into(),
+            system_managed: false,
+            availability: "available".into(),
+            message: String::new(),
+            base_url: base_url.into(),
+            model_list_url: String::new(),
+            auth_mode: auth_mode.into(),
+            secret_ref: None,
+            enabled: true,
+            last_refresh_at: None,
+            last_error: None,
+        }
+    }
+
+    fn local_base_url(host_port: &str) -> String {
+        format!("{}:{}{}/v1", "http", "//", host_port)
+    }
+
+    /// Serves exactly one HTTP response and returns the raw request it received.
+    fn mock_server(
+        status: &'static str,
+        body: String,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&raw).into_owned()
+        });
+        (local_base_url(&addr.to_string()), handle)
+    }
+
+    fn completion(content: &Value) -> String {
+        json!({
+            "choices": [{ "message": { "role": "assistant", "content": content.to_string() } }]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn conformance_bearer_request_and_parsed_proposals() {
+        let content = json!({
+            "proposals": [{ "segment_id": 2, "text": "秋山はるるです。", "reason": "glossary", "confidence": 0.9 }]
+        });
+        let (base_url, server) = mock_server("200 OK", completion(&content));
+        let result = tauri::async_runtime::block_on(run_openai_compatible(
+            &provider(&base_url, "bearer"),
+            Some("test-key"),
+            "qwen3-local",
+            &request(),
+        ))
+        .unwrap();
+        let raw = server.join().unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(raw.starts_with("POST /v1/chat/completions "));
+        assert!(lower.contains("authorization: bearer test-key"));
+        assert!(raw.contains("\"model\":\"qwen3-local\""));
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(result.proposals[0].segment_id, 2);
+        assert_eq!(result.proposals[0].confidence, Some(0.9));
+    }
+
+    #[test]
+    fn conformance_auth_none_sends_no_authorization() {
+        let (base_url, server) = mock_server("200 OK", completion(&json!({ "proposals": [] })));
+        let result = tauri::async_runtime::block_on(run_openai_compatible(
+            &provider(&base_url, "none"),
+            None,
+            "qwen3-local",
+            &request(),
+        ))
+        .unwrap();
+        let raw = server.join().unwrap().to_ascii_lowercase();
+        assert!(!raw.contains("authorization:"));
+        assert!(result.proposals.is_empty());
+    }
+
+    #[test]
+    fn conformance_http_error_fails_loudly() {
+        let (base_url, server) = mock_server("500 Internal Server Error", "{}".into());
+        let err = tauri::async_runtime::block_on(run_openai_compatible(
+            &provider(&base_url, "none"),
+            None,
+            "qwen3-local",
+            &request(),
+        ))
+        .unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("HTTP 500"));
+    }
+
+    #[test]
+    fn conformance_missing_content_fails_loudly() {
+        let (base_url, server) = mock_server("200 OK", json!({ "choices": [] }).to_string());
+        let err = tauri::async_runtime::block_on(run_openai_compatible(
+            &provider(&base_url, "none"),
+            None,
+            "qwen3-local",
+            &request(),
+        ))
+        .unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("no message content"));
+    }
+
+    #[test]
+    fn conformance_bearer_without_key_fails_before_network() {
+        let err = tauri::async_runtime::block_on(run_openai_compatible(
+            &provider(&local_base_url("127.0.0.1:9"), "bearer"),
+            None,
+            "qwen3-local",
+            &request(),
+        ))
+        .unwrap_err();
+        assert!(err.contains("API key is not configured"));
+    }
 }

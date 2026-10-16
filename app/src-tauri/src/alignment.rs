@@ -48,6 +48,8 @@ pub struct AlignmentResult {
 pub struct AlignmentTarget {
     pub segment_id: i64,
     pub revision: i64,
+    pub start_ms: i64,
+    pub end_ms: i64,
 }
 
 /// Validates an alignment result. Any violation rejects the whole result: a
@@ -79,7 +81,7 @@ pub fn validate(
         .map(|target| (target.segment_id, target.revision))
         .collect();
     let mut seen = HashSet::new();
-    let mut previous_start = i64::MIN;
+    let mut previous_end = i64::MIN;
 
     for segment in &result.segments {
         let Some(revision) = revisions.get(&segment.segment_id) else {
@@ -109,10 +111,13 @@ pub fn validate(
                 segment.segment_id
             ));
         }
-        if segment.start_ms < previous_start {
-            return Err("aligned segments must be ordered by start time".into());
+        if segment.start_ms < previous_end {
+            return Err(format!(
+                "segment {} overlaps the previous aligned segment",
+                segment.segment_id
+            ));
         }
-        previous_start = segment.start_ms;
+        previous_end = segment.end_ms;
 
         if let Some(confidence) = segment.confidence {
             if !(0.0..=1.0).contains(&confidence) {
@@ -122,18 +127,50 @@ pub fn validate(
                 ));
             }
         }
-        let mut word_start = segment.start_ms;
+        let mut previous_word_end = segment.start_ms;
         for word in &segment.words {
-            if word.start_ms < word_start
-                || word.end_ms < word.start_ms
+            if word.start_ms < previous_word_end
+                || word.end_ms <= word.start_ms
                 || word.end_ms > segment.end_ms
             {
                 return Err(format!(
-                    "segment {} has word timings outside the segment",
+                    "segment {} has overlapping, empty or out-of-range word timings",
                     segment.segment_id
                 ));
             }
-            word_start = word.start_ms;
+            if let Some(confidence) = word.confidence {
+                if !(0.0..=1.0).contains(&confidence) {
+                    return Err(format!(
+                        "segment {} word confidence must be within 0..1",
+                        segment.segment_id
+                    ));
+                }
+            }
+            previous_word_end = word.end_ms;
+        }
+    }
+
+    // Check the merged timeline: submitted timings plus the current timings of
+    // Segments the result left untouched. Pre-existing overlaps between two
+    // untouched Segments are not this result's responsibility.
+    let aligned: HashMap<i64, (i64, i64)> = result
+        .segments
+        .iter()
+        .map(|segment| (segment.segment_id, (segment.start_ms, segment.end_ms)))
+        .collect();
+    let mut timeline: Vec<(i64, i64, bool)> = targets
+        .iter()
+        .map(|target| match aligned.get(&target.segment_id) {
+            Some(&(start, end)) => (start, end, true),
+            None => (target.start_ms, target.end_ms, false),
+        })
+        .collect();
+    timeline.sort_by_key(|&(start, end, _)| (start, end));
+    for pair in timeline.windows(2) {
+        let (_, previous_end, previous_aligned) = pair[0];
+        let (next_start, _, next_aligned) = pair[1];
+        if (previous_aligned || next_aligned) && next_start < previous_end {
+            return Err("aligned timing would overlap a neighbouring segment".into());
         }
     }
     Ok(())
@@ -189,10 +226,14 @@ mod tests {
             AlignmentTarget {
                 segment_id: 1,
                 revision: 2,
+                start_ms: 0,
+                end_ms: 2000,
             },
             AlignmentTarget {
                 segment_id: 2,
                 revision: 0,
+                start_ms: 2000,
+                end_ms: 3300,
             },
         ]
     }
@@ -239,5 +280,68 @@ mod tests {
         assert!(validate(&unknown, 7, 10_000, &targets())
             .unwrap_err()
             .contains("unknown"));
+    }
+
+    #[test]
+    fn refuses_overlapping_aligned_segments() {
+        let mut bad = result();
+        bad.segments[1].start_ms = 1500;
+        assert!(validate(&bad, 7, 10_000, &targets())
+            .unwrap_err()
+            .contains("overlaps"));
+    }
+
+    #[test]
+    fn refuses_overlap_with_untouched_neighbour() {
+        let mut with_neighbour = targets();
+        with_neighbour.push(AlignmentTarget {
+            segment_id: 3,
+            revision: 0,
+            start_ms: 3300,
+            end_ms: 4000,
+        });
+        assert!(validate(&result(), 7, 10_000, &with_neighbour).is_ok());
+        let mut bad = result();
+        bad.segments[1].end_ms = 3500;
+        assert!(validate(&bad, 7, 10_000, &with_neighbour)
+            .unwrap_err()
+            .contains("neighbouring"));
+    }
+
+    #[test]
+    fn tolerates_preexisting_overlap_between_untouched_segments() {
+        let mut overlapping = targets();
+        overlapping.push(AlignmentTarget {
+            segment_id: 3,
+            revision: 0,
+            start_ms: 5000,
+            end_ms: 6000,
+        });
+        overlapping.push(AlignmentTarget {
+            segment_id: 4,
+            revision: 0,
+            start_ms: 5500,
+            end_ms: 6500,
+        });
+        assert!(validate(&result(), 7, 10_000, &overlapping).is_ok());
+    }
+
+    #[test]
+    fn refuses_overlapping_or_empty_words() {
+        let mut overlap = result();
+        overlap.segments[0].words[1].start_ms = 700;
+        assert!(validate(&overlap, 7, 10_000, &targets()).is_err());
+        let mut empty = result();
+        empty.segments[0].words[1].end_ms = 800;
+        assert!(validate(&empty, 7, 10_000, &targets()).is_err());
+    }
+
+    #[test]
+    fn refuses_word_confidence_out_of_range() {
+        let mut bad = result();
+        bad.segments[0].words[0].confidence = Some(1.5);
+        assert!(validate(&bad, 7, 10_000, &targets())
+            .unwrap_err()
+            .contains("word confidence"));
     }
 }
