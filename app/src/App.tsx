@@ -15,6 +15,7 @@ import DubExportActions from "./DubExportActions";
 import RefinePanel from "./RefinePanel";
 import TranslatePanel from "./TranslatePanel";
 import ProviderSettings from "./ProviderSettings";
+import DesktopUpdater from "./DesktopUpdater";
 import SegmentInspector from "./SegmentInspector";
 import { pushedLabel } from "./regenerate";
 import SubtitleActions from "./SubtitleActions";
@@ -1130,6 +1131,7 @@ export default function App() {
             )}
           </>
         )}
+        <DesktopUpdater visible={activeRail === "settings"} />
       </aside>
 
       <footer className="playerbar">

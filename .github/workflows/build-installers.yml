@@ -1,0 +1,66 @@
+name: build-installers
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/build-installers.yml"
+      - ".github/workflows/release-desktop.yml"
+      - "scripts/generate-release-config.mjs"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installers:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64 (.exe)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+          - label: macOS Apple Silicon (.dmg)
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundle: dmg
+          - label: macOS Intel (.dmg)
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundle: dmg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "app/src-tauri -> target"
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: app
+      - name: Generate platform icons
+        run: npm run tauri -- icon src-tauri/icons/icon.png
+        working-directory: app
+      - name: Prepare platform icon bundle config
+        run: node scripts/generate-preview-config.mjs
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          projectPath: app
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.preview.conf.json
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: "YUZUKI-[platform]-[arch]-[bundle]"
+
+# Workflow artifacts are unsigned development/test installers.
+# They are deliberately not offered to existing users as automatic updates.
