@@ -8,8 +8,47 @@ permissions:
   contents: write
 
 jobs:
+  preflight:
+    # Platform code signing gate. Updater signatures alone do not make an
+    # installer trusted by macOS Gatekeeper or Windows SmartScreen.
+    if: github.repository == 'avabbbb/Yuzuki'
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.gate.outputs.prerelease }}
+      mac_signed: ${{ steps.gate.outputs.mac_signed }}
+    steps:
+      - id: gate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ALLOW_UNSIGNED: ${{ vars.YUZUKI_ALLOW_UNSIGNED }}
+        run: |
+          mac=false
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_ID" ] \
+            && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            mac=true
+          fi
+          # Windows Authenticode signing is not wired into this workflow yet,
+          # so a Windows installer is always unsigned until it is.
+          win=false
+          echo "mac_signed=$mac" >> "$GITHUB_OUTPUT"
+          if [ "$mac" = true ] && [ "$win" = true ]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [ "$ALLOW_UNSIGNED" = "true" ]; then
+            echo "::warning::Platform code signing incomplete (macOS=$mac, Windows=$win). Publishing as a prerelease: releases/latest never serves prereleases, so installed apps are not offered it."
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Platform code signing incomplete (macOS=$mac, Windows=$win). Configure Apple Developer ID + notarization and Windows code signing, or set repository variable YUZUKI_ALLOW_UNSIGNED=true to build an explicit unsigned prerelease."
+            exit 1
+          fi
+
   signed-release:
     # A version tag only: no PR builds or mutable branch refs can publish updates.
+    needs: preflight
     if: github.repository == 'avabbbb/Yuzuki'
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
@@ -70,18 +109,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           YUZUKI_UPDATER_PUBLIC_KEY: ${{ vars.YUZUKI_UPDATER_PUBLIC_KEY }}
           VITE_YUZUKI_UPDATER_ENABLED: "true"
-          # Development / self-test releases use ad-hoc signing on macOS.
-          # For frictionless public distribution, add Apple Developer ID signing
-          # and notarization before publishing the draft release.
-          APPLE_SIGNING_IDENTITY: "-"
+          # Developer ID signing + notarization when the preflight found every
+          # Apple secret; otherwise ad-hoc ("-") inside an explicit prerelease.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ needs.preflight.outputs.mac_signed == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: app
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}
           releaseName: YUZUKI ${{ github.ref_name }}
-          releaseBody: "YUZUKI Desktop installers and signed in-app updates. Publish this draft only after every platform has passed."
+          releaseBody: "YUZUKI Desktop installers and signed in-app updates. Publish this draft only after every platform has passed. Prerelease means at least one platform installer is not code-signed."
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
           retryAttempts: 3
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true

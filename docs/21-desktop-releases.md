@@ -51,6 +51,19 @@ cannot authenticate the update. Back up the private key securely.
 This is **Tauri updater artifact signing**, distinct from platform vendor
 code signing. Development packages are not trusted for auto-updates.
 
+## Updater trust model
+
+What an installed app trusts, in order:
+
+1. Discovery: it fetches latest.json only from the Source of updates URL above (the releases/latest download of avabbbb/Yuzuki). GitHub resolves releases/latest to the newest published release that is neither a draft nor a prerelease, so drafts, prereleases, branch builds and Actions artifacts are never offered.
+2. Authenticity: every updater bundle carries a Tauri (minisign) signature. The app verifies it against the public key compiled into the build (YUZUKI_UPDATER_PUBLIC_KEY) before installing, and rejects any bundle that fails. TLS to GitHub is transport protection only; the signature is the trust anchor.
+3. Consent: checking is automatic, installing is not. Nothing is downloaded or installed until the user presses Install, and the button stays disabled while a check or download runs.
+4. Platform trust: updater signing is not OS code signing. The release workflow therefore has a preflight gate: without Apple Developer ID signing plus notarization and Windows code signing it refuses to build, unless the repository variable YUZUKI_ALLOW_UNSIGNED=true is set, in which case the release is forced to be a prerelease and is never served to installed apps.
+
+Key compromise: anyone holding TAURI_SIGNING_PRIVATE_KEY can ship an update that installed apps accept. Keep it in Actions secrets and offline backup only. Rotating it requires shipping one build signed with the old key that embeds the new public key.
+
+Not yet covered: there is no agent/CLI entry point for update checks (the planned yuzuki CLI/MCP of PR #13 does not exist yet), and no downgrade or rollback command.
+
 ## Release a build
 
 1. Merge the stacked PRs to main and verify Rust/frontend/docs CI.
@@ -71,14 +84,14 @@ without publishing anything.
 
 ## OS trust / migration caveats
 
-- **macOS:** CI currently uses ad-hoc code signing (`-`), not Apple
-  Developer ID notarization. Users may need to explicitly approve the app
-  in macOS Privacy & Security. Configure a real Developer ID certificate
-  and notarization *before public production release* for a trusted install.
-  This GitHub setup alone does not grant Apple notarization.
-- **Windows:** NSIS builds work without paid code signing but may trigger
-  SmartScreen reputation warnings. Obtain a code-signing certificate or
-  trusted signing solution before wide distribution.
+- macOS: when the APPLE_CERTIFICATE, APPLE_SIGNING_IDENTITY, APPLE_ID,
+  APPLE_PASSWORD and APPLE_TEAM_ID secrets are all set, builds are Developer ID
+  signed and notarized. Otherwise the preflight fails, or with
+  YUZUKI_ALLOW_UNSIGNED=true builds use ad-hoc signing (-) inside a prerelease.
+- Windows: Authenticode signing is not wired into the workflow yet, so every
+  release is currently either refused or an explicit unsigned prerelease.
+  Add a code-signing certificate or trusted signing solution before wide
+  distribution.
 - **Existing local apps:** old pre-updater installations do not gain the
   feature remotely. Install the first updater-capable build once; later
   newer releases can be updated in-app.
@@ -96,7 +109,9 @@ without publishing anything.
 ## CI acceptance
 
 - Preview builds produce one Windows installer and both macOS architectures.
-- Release workflow rejects a mismatched version/tag or missing signing key.
+- Release workflow rejects a tag that differs from the version in tauri.conf.json,
+  Cargo.toml or package.json, a missing updater key, and missing platform code
+  signing unless YUZUKI_ALLOW_UNSIGNED=true, which forces a prerelease.
 - Release artifacts include Tauri updater metadata and signatures.
 - Preview app does not show an enabled update installation path.
 - A signed release checks updates on launch; the user controls installation.

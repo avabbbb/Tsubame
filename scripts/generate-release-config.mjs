@@ -6,6 +6,18 @@ const confPath = path.join(root, "app", "src-tauri", "tauri.conf.json");
 const outPath = path.join(root, "app", "src-tauri", "tauri.release.conf.json");
 const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
 const version = config.version;
+const versions = { "app/src-tauri/tauri.conf.json": version };
+const cargo = fs.readFileSync(path.join(root, "app", "src-tauri", "Cargo.toml"), "utf8");
+versions["app/src-tauri/Cargo.toml"] = cargo.match(/^\[package\][^\[]{0,}?^version\s{0,}=\s{0,}"([^"]+)"/m)?.[1];
+versions["app/package.json"] = JSON.parse(
+  fs.readFileSync(path.join(root, "app", "package.json"), "utf8"),
+).version;
+if (Object.values(versions).some((v) => v !== version)) {
+  const found = Object.entries(versions)
+    .map(([file, v]) => file + "=" + (v ?? "(missing)"))
+    .join(", ");
+  throw new Error("Refusing release: versions differ: " + found);
+}
 const ref = process.env.GITHUB_REF_NAME || "";
 if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version) || ref !== `v${version}`) {
   throw new Error(`Refusing release: tag ${ref || "(unset)"} != app version v${version}`);

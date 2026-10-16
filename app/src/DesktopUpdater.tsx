@@ -13,6 +13,8 @@ type Props = { visible: boolean };
 export default function DesktopUpdater({ visible }: Props) {
   const candidate = useRef<Update | null>(null);
   const busy = useRef(false);
+  // busy (ref) guards re-entry synchronously; isBusy (state) re-renders the buttons.
+  const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState(
     UPDATES_ENABLED ? "Checking for updates…" : "Updates require an official signed release.",
   );
@@ -22,6 +24,7 @@ export default function DesktopUpdater({ visible }: Props) {
   const checkNow = useCallback(async () => {
     if (!UPDATES_ENABLED || busy.current) return;
     busy.current = true;
+    setIsBusy(true);
     setStatus("Checking for updates…");
     setPercent(null);
     try {
@@ -42,6 +45,7 @@ export default function DesktopUpdater({ visible }: Props) {
       setStatus(`Update check failed: ${String(error)}`);
     } finally {
       busy.current = false;
+      setIsBusy(false);
     }
   }, []);
 
@@ -59,6 +63,7 @@ export default function DesktopUpdater({ visible }: Props) {
     const update = candidate.current;
     if (!update || busy.current) return;
     busy.current = true;
+    setIsBusy(true);
     setStatus(`Downloading version ${update.version}…`);
     let bytesReceived = 0;
     let totalBytes: number | undefined;
@@ -82,6 +87,7 @@ export default function DesktopUpdater({ visible }: Props) {
       setStatus(`Update installation failed: ${String(error)}`);
     } finally {
       busy.current = false;
+      setIsBusy(false);
     }
   };
 
@@ -97,11 +103,11 @@ export default function DesktopUpdater({ visible }: Props) {
       <p className="inspector-help" aria-live="polite">{status}</p>
       {percent !== null && <progress value={percent} max={100} style={{ width: "100%" }} />}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        <button className="secondary" disabled={!UPDATES_ENABLED || busy.current} onClick={() => void checkNow()}>
+        <button className="secondary" disabled={!UPDATES_ENABLED || isBusy} onClick={() => void checkNow()}>
           Check now
         </button>
         {version && (
-          <button className="primary" disabled={busy.current} onClick={() => void installUpdate()}>
+          <button className="primary" disabled={isBusy} onClick={() => void installUpdate()}>
             Install {version}
           </button>
         )}
