@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
 members = ["app/src-tauri"]
+exclude = ["app/src-tauri/vendor"]
 
 [profile.release]
 lto = "thin"
+
+# tauri-plugin-updater 2.x requires zip ^4, and every zip 2.x-5.x release is yanked,
+# so a fresh resolve (no committed Cargo.lock, e.g. CI) fails. Vendored 2.14.0 from
+# crates.io with only the Windows zip dependency bumped to 9 (API used: ZipArchive::new,
+# extract, ZipError). Drop this once upstream releases an updater on a non-yanked zip.
+[patch.crates-io]
+tauri-plugin-updater = { path = "app/src-tauri/vendor/tauri-plugin-updater" }
