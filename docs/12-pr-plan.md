@@ -203,7 +203,7 @@ Scope:
 
 ---
 
-## PR #13 — $tsubame Skill, CLI and MCP
+## PR #13 — $yuzuki Skill, CLI and MCP
 
 Goal: let local agents operate the same Desktop without GUI automation.
 

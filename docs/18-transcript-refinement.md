@@ -115,7 +115,7 @@ Segments now persist `asr_confidence` (from the ASR result), `refine_confidence`
 | `list_glossary` / `save_glossary_term` / `delete_glossary_term` | glossary |
 | `apply_alignment_result` | validate and apply a `speech.align` result |
 
-These map one-to-one onto future `$tsubame` CLI/MCP operations (PR #13).
+These map one-to-one onto future `$yuzuki` CLI/MCP operations (PR #13).
 
 ## Deferred
 

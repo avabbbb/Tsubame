@@ -93,7 +93,7 @@ edit one Segment
 
 App-managed runtime/model packs with resumable verified installation.
 
-### PR #13 — $tsubame Skill + CLI/MCP
+### PR #13 — $yuzuki Skill + CLI/MCP
 
 Agent-operable control plane over the same Desktop operations.
 

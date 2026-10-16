@@ -117,4 +117,4 @@ CLI/MCP output should expose redacted provider state and secret references only.
 
 ## Rights
 
-Do not configure or generate an unauthorized real-person voice model. YUZUKI's name is a homage to Yuzuki YUZUKI and does not authorize use of her voice.
+Do not configure or generate an unauthorized real-person voice model. YUZUKI's name is a homage to voice actress Yuzuki Tsubame (柚木つばめ) and does not authorize use of her voice.
