@@ -1163,12 +1163,21 @@ pub async fn run_synthesis<A: TtsAdapter>(
     sink.progress("commit", 2, 3);
     let segment = {
         let guard = lock(db)?;
+        // Re-verify under the commit lock: a concurrent prune may have removed
+        // the asset since it was resolved (pruned files are deleted only under
+        // this lock).
+        if verified_asset(guard.connection(), store, &prepared.key)?.is_none() {
+            return Err(TtsError::new(
+                "asset_missing",
+                "the clip was removed by a concurrent prune before it was applied; retry",
+                true,
+            ));
+        }
         let segment = commit_segment(&guard, &prepared, expected_revision)?;
-        // Keep the take table in step with the PR #10 command (docs/20 § Takes).
+        // Keep the take table in step with the PR #10 command (docs/20 Takes).
         let pruned = crate::takes::record_and_prune(guard.connection(), &prepared, take)
             .map_err(TtsError::db)?;
-        drop(guard);
-        crate::takes::delete_files(store, &pruned.deleted_paths);
+        crate::takes::delete_files(guard.connection(), store, &pruned.deleted_paths);
         segment
     };
     sink.progress("done", 3, 3);

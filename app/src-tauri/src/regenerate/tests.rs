@@ -701,6 +701,91 @@ fn identical_audio_is_not_stored_or_listed_twice() {
 }
 
 #[test]
+fn identical_audio_of_the_active_take_clears_a_stale_dirty_tts() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let mock = deterministic();
+    regen_using(&fx, a, &mock);
+    // "Keep translation" leaves the clip flagged although its text is current.
+    fx.db
+        .lock()
+        .unwrap()
+        .connection()
+        .execute("UPDATE segments SET dirty_tts=1 WHERE id=?1", [a])
+        .unwrap();
+    let rev = segment(&fx, a).revision;
+    let again = regen_using(&fx, a, &mock);
+    assert!(!again.new_take);
+    assert_eq!(again.duplicate_of_take, Some(0));
+    let seg = segment(&fx, a);
+    assert!(!seg.dirty_tts, "identical audio proves the clip is current");
+    assert_eq!(seg.revision, rev + 1);
+    assert_eq!(again.segment.revision, seg.revision);
+    assert!(!again.segment.dirty_tts);
+    assert_eq!(take_rows(&fx, a).len(), 1);
+    assert_eq!(tts_files(&fx).len(), 1);
+}
+
+#[test]
+fn identical_audio_backfills_a_legacy_take_text() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let mock = deterministic();
+    regen_using(&fx, a, &mock);
+    fx.db
+        .lock()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tts_takes SET text='' WHERE segment_id=?1", [a])
+        .unwrap();
+    let again = regen_using(&fx, a, &mock);
+    assert_eq!(again.duplicate_of_take, Some(0));
+    let rows = take_rows(&fx, a);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text, segment(&fx, a).translated_text);
+}
+
+#[test]
+fn overwriting_a_take_index_releases_its_old_asset() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let old = synth(&fx, a, 0).asset;
+    set_translation(&fx, a, "晚安，好梦。");
+    let new = synth(&fx, a, 0).asset;
+    assert_ne!(old.key, new.key);
+    let rows = take_rows(&fx, a);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].tts_asset_key, new.key);
+    let guard = fx.db.lock().unwrap();
+    let conn = guard.connection();
+    assert!(tts::get_asset(conn, &old.key).unwrap().is_none());
+    assert!(!fx.store.absolute(&old.path).unwrap().exists());
+    assert!(tts::get_asset(conn, &new.key).unwrap().is_some());
+    assert!(fx.store.absolute(&new.path).unwrap().exists());
+}
+
+#[test]
+fn delete_files_keeps_a_path_an_asset_row_uses_again() {
+    let fx = fixture(&[(1_000, 2_000, "晚安。")], 6);
+    let a = fx.ids[0];
+    let asset = synth(&fx, a, 0).asset;
+    let file = fx.store.absolute(&asset.path).unwrap();
+    let guard = fx.db.lock().unwrap();
+    let conn = guard.connection();
+    // Another job stored the same content-addressed file again: keep it.
+    takes::delete_files(conn, &fx.store, std::slice::from_ref(&asset.path));
+    assert!(file.exists());
+    conn.execute("UPDATE segments SET tts_asset_key=NULL WHERE id=?1", [a])
+        .unwrap();
+    conn.execute("DELETE FROM tts_takes WHERE segment_id=?1", [a])
+        .unwrap();
+    conn.execute("DELETE FROM tts_assets WHERE key=?1", [&asset.key])
+        .unwrap();
+    takes::delete_files(conn, &fx.store, std::slice::from_ref(&asset.path));
+    assert!(!file.exists());
+}
+
+#[test]
 fn identical_audio_of_another_sentence_shares_its_asset() {
     let fx = fixture(&[(1_000, 2_000, "同じ"), (5_000, 6_000, "別")], 10);
     let (a, b) = (fx.ids[0], fx.ids[1]);

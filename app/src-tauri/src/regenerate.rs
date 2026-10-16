@@ -243,6 +243,19 @@ fn revision_conflict(expected: i64, actual: i64) -> TtsError {
     )
 }
 
+/// Fills an unknown (legacy, empty) take text once identical audio proved what
+/// the take speaks.
+fn backfill_take_text(conn: &Connection, row: &takes::TakeRow, text: &str) -> Result<(), TtsError> {
+    if row.text.is_empty() {
+        conn.execute(
+            "UPDATE tts_takes SET text=?1 WHERE segment_id=?2 AND take_index=?3 AND text=''",
+            params![text, row.segment_id, row.take_index],
+        )
+        .map_err(dberr)?;
+    }
+    Ok(())
+}
+
 /// One transaction: point the Segment at the new take (revision-checked),
 /// record the take, prune old takes, replan downstream and persist pushed flags.
 ///
@@ -284,10 +297,27 @@ pub fn commit_regenerated(
     let duplicate = take_with_sha(conn, segment_id, &asset.sha256)?;
 
     let (active_key, take_index, new_take, prune) = match &duplicate {
-        // Same audio as the active take: nothing changes.
+        // Same audio as the active take: the clip provably speaks the current
+        // text, so only a stale flag (and an unknown take text) is repaired.
         Some(row) if previous_key.as_deref() == Some(row.tts_asset_key.as_str()) => {
-            let segment = current.clone();
+            backfill_take_text(conn, row, &prepared.request.text)?;
+            if current.dirty_tts {
+                let changed = conn
+                    .execute(
+                        "UPDATE segments SET dirty_tts=0, revision=revision+1
+                          WHERE id=?1 AND revision=?2",
+                        params![segment_id, expected_revision],
+                    )
+                    .map_err(dberr)?;
+                if changed == 0 {
+                    return Err(tts::conflict_or_missing(db, segment_id));
+                }
+            }
             tx.commit().map_err(dberr)?;
+            let segment = db
+                .get_segment(segment_id)
+                .map_err(dberr)?
+                .ok_or_else(|| not_found("segment not found"))?;
             return Ok(Committed {
                 segment,
                 previous_key,
@@ -302,7 +332,9 @@ pub fn commit_regenerated(
         }
         // Same audio as an older take: that take becomes active again.
         Some(row) => {
-            let dirty_tts = row.text.is_empty() || row.text != prepared.request.text;
+            // Identical audio proves the take speaks the current text.
+            backfill_take_text(conn, row, &prepared.request.text)?;
+            let dirty_tts = false;
             let changed = conn
                 .execute(
                     "UPDATE segments
@@ -332,8 +364,8 @@ pub fn commit_regenerated(
             let mut prepared = prepared.clone();
             prepared.key = asset.key.clone();
             tts::commit_segment(db, &prepared, expected_revision)?;
-            takes::record_take(conn, &prepared, take).map_err(dberr)?;
-            let prune = takes::prune(conn, segment_id).map_err(dberr)?;
+            let mut prune = takes::record_take(conn, &prepared, take).map_err(dberr)?;
+            prune.absorb(takes::prune(conn, segment_id).map_err(dberr)?);
             (asset.key.clone(), i64::from(take), true, prune)
         }
     };
@@ -834,16 +866,28 @@ pub fn run_regenerate<A: TtsAdapter>(
     tts::check_cancelled(&sink)?;
     let committed = {
         let guard = tts::lock(db)?;
-        commit_regenerated(
+        // The asset was resolved before synthesis; another Segment's prune may
+        // have removed it since. Re-verify under the commit lock (pruned files
+        // are deleted only under this lock too).
+        if tts::verified_asset(guard.connection(), store, &asset.key)?.is_none() {
+            return Err(TtsError::new(
+                "asset_missing",
+                "the clip was removed by a concurrent prune before it was applied; retry",
+                true,
+            )
+            .into());
+        }
+        let committed = commit_regenerated(
             &guard,
             &prepared,
             take,
             &asset,
             input.expected_revision,
             input.generation,
-        )?
+        )?;
+        takes::delete_files(guard.connection(), store, &committed.prune.deleted_paths);
+        committed
     };
-    takes::delete_files(store, &committed.prune.deleted_paths);
 
     // Stages `spatialize` + `replan`.
     check_job_cancelled(job)?;

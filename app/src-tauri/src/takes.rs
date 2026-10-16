@@ -200,12 +200,21 @@ pub fn next_take_index(conn: &Connection, segment_id: i64) -> rusqlite::Result<u
     Ok(u32::try_from(next.max(0)).unwrap_or(u32::MAX))
 }
 
-/// Inserts (or replaces) the take row of a committed synthesis.
+/// Inserts (or replaces) the take row of a committed synthesis. When the row
+/// already existed with another asset key and nothing references that key any
+/// more, its tts_assets row is deleted and returned for file removal.
 pub fn record_take(
     conn: &Connection,
     prepared: &PreparedSynthesis,
     take: u32,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<PruneResult> {
+    let replaced: Option<String> = conn
+        .query_row(
+            "SELECT tts_asset_key FROM tts_takes WHERE segment_id=?1 AND take_index=?2",
+            params![prepared.segment.id, take],
+            |row| row.get(0),
+        )
+        .optional()?;
     conn.execute(
         "INSERT INTO tts_takes(segment_id,take_index,tts_asset_key,text,voice_profile_id)
          VALUES(?1,?2,?3,?4,?5)
@@ -220,7 +229,11 @@ pub fn record_take(
             prepared.voice_profile_id
         ],
     )?;
-    Ok(())
+    let mut result = PruneResult::default();
+    if let Some(key) = replaced.filter(|key| key != &prepared.key) {
+        collect_unreferenced(conn, key, &mut result)?;
+    }
+    Ok(result)
 }
 
 /// True when any take row or any Segment still points at `key`.
@@ -272,16 +285,36 @@ pub fn prune(conn: &Connection, segment_id: i64) -> rusqlite::Result<PruneResult
         }
     }
     for key in candidates {
-        if key_is_referenced(conn, &key)? {
-            continue;
-        }
-        if let Some(asset) = tts::get_asset(conn, &key)? {
-            conn.execute("DELETE FROM tts_assets WHERE key=?1", [&key])?;
-            result.deleted_paths.push(asset.path);
-            result.deleted_assets.push(key);
-        }
+        collect_unreferenced(conn, key, &mut result)?;
     }
     Ok(result)
+}
+
+/// Deletes the tts_assets row of key when no take row and no Segment
+/// references it any more, recording it for file removal.
+fn collect_unreferenced(
+    conn: &Connection,
+    key: String,
+    result: &mut PruneResult,
+) -> rusqlite::Result<()> {
+    if key_is_referenced(conn, &key)? {
+        return Ok(());
+    }
+    if let Some(asset) = tts::get_asset(conn, &key)? {
+        conn.execute("DELETE FROM tts_assets WHERE key=?1", [&key])?;
+        result.deleted_paths.push(asset.path);
+        result.deleted_assets.push(key);
+    }
+    Ok(())
+}
+
+impl PruneResult {
+    /// Appends another result (record_take's replaced asset plus prune).
+    pub fn absorb(&mut self, other: PruneResult) {
+        self.pruned_takes.extend(other.pruned_takes);
+        self.deleted_assets.extend(other.deleted_assets);
+        self.deleted_paths.extend(other.deleted_paths);
+    }
 }
 
 /// `record_take` + `prune` (the `synthesize_segment` path).
@@ -290,14 +323,28 @@ pub fn record_and_prune(
     prepared: &PreparedSynthesis,
     take: u32,
 ) -> rusqlite::Result<PruneResult> {
-    record_take(conn, prepared, take)?;
-    prune(conn, prepared.segment.id)
+    let mut result = record_take(conn, prepared, take)?;
+    result.absorb(prune(conn, prepared.segment.id)?);
+    Ok(result)
 }
 
-/// Removes pruned asset files. Missing files are ignored (best effort: the rows
-/// are already gone, so nothing can resolve them).
-pub fn delete_files(store: &AssetStore, relative_paths: &[String]) {
+/// Removes pruned asset files. Call it while still holding the media DB lock
+/// that committed the prune: a file is kept when a tts_assets row points at its
+/// path again (another job stored the same content-addressed audio meanwhile),
+/// and commits re-verify their asset under the same lock. Missing files are
+/// ignored.
+pub fn delete_files(conn: &Connection, store: &AssetStore, relative_paths: &[String]) {
     for relative in relative_paths {
+        let reused = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tts_assets WHERE path=?1)",
+                [relative],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true);
+        if reused {
+            continue;
+        }
         if let Ok(path) = store.absolute(relative) {
             let _ = std::fs::remove_file(path);
         }
