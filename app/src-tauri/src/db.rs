@@ -101,8 +101,10 @@ impl MediaDb {
 
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        // JobStore writes progress on its own connection; WAL + busy_timeout
-        // keep playback/segment writes from failing with SQLITE_BUSY.
+        // The jobs store keeps its own connection to this file and writes
+        // progress while commands write product rows: WAL keeps readers off the
+        // writer, and the busy timeout waits out writer/writer overlap instead
+        // of failing a commit with SQLITE_BUSY.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         conn.execute_batch(
@@ -1636,5 +1638,25 @@ mod tests {
         drop(db);
         let _ = std::fs::remove_file(&path);
         Ok(())
+    }
+
+    #[test]
+    fn open_uses_wal_and_busy_timeout_for_shared_connections() {
+        let dir = std::env::temp_dir().join(format!("yuzuki-db-wal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let db = MediaDb::open(&dir.join("t.db")).unwrap();
+            let mode: String = db
+                .connection()
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode.to_ascii_lowercase(), "wal");
+            let timeout: i64 = db
+                .connection()
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(timeout, 5000);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -246,12 +246,15 @@ impl ProgressSink for NoopSink {
 
 pub type JobListener = Arc<dyn Fn(&Job) + Send + Sync>;
 pub type JobRunner = Arc<dyn Fn(&JobHandle) -> Result<Value, JobError> + Send + Sync>;
+/// Runs after a runner panics, before the job is failed (see set_panic_recovery).
+pub type PanicRecovery = Arc<dyn Fn() + Send + Sync>;
 
 pub struct JobStore {
     conn: Mutex<Connection>,
     listener: RwLock<Option<JobListener>>,
     runners: RwLock<HashMap<String, JobRunner>>,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    panic_recovery: RwLock<Option<PanicRecovery>>,
 }
 
 fn sql_err(error: rusqlite::Error) -> String {
@@ -289,6 +292,7 @@ impl JobStore {
             listener: RwLock::new(None),
             runners: RwLock::new(HashMap::new()),
             active: Mutex::new(HashMap::new()),
+            panic_recovery: RwLock::new(None),
         }))
     }
 
@@ -302,6 +306,15 @@ impl JobStore {
     pub fn register_runner(&self, kind: &str, runner: JobRunner) {
         if let Ok(mut runners) = self.runners.write() {
             runners.insert(kind.to_string(), runner);
+        }
+    }
+
+    /// Called after a runner panics and before its job is failed, so shared
+    /// state the runner held (the product DB mutex) can be un-poisoned instead
+    /// of failing every later command until restart.
+    pub fn set_panic_recovery(&self, recovery: PanicRecovery) {
+        if let Ok(mut slot) = self.panic_recovery.write() {
+            *slot = Some(recovery);
         }
     }
 
@@ -461,6 +474,14 @@ impl JobStore {
                     .map(|s| s.to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "runner panicked".to_string());
+                let recovery = self
+                    .panic_recovery
+                    .read()
+                    .ok()
+                    .and_then(|slot| slot.clone());
+                if let Some(recovery) = recovery {
+                    let _ = catch_unwind(AssertUnwindSafe(|| recovery()));
+                }
                 handle.fail("panic", false, &message)?;
             }
         }
@@ -1284,5 +1305,26 @@ mod tests {
         store.cancel(&slow.id).unwrap();
         let slow = wait_terminal(&store, &slow.id);
         assert_eq!(slow.status, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn runner_panic_runs_recovery_and_unpoisons_shared_state() {
+        let store = store();
+        let shared = Arc::new(Mutex::new(0u32));
+        let held = Arc::clone(&shared);
+        store.register_runner(
+            "poisons",
+            Arc::new(move |_: &JobHandle| {
+                let _guard = held.lock().unwrap();
+                panic!("kaput while locked");
+            }),
+        );
+        let cleared = Arc::clone(&shared);
+        store.set_panic_recovery(Arc::new(move || cleared.clear_poison()));
+        let job = store.submit(NewJob::new("poisons", 1)).unwrap();
+        let job = wait_terminal(&store, &job.id);
+        assert_eq!(job.error_code.as_deref(), Some("panic"));
+        assert!(!shared.is_poisoned());
+        assert!(shared.lock().is_ok());
     }
 }

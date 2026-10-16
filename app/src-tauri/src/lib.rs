@@ -1523,6 +1523,16 @@ pub fn run() {
             // (`retry_job` re-runs a job through these).
             let store = jobs::install(app, &dir.join("tsubame.db"))?;
             let handle = app.handle().clone();
+            // A runner that panics while holding the product DB lock would poison
+            // it and fail every later command until restart. Its rusqlite
+            // transaction has already rolled back during unwind, so clearing the
+            // poison is safe.
+            let recovery_app = handle.clone();
+            store.set_panic_recovery(Arc::new(move || {
+                if let Some(state) = recovery_app.try_state::<AppState>() {
+                    state.db.clear_poison();
+                }
+            }));
             store.register_runner(ASR_JOB, asr_runner(handle.clone()));
             store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
             store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
