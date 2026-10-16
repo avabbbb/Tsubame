@@ -1541,7 +1541,9 @@ fn spatial_fixture(python: String) -> (Fixture, WorkerSpec) {
     for id in &fx.ids {
         synth(&fx, *id, 0);
     }
-    let mut spec = WorkerSpec::python(python, spatial::worker_script());
+    let script = spatial::worker_script(&spatial::WorkerRoots::default())
+        .expect("spatial worker script (debug checkout fallback)");
+    let mut spec = WorkerSpec::python(python, script);
     spec.hello_timeout = std::time::Duration::from_secs(30);
     (fx, spec)
 }

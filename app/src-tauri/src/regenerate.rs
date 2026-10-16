@@ -523,24 +523,36 @@ fn program_on_path(program: &Path) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
-/// The spatial worker is available when its Python program resolves and its
-/// script exists (`TSUBAME_PYTHON`, `TSUBAME_SPATIAL_WORKER`; docs/19).
-pub fn spatial_availability() -> SpatialAvailability {
-    let program = spatial::python_program();
-    let script = spatial::worker_script();
+/// The spatial worker is available when its Python program resolves (the
+/// dub-spatial runtime pack, or TSUBAME_PYTHON in development) and its
+/// bundled script exists (TSUBAME_SPATIAL_WORKER overrides; docs/19). The
+/// system python3 is never used.
+pub fn spatial_availability(roots: &spatial::WorkerRoots) -> SpatialAvailability {
+    let Some(program) = spatial::python_program(roots) else {
+        return SpatialAvailability::Unavailable(format!(
+            "spatial_worker_unavailable: runtime_missing: the {} runtime pack is not installed",
+            spatial::SPATIAL_RUNTIME_ID
+        ));
+    };
     if !program_on_path(&program) {
         return SpatialAvailability::Unavailable(format!(
             "spatial_worker_unavailable: python program {} not found",
             program.display()
         ));
     }
+    let Some(script) = spatial::worker_script(roots) else {
+        return SpatialAvailability::Unavailable(
+            "spatial_worker_unavailable: runtime_missing: the bundled spatial worker script was not found"
+                .into(),
+        );
+    };
     if !script.is_file() {
         return SpatialAvailability::Unavailable(format!(
             "spatial_worker_unavailable: worker script {} not found",
             script.display()
         ));
     }
-    SpatialAvailability::Available(spatial::worker_spec())
+    SpatialAvailability::Available(WorkerSpec::python(program, script))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -919,7 +931,7 @@ pub fn regenerate_runner(app: tauri::AppHandle) -> JobRunner {
             &store,
             &adapter,
             &profile,
-            &spatial_availability(),
+            &spatial_availability(&spatial::WorkerRoots::from_app(&app)),
             job,
             &input,
         )?;

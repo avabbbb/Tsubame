@@ -522,7 +522,9 @@ fn worker_analyzes_renders_and_caches() {
         .unwrap();
     let db = Mutex::new(db);
 
-    let mut spec = WorkerSpec::python(python, worker_script());
+    let script = worker_script(&WorkerRoots::default())
+        .expect("spatial worker script (debug checkout fallback)");
+    let mut spec = WorkerSpec::python(python, script);
     spec.hello_timeout = std::time::Duration::from_secs(30);
     let jobs = crate::jobs::JobStore::open_in_memory().unwrap();
     let run = |mode: SpatialMode| {

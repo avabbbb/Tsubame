@@ -50,7 +50,9 @@
     },
     "icon": [],
     "resources": {
-      "../../workers/asr/": "workers/asr/"
+      "../../workers/asr/": "workers/asr/",
+      "../../workers/dubber/spatial/": "workers/dubber/spatial/",
+      "../../workers/dubber/tsubame_worker/": "workers/dubber/tsubame_worker/"
     }
   }
 }

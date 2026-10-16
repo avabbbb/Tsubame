@@ -479,29 +479,103 @@ pub fn apply_spatial_renders(
 
 // ----- worker -----
 
-/// Python interpreter: `TSUBAME_PYTHON`, else `python3` on `PATH`.
-pub fn python_program() -> PathBuf {
-    match std::env::var("TSUBAME_PYTHON") {
-        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
-        _ => PathBuf::from("python3"),
-    }
+/// Runtime pack that supplies the spatial worker's Python interpreter and numpy,
+/// installed under <app data>/runtimes/<id>/current/ (docs/06-runtime-bootstrap.md).
+pub const SPATIAL_RUNTIME_ID: &str = "dub-spatial";
+/// Worker script, relative to the bundled resource directory (and, in debug
+/// builds only, to the repository root).
+pub const WORKER_RESOURCE: &str = "workers/dubber/spatial/worker.py";
+
+/// Where the spatial worker and its runtime are looked up. The system python3
+/// is never used, and release builds never look at the build machine's checkout.
+#[derive(Debug, Clone, Default)]
+pub struct WorkerRoots {
+    /// Tauri resource directory holding the bundled workers/dubber/ tree.
+    pub resource_dir: Option<PathBuf>,
+    /// App data directory holding runtimes/<id>/current/.
+    pub app_data_dir: Option<PathBuf>,
 }
 
-/// Worker script: `TSUBAME_SPATIAL_WORKER`, else the repo checkout
-/// (`workers/dubber/spatial/worker.py` relative to `CARGO_MANIFEST_DIR`). This is
-/// a dev-time path: packaging the worker and its runtime is the PR #12 runtime
-/// bootstrap's job.
-pub fn worker_script() -> PathBuf {
-    match std::env::var("TSUBAME_SPATIAL_WORKER") {
-        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
-        _ => {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/dubber/spatial/worker.py")
+impl WorkerRoots {
+    pub fn from_app(app: &tauri::AppHandle) -> Self {
+        use tauri::Manager;
+        Self {
+            resource_dir: app.path().resource_dir().ok(),
+            app_data_dir: app.path().app_data_dir().ok(),
         }
     }
 }
 
-pub fn worker_spec() -> WorkerSpec {
-    WorkerSpec::python(python_program(), worker_script())
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+/// Interpreter inside an installed runtime pack directory.
+fn runtime_python(pack_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        pack_dir.join("python.exe")
+    } else {
+        pack_dir.join("bin").join("python3")
+    }
+}
+
+/// Python interpreter: TSUBAME_PYTHON (development override), else the
+/// dub-spatial runtime pack's interpreter when it is installed. None when
+/// neither exists; there is no fallback to python3 on PATH.
+pub fn python_program(roots: &WorkerRoots) -> Option<PathBuf> {
+    if let Some(program) = env_path("TSUBAME_PYTHON") {
+        return Some(program);
+    }
+    let pack = roots
+        .app_data_dir
+        .as_ref()?
+        .join("runtimes")
+        .join(SPATIAL_RUNTIME_ID)
+        .join("current");
+    Some(runtime_python(&pack)).filter(|program| program.is_file())
+}
+
+/// Worker script: TSUBAME_SPATIAL_WORKER, else the copy bundled in the app's
+/// resources; debug builds (dev runs and tests) also fall back to the checkout.
+pub fn worker_script(roots: &WorkerRoots) -> Option<PathBuf> {
+    if let Some(script) = env_path("TSUBAME_SPATIAL_WORKER") {
+        return Some(script);
+    }
+    roots
+        .resource_dir
+        .as_ref()
+        .map(|dir| dir.join(WORKER_RESOURCE))
+        .filter(|script| script.is_file())
+        .or_else(dev_worker_script)
+}
+
+#[cfg(debug_assertions)]
+fn dev_worker_script() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(WORKER_RESOURCE),
+    )
+    .filter(|script| script.is_file())
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_worker_script() -> Option<PathBuf> {
+    None
+}
+
+/// Spec for the spatial worker, or a runtime_missing reason.
+pub fn worker_spec(roots: &WorkerRoots) -> Result<WorkerSpec, String> {
+    let program = python_program(roots).ok_or_else(|| {
+        format!("runtime_missing: the {SPATIAL_RUNTIME_ID} runtime pack is not installed")
+    })?;
+    let script = worker_script(roots).ok_or_else(|| {
+        "runtime_missing: the bundled spatial worker script was not found".to_string()
+    })?;
+    Ok(WorkerSpec::python(program, script))
 }
 
 // ----- orchestration -----
@@ -865,7 +939,8 @@ pub fn spatial_runner(app: tauri::AppHandle) -> JobRunner {
             .map_err(|e| invalid(format!("invalid spatial job input: {e}")))?;
         let state = app.state::<crate::AppState>();
         let store = tts::asset_store(&app).map_err(io_err)?;
-        let spec = worker_spec();
+        let spec = worker_spec(&WorkerRoots::from_app(&app))
+            .map_err(|reason| JobError::new("runtime_missing", false, reason))?;
         let value = match input {
             SpatialJobInput::Analyze { media_id } => {
                 serde_json::to_value(ensure_analysis(&state.db, &store, &spec, job, media_id)?)

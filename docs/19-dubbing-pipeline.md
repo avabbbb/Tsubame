@@ -194,9 +194,15 @@ Two layers, ported from Dubber `spatial_cues.py` / `spatial_rtf.py`:
 - Outputs are promoted into the asset store at `spatial/tracks/<key[0..2]>/<key>.npz`
   (+ `.json` summary) and `spatial/renders/<key[0..2]>/<key>.wav` and recorded in
   `spatial_assets`; a verified cache row (row + file + sha256) skips the worker.
-- Worker process: `TSUBAME_PYTHON` or `python3`; script `TSUBAME_SPATIAL_WORKER` or
-  `workers/dubber/spatial/worker.py` relative to `CARGO_MANIFEST_DIR` (dev-time path;
-  packaging belongs to the runtime bootstrap, PR plan #12).
+- Worker process: the Python interpreter of the app-managed dub-spatial runtime pack
+  (<app data>/runtimes/dub-spatial/current/, python.exe on Windows, bin/python3
+  elsewhere; TSUBAME_PYTHON overrides in development). The system python3 is never
+  used. The script is the copy bundled as an app resource
+  (workers/dubber/spatial/worker.py, with the tsubame_worker SDK beside it;
+  TSUBAME_SPATIAL_WORKER overrides); only debug builds fall back to the repository
+  checkout. When the runtime or script is missing, spatial jobs fail with
+  runtime_missing and the regenerate loop skips the stage with reason
+  spatial_worker_unavailable: runtime_missing: ….
 - Mix lookup: `MixOptions.use_spatial` (default on) with `spatial_mode` (default
   `source_trajectory`). For each clip the mixer computes the clip's *current* render key
   (its TTS asset key, the media's current track key, the mode, its window, default
