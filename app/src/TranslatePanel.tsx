@@ -8,6 +8,7 @@ import type {
   TranslateOutcome,
   TranslateTargetLanguage,
 } from "./types";
+import { userMessage } from "./errors";
 
 type Props = {
   media: MediaItem;
@@ -73,7 +74,7 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
 
   useEffect(() => {
     setMessage("");
-    void load().catch((error) => setMessage(String(error)));
+    void load().catch((error) => setMessage(userMessage(error)));
   }, [load, media.id]);
 
   const run = async () => {
@@ -97,7 +98,7 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
           : summarize(outcome),
       );
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
       // Batches applied before a cancel or failure are kept; show them.
       try {
         onSegments(await invoke<Segment[]>("get_segments", { mediaId: media.id }));
@@ -115,7 +116,7 @@ export default function TranslatePanel({ media, segments, onSegments }: Props) {
       await cancel(activeJob.id);
       setMessage("Stopping after the current batch…");
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 

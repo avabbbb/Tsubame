@@ -220,8 +220,7 @@ fn ms_to_frames(ms: i64, rate: u32) -> u64 {
 fn open_wav(path: &Path) -> Result<WavReader<BufReader<fs::File>>, String> {
     WavReader::open(path).map_err(|e| {
         format!(
-            "unsupported_source_format: {} could not be read as WAV ({e}); \
-             this build mixes WAV only",
+            "unsupported_source_format: {} could not be read as PCM WAV ({e})",
             path.display()
         )
     })
@@ -572,7 +571,7 @@ fn analyse_source<S: Pcm, R: Read>(
             acc = 0.0;
             in_frame = 0;
         }
-        if frames % PROGRESS_EVERY_FRAMES == 0 {
+        if frames.is_multiple_of(PROGRESS_EVERY_FRAMES) {
             if sink.is_cancelled() {
                 return Err(ERR_CANCELLED.to_string());
             }
@@ -940,7 +939,18 @@ fn render_to(
     sink: &dyn ProgressSink,
     window_ms: Option<(i64, i64)>,
 ) -> Result<MixReport, String> {
-    let mut reader = open_wav(original)?;
+    // A non-WAV (or non-PCM WAV) original is decoded once into the decode
+    // cache at its own rate and channel layout; WAV originals are read as-is.
+    let source =
+        crate::media_decode::ensure_wav(original, crate::media_decode::DecodeTarget::NATIVE, sink)
+            .map_err(|e| {
+                if e.is_cancelled() {
+                    ERR_CANCELLED.to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
+    let mut reader = open_wav(&source.path)?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
     let original_frames = reader.duration() as u64;
@@ -1708,6 +1718,11 @@ mod tests {
     #[test]
     fn non_wav_and_duration_mismatch_fail_loudly() {
         let dir = TempDir::new();
+        // Non-WAV originals now decode through the cache; without a cache root the
+        // probe never runs and the failure would be decode_cache_unavailable.
+        crate::media_decode::init_cache_root(
+            std::env::temp_dir().join("tsubame-test-decode-cache"),
+        );
         let original = dir.path("orig.mp3");
         fs::write(&original, b"ID3 not a wav").unwrap();
         let error = render(

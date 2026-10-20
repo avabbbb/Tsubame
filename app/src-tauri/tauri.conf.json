@@ -21,18 +21,36 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "**"
+          "$APPDATA/**",
+          "$APPLOCALDATA/**",
+          "$APPCACHE/**"
         ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": []
+    "targets": [
+      "nsis",
+      "dmg"
+    ],
+    "publisher": "YUZUKI",
+    "shortDescription": "Local-first ASMR player and sentence-level AI dubbing workbench",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "icon": [],
+    "resources": {
+      "../../workers/asr/": "workers/asr/"
+    }
   }
 }

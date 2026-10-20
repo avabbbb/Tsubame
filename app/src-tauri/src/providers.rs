@@ -171,8 +171,9 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
 
     let faster_ready = env::var("TSUBAME_FASTER_WHISPER_PYTHON").is_ok();
     let funasr_ready = env::var("TSUBAME_FUNASR_PYTHON").is_ok();
-    let whisper_ready = env::var("TSUBAME_WHISPER_CPP_BIN").is_ok()
-        && env::var("TSUBAME_WHISPER_CPP_MODEL").is_ok();
+    // docs/06: active runtime + model pack; TSUBAME_WHISPER_CPP_* are explicit
+    // developer overrides resolved (and reported) by runtime::resolve_whisper.
+    let whisper_ready = crate::runtime::resolve_whisper("").is_ok();
     let apple_supported = cfg!(target_os = "macos");
     let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
 
@@ -291,7 +292,11 @@ pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
             ("small", "Whisper Small"),
         ],
         "local.sensevoice" => vec![("iic/SenseVoiceSmall", "SenseVoice Small")],
-        "local.whisper-cpp" => vec![("runtime-model", "Configured whisper.cpp model")],
+        "local.whisper-cpp" => vec![
+            ("runtime-model", "Installed whisper.cpp model"),
+            ("base", "whisper.cpp base (ggml-base.bin)"),
+            ("small", "whisper.cpp small (ggml-small.bin)"),
+        ],
         "local.apple-speech" => vec![("speech-transcriber", "Apple SpeechTranscriber")],
         _ => vec![],
     };
@@ -419,6 +424,37 @@ fn derive_model_list_url(provider: &ProviderConfig) -> Result<String, String> {
     Ok(format!("{base}/models"))
 }
 
+/// Refuses to send a bearer API key over cleartext http unless the host is
+/// loopback (127.0.0.1, ::1, localhost). Applies to both endpoint URLs.
+pub fn validate_transport(
+    base_url: &str,
+    model_list_url: &str,
+    auth_mode: &str,
+) -> Result<(), String> {
+    if auth_mode != "bearer" {
+        return Ok(());
+    }
+    for (label, url) in [("base_url", base_url), ("model_list_url", model_list_url)] {
+        let url = url.trim();
+        if url.is_empty() {
+            continue;
+        }
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| format!("provider {label} is not a valid URL: {e}"))?;
+        match parsed.scheme() {
+            "https" => {}
+            "http" if crate::tts::is_loopback_url(url) => {}
+            "http" => {
+                return Err(format!(
+                    "provider {label} uses plain http with API-key auth; use https or a loopback host (127.0.0.1, ::1, localhost)"
+                ))
+            }
+            other => return Err(format!("provider {label} has unsupported URL scheme '{other}'")),
+        }
+    }
+    Ok(())
+}
+
 fn model_array(value: &Value) -> Option<&Vec<Value>> {
     if let Some(data) = value.get("data").and_then(Value::as_array) {
         return Some(data);
@@ -522,7 +558,7 @@ pub fn parse_model_response(value: &Value) -> Result<Vec<DiscoveredModel>, Strin
 fn client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("Tsubame/0.1 ProviderRegistry")
+        .user_agent(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -531,6 +567,11 @@ async fn model_request(
     provider: &ProviderConfig,
     secret: Option<&str>,
 ) -> Result<(StatusCode, Value), String> {
+    validate_transport(
+        &provider.base_url,
+        &provider.model_list_url,
+        &provider.auth_mode,
+    )?;
     let url = derive_model_list_url(provider)?;
     let mut request = client()?.get(url);
 
@@ -596,6 +637,38 @@ pub async fn test_provider(provider: &ProviderConfig, secret: Option<&str>) -> P
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const HTTP: &str = "http:";
+    const HTTPS: &str = "https:";
+
+    #[test]
+    fn bearer_over_loopback_http_is_allowed() {
+        for host in ["127.0.0.1:1234", "localhost:1234", "[::1]:1234"] {
+            let url = format!("{HTTP}//{host}/v1");
+            assert!(validate_transport(&url, "", "bearer").is_ok(), "{url}");
+        }
+    }
+
+    #[test]
+    fn bearer_over_remote_http_is_rejected() {
+        let remote = format!("{HTTP}//models.example.test/v1");
+        let error = validate_transport(&remote, "", "bearer").unwrap_err();
+        assert!(error.contains("plain http"), "{error}");
+        let secure = format!("{HTTPS}//models.example.test/v1");
+        assert!(validate_transport(&secure, &format!("{remote}/models"), "bearer").is_err());
+    }
+
+    #[test]
+    fn bearer_over_https_is_allowed() {
+        let secure = format!("{HTTPS}//models.example.test/v1");
+        assert!(validate_transport(&secure, &format!("{secure}/models"), "bearer").is_ok());
+    }
+
+    #[test]
+    fn unauthenticated_remote_http_is_allowed() {
+        let lan = format!("{HTTP}//10.0.0.5:8000/v1");
+        assert!(validate_transport(&lan, "", "none").is_ok());
+    }
 
     #[test]
     fn parses_openai_model_list() {

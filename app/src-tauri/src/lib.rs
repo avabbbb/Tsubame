@@ -2,11 +2,13 @@ mod alignment;
 mod asr;
 mod db;
 mod jobs; // PR #10: jobs table + runner
+mod media_decode; // non-WAV source decode (symphonia) + decode cache
 mod mix;
 mod placement;
 mod providers;
 mod refine;
 mod regenerate; // PR plan #11: single-sentence regenerate loop
+mod runtime; // docs/06: runtime/model packs, install jobs, doctor
 mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
 mod takes; // PR plan #11: per-Segment TTS takes
@@ -31,7 +33,7 @@ use refine::{GlossaryTerm, RefineSegmentInput, MAX_BATCH_SEGMENTS};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::Path,
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use subtitle::{SubtitleCue, SubtitleFormat};
@@ -39,6 +41,39 @@ use tauri::{AppHandle, Manager, State};
 
 struct AppState {
     db: Mutex<MediaDb>,
+}
+
+/// Extensions accepted by the media picker in App.tsx.
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp3", "m4a", "wav", "flac", "ogg", "opus", "aac", "m4b", "mp4", "m4v", "webm", "mkv", "mov",
+    "avi",
+];
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt"];
+
+/// Validates a webview-supplied path: absolute, no .., allowlisted extension.
+fn validate_ipc_path(path: &str, allowed: &[&str], kind: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err(format!("{kind} path must be absolute: {path}"));
+    }
+    if candidate
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("{kind} path must not contain '..': {path}"));
+    }
+    let extension = candidate
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !allowed.contains(&extension.as_str()) {
+        return Err(format!(
+            "unsupported {kind} file extension '.{extension}' (allowed: {})",
+            allowed.join(", ")
+        ));
+    }
+    Ok(candidate.to_path_buf())
 }
 
 #[tauri::command]
@@ -52,13 +87,21 @@ fn list_media(state: State<AppState>) -> Result<Vec<MediaItem>, String> {
 }
 
 #[tauri::command]
-fn import_media(path: String, state: State<AppState>) -> Result<MediaItem, String> {
-    state
+fn import_media(path: String, app: AppHandle, state: State<AppState>) -> Result<MediaItem, String> {
+    let validated = validate_ipc_path(&path, MEDIA_EXTENSIONS, "media")?;
+    if !validated.is_file() {
+        return Err(format!("media file does not exist: {path}"));
+    }
+    let item = state
         .db
         .lock()
         .map_err(|e| e.to_string())?
         .import_media(&path)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    app.asset_protocol_scope()
+        .allow_file(&item.path)
+        .map_err(|e| format!("failed to allow playback of {}: {e}", item.path))?;
+    Ok(item)
 }
 
 #[tauri::command]
@@ -143,9 +186,9 @@ fn import_subtitles(
     path: String,
     state: State<AppState>,
 ) -> Result<Vec<Segment>, String> {
-    let path_ref = Path::new(&path);
-    let format = SubtitleFormat::from_path(path_ref)?;
-    let content = fs::read_to_string(path_ref).map_err(|e| e.to_string())?;
+    let path_ref = validate_ipc_path(&path, SUBTITLE_EXTENSIONS, "subtitle")?;
+    let format = SubtitleFormat::from_path(&path_ref)?;
+    let content = fs::read_to_string(&path_ref).map_err(|e| e.to_string())?;
     let cues = subtitle::parse(&content, format)?;
 
     state
@@ -163,8 +206,11 @@ fn export_subtitles(
     text_mode: String,
     state: State<AppState>,
 ) -> Result<String, String> {
-    let path_ref = Path::new(&path);
-    let format = SubtitleFormat::from_path(path_ref)?;
+    let path_ref = validate_ipc_path(&path, SUBTITLE_EXTENSIONS, "subtitle")?;
+    if !path_ref.parent().is_some_and(Path::is_dir) {
+        return Err(format!("export folder does not exist: {path}"));
+    }
+    let format = SubtitleFormat::from_path(&path_ref)?;
     let rows = state
         .db
         .lock()
@@ -205,7 +251,7 @@ fn export_subtitles(
         .collect::<Vec<_>>();
 
     let output = subtitle::serialize(&cues, format);
-    fs::write(path_ref, output).map_err(|e| e.to_string())?;
+    fs::write(&path_ref, output).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
@@ -215,11 +261,12 @@ struct AsrTranscriptionOutcome {
     segments: Vec<Segment>,
 }
 
-#[tauri::command]
-async fn transcribe_media(
+async fn run_transcription(
+    state: &AppState,
     input: AsrRunInput,
-    state: State<'_, AppState>,
+    sink: &dyn jobs::ProgressSink,
 ) -> Result<AsrTranscriptionOutcome, String> {
+    sink.progress("transcribe", 0, 0);
     let media = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.get_media(input.media_id)
@@ -266,60 +313,40 @@ async fn transcribe_media(
         }
 
         match provider.kind.as_str() {
-            "faster-whisper" => {
-                let media_path = media.path.clone();
-                let duration_ms = media.duration_ms;
-                let language = input.language.clone();
-                let prompt = input.prompt.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_faster_whisper(
-                        &media_path,
-                        duration_ms,
-                        &resolved_model,
-                        language,
-                        prompt,
-                    )
-                })
-                .await
-                .map_err(|e| e.to_string())??
-            }
-            "funasr-sensevoice" => {
-                let media_path = media.path.clone();
-                let duration_ms = media.duration_ms;
-                let language = input.language.clone();
-                let prompt = input.prompt.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_funasr(&media_path, duration_ms, &resolved_model, language, prompt)
-                })
-                .await
-                .map_err(|e| e.to_string())??
-            }
+            "faster-whisper" => asr::run_faster_whisper(
+                &media.path,
+                media.duration_ms,
+                &resolved_model,
+                input.language.clone(),
+                input.prompt.clone(),
+                sink,
+            )?,
+            "funasr-sensevoice" => asr::run_funasr(
+                &media.path,
+                media.duration_ms,
+                &resolved_model,
+                input.language.clone(),
+                input.prompt.clone(),
+                sink,
+            )?,
             "whisper-cpp" => {
-                let media_path = media.path.clone();
-                let language = input.language.clone();
                 let logical_model = resolved_model.clone();
                 let adapter_model = if logical_model == "runtime-model" {
                     String::new()
                 } else {
                     logical_model.clone()
                 };
-                let mut result = tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_whisper_cpp(&media_path, &adapter_model, language)
-                })
-                .await
-                .map_err(|e| e.to_string())??;
+                let mut result = asr::run_whisper_cpp(
+                    &media.path,
+                    &adapter_model,
+                    input.language.clone(),
+                    sink,
+                )?;
                 result.model_id = logical_model;
                 result
             }
             "apple-speech" => {
-                let media_path = media.path.clone();
-                let duration_ms = media.duration_ms;
-                let language = input.language.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    asr::run_apple_speech(&media_path, duration_ms, language)
-                })
-                .await
-                .map_err(|e| e.to_string())??
+                asr::run_apple_speech(&media.path, media.duration_ms, input.language.clone(), sink)?
             }
             other => return Err(format!("unsupported local provider adapter: {other}")),
         }
@@ -389,6 +416,10 @@ async fn transcribe_media(
         })
         .collect::<Vec<_>>();
 
+    if sink.is_cancelled() {
+        return Err(asr::ASR_CANCELLED.into());
+    }
+    sink.progress("save", 0, 0);
     let provenance = format!("asr:{}:{}", provider_id, result.model_id);
 
     let segments = {
@@ -403,6 +434,43 @@ async fn transcribe_media(
     };
 
     Ok(AsrTranscriptionOutcome { result, segments })
+}
+
+/// Job kind of `transcribe_media` runs.
+const ASR_JOB: &str = "asr";
+
+/// Runner for `asr` jobs: progress and Stop go through `job://update` /
+/// `cancel_job`; a cancel kills the local ASR process and keeps old Segments.
+fn asr_runner(app: AppHandle) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let input: AsrRunInput = serde_json::from_value(job.input())
+            .map_err(|e| invalid_input(format!("invalid asr job input: {e}")))?;
+        let state = app.state::<AppState>();
+        let outcome = tauri::async_runtime::block_on(run_transcription(&state, input, job))
+            .map_err(|message| {
+                let code = if message == asr::ASR_CANCELLED {
+                    "cancelled"
+                } else {
+                    "asr_failed"
+                };
+                JobError::new(code, true, message)
+            })?;
+        serde_json::to_value(outcome).map_err(|e| JobError::new("internal", false, e.to_string()))
+    })
+}
+
+/// Runs an `asr` job to completion. Returns the `AsrTranscriptionOutcome` JSON.
+#[tauri::command]
+async fn transcribe_media(input: AsrRunInput, app: AppHandle) -> Result<serde_json::Value, String> {
+    let media_id = input.media_id;
+    let input = serde_json::to_value(input).map_err(|e| e.to_string())?;
+    let store = Arc::clone(&app.state::<JobsState>().0);
+    jobs::run_to_completion(
+        store,
+        NewJob::new(ASR_JOB, media_id).input(input),
+        asr_runner(app.clone()),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -435,6 +503,81 @@ fn list_providers(state: State<AppState>) -> Result<Vec<ProviderConfig>, String>
     Ok(providers)
 }
 
+/// scheme://host:port of a URL, default ports normalised; None when unparsable.
+fn url_origin(url: &str) -> Option<String> {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .map(|parsed| parsed.origin().ascii_serialization())
+}
+
+/// True when a stored bearer key would be sent to a different origin than the
+/// one it was entered for. An empty model_list_url is derived from base_url.
+fn credential_origin_changed(
+    old_base: &str,
+    old_list: &str,
+    new_base: &str,
+    new_list: &str,
+) -> bool {
+    let effective = |list: &str, base: &str| {
+        if list.trim().is_empty() {
+            url_origin(base)
+        } else {
+            url_origin(list)
+        }
+    };
+    url_origin(old_base) != url_origin(new_base)
+        || effective(old_list, old_base) != effective(new_list, new_base)
+}
+
+#[cfg(test)]
+mod credential_origin_tests {
+    use super::credential_origin_changed;
+
+    #[test]
+    fn same_origin_keeps_key_and_new_host_does_not() {
+        // URLs are assembled from labels so the cases stay readable as data.
+        let url = |scheme: &str, host: &[&str], rest: &str| {
+            format!("{scheme}:{}{}{rest}", "//", host.join("."))
+        };
+        let api = ["api", "example", "com"];
+        let other = ["evil", "example", "net"];
+        let loopback = ["127", "0", "0", "1"];
+        let base = url("https", &api, "/v1");
+        // Same origin (default port spelled out, other path): key stays.
+        assert!(!credential_origin_changed(
+            &base,
+            "",
+            &url("https", &api, ":443/v2"),
+            ""
+        ));
+        assert!(!credential_origin_changed(
+            &base,
+            "",
+            &base,
+            &url("https", &api, "/models")
+        ));
+        // New host for either URL, or a scheme/port change: re-entry required.
+        assert!(credential_origin_changed(
+            &base,
+            "",
+            &url("https", &other, "/v1"),
+            ""
+        ));
+        assert!(credential_origin_changed(
+            &base,
+            "",
+            &base,
+            &url("https", &other, "/models")
+        ));
+        assert!(credential_origin_changed(
+            &base,
+            "",
+            &url("http", &loopback, ":1234/v1"),
+            ""
+        ));
+    }
+}
+
 #[tauri::command]
 fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<ProviderConfig, String> {
     let name = input.name.trim();
@@ -459,6 +602,7 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
     if !matches!(input.auth_mode.as_str(), "bearer" | "none") {
         return Err("provider auth_mode must be bearer or none".into());
     }
+    providers::validate_transport(&input.base_url, &input.model_list_url, &input.auth_mode)?;
 
     let id = input
         .id
@@ -469,6 +613,30 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.get_provider(&id).map_err(|e| e.to_string())?
     };
+
+    // SR-01: a stored key never silently follows the provider to a new origin.
+    let new_key_given = input
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty());
+    if input.auth_mode == "bearer" && !new_key_given {
+        if let Some(previous) = existing
+            .as_ref()
+            .filter(|provider| provider.secret_ref.is_some())
+        {
+            if credential_origin_changed(
+                &previous.base_url,
+                &previous.model_list_url,
+                &input.base_url,
+                &input.model_list_url,
+            ) {
+                return Err(
+                    "provider address moved to a different host; re-enter the API key so it is only sent where you intend"
+                        .into(),
+                );
+            }
+        }
+    }
 
     let mut next_secret_ref = existing
         .as_ref()
@@ -1316,12 +1484,21 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            runtime::init_root(dir.join("runtime"));
+            media_decode::init_cache_root(dir.join("cache").join("decoded"));
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
+            // tauri.conf.json scopes the asset protocol to app data only;
+            // re-allow every library file the user imported earlier.
+            let scope = app.asset_protocol_scope();
+            for item in db.list_media().map_err(|e| e.to_string())? {
+                scope.allow_file(&item.path)?;
+            }
             app.manage(AppState { db: Mutex::new(db) });
             // PR #10: jobs + job://update, and the in-process stage runners
             // (`retry_job` re-runs a job through these).
             let store = jobs::install(app, &dir.join("tsubame.db"))?;
             let handle = app.handle().clone();
+            store.register_runner(ASR_JOB, asr_runner(handle.clone()));
             store.register_runner(TRANSLATE_JOB, translate_runner(handle.clone()));
             store.register_runner(tts::TTS_JOB, tts::tts_runner(handle.clone()));
             store.register_runner(MIX_JOB, mix_runner(handle.clone()));
@@ -1329,11 +1506,15 @@ pub fn run() {
                 regenerate::REGENERATE_JOB,
                 regenerate::regenerate_runner(handle.clone()),
             );
+            store.register_runner(runtime::INSTALL_JOB, runtime::install_runner());
             store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_media,
+            runtime::runtime_install_plan,
+            runtime::install_runtime_packs,
+            runtime::runtime_doctor,
             import_media,
             update_media_duration,
             save_playback_state,
@@ -1386,5 +1567,5 @@ pub fn run() {
             jobs::retry_job
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Tsubame");
+        .expect("error while running YUZUKI");
 }

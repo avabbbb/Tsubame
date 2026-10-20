@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { userMessage } from "./errors";
 
 export const JOB_UPDATE_EVENT = "job://update";
 
@@ -85,7 +86,7 @@ export function useJobs(filter?: JobFilter) {
       });
       setError(null);
     } catch (err) {
-      setError(String(err));
+      setError(userMessage(err));
     }
   }, [key]);
 

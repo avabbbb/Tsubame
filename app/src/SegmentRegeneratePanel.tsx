@@ -34,6 +34,7 @@ import type {
   TakeInfo,
   VoiceProfile,
 } from "./types";
+import { userMessage } from "./errors";
 
 /** What the Inspector's Ctrl/Cmd+Enter binding calls. */
 export interface RegenerateControl {
@@ -128,7 +129,7 @@ export default function SegmentRegeneratePanel({
   const reloadTakes = useCallback(() => {
     void listTakes(segment.id)
       .then((rows) => setTakes(visibleTakes(rows)))
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(userMessage(err)));
   }, [segment.id]);
 
   useEffect(() => {
@@ -143,7 +144,7 @@ export default function SegmentRegeneratePanel({
           rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? ""),
         );
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(userMessage(err)));
   }, []);
 
   useEffect(() => {
@@ -212,7 +213,7 @@ export default function SegmentRegeneratePanel({
     } catch (err) {
       // No silent raw-clip fallback: say why and offer Dub only.
       if (isSpatialPending(err)) setSpatialPending(true);
-      else setError(String(err));
+      else setError(userMessage(err));
     } finally {
       setPreviewBusy(false);
     }
@@ -228,7 +229,7 @@ export default function SegmentRegeneratePanel({
       if (isRevisionConflict(err)) {
         await reloadLatest("This sentence changed after you opened it. Reloaded the latest version.");
       } else {
-        setError(String(err));
+        setError(userMessage(err));
       }
     } finally {
       setConfirming(false);
@@ -242,7 +243,7 @@ export default function SegmentRegeneratePanel({
     try {
       await playSrc(take.path, { kind: "take", key: take.tts_asset_key });
     } catch (err) {
-      setError(String(err));
+      setError(userMessage(err));
     }
   }
 
@@ -258,7 +259,7 @@ export default function SegmentRegeneratePanel({
     try {
       await playSrc(next.path, { kind: "take", key: next.tts_asset_key }, position);
     } catch (err) {
-      setError(String(err));
+      setError(userMessage(err));
     }
   }
 
@@ -285,7 +286,7 @@ export default function SegmentRegeneratePanel({
       if (isRevisionConflict(err)) {
         await reloadLatest("This sentence changed after you opened it. Reloaded the latest version; choose the take again.");
       } else {
-        setError(String(err));
+        setError(userMessage(err));
       }
     } finally {
       setSwitching(null);
@@ -297,7 +298,7 @@ export default function SegmentRegeneratePanel({
       const rows = await acknowledgePushed([segment.id]);
       rows.forEach(onUpdated);
     } catch (err) {
-      setError(String(err));
+      setError(userMessage(err));
     }
   }
 
@@ -453,7 +454,7 @@ export default function SegmentRegeneratePanel({
             ))}
           </ol>
           {job && (
-            <button className="secondary" onClick={() => void cancel(job.id).catch((err) => setError(String(err)))}>
+            <button className="secondary" onClick={() => void cancel(job.id).catch((err) => setError(userMessage(err)))}>
               Cancel
             </button>
           )}

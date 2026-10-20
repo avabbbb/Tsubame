@@ -187,6 +187,8 @@ select Segment
 
 ## PR #12 — Runtime and model bootstrap
 
+Status: in progress on feat/runtime-bootstrap. Install engine, whisper.cpp runtime/model packs, doctor and the Settings/ASR install UI are implemented; runtime tests still need a verified run. Non-WAV media decode and a TTS pack remain before internal testing. Contract: Runtime bootstrap.
+
 Goal: normal users configure no developer environment.
 
 Scope:

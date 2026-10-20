@@ -20,6 +20,8 @@ import SegmentInspector from "./SegmentInspector";
 import { pushedLabel } from "./regenerate";
 import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
+import GetStarted, { type GetStartedProgress } from "./GetStarted";
+import JobsView from "./JobsView";
 import type {
   DubPlan,
   MediaItem,
@@ -131,6 +133,23 @@ export default function App() {
   const [systemDark, setSystemDark] = useState(prefersDark.matches);
   const [sentenceLoop, setSentenceLoop] = useState(false);
   const [loopA, setLoopA] = useState<number | null>(null);
+  // First-run checklist progress, derived only from real app state.
+  const getStartedProgress = useMemo<GetStartedProgress>(() => {
+    const transcript = segments.length > 0;
+    const translation = segments.some((segment) => segment.translated_text.trim() !== "");
+    const regenerate = segments.some((segment) => segment.tts_asset_key !== null);
+    return {
+      import: items.length > 0,
+      asr: transcript,
+      transcript,
+      edit: segments.some((segment) => segment.revision > 1),
+      translationProvider: translation,
+      translation,
+      ttsProvider: regenerate,
+      regenerate,
+      dubbed: (dubPlan?.placements.length ?? 0) > 0,
+    };
+  }, [items.length, segments, dubPlan]);
   const [loopB, setLoopB] = useState<number | null>(null);
 
   const mediaRef = useRef<HTMLMediaElement | null>(null);
@@ -835,7 +854,7 @@ export default function App() {
           <div className="source-group shell-placeholder">
             <p className="section-label">SECTION</p>
             <strong>{activeRail}</strong>
-            <small>This surface is reserved; playback remains global.</small>
+            <small>Not in this beta yet. Your library and playback stay available.</small>
           </div>
         )}
       </aside>
@@ -1064,13 +1083,25 @@ export default function App() {
               </>
             )}
           </section>
+        ) : activeRail === "jobs" ? (
+          <JobsView media={items} />
         ) : (
           <section className="content section-placeholder">
+            {activeRail === "home" && (
+              <GetStarted
+                progress={getStartedProgress}
+                onOpen={(step) =>
+                  step === "import"
+                    ? void importFiles()
+                    : setActiveRail(step.endsWith("Provider") ? "settings" : "studio")
+                }
+              />
+            )}
             <p className="eyebrow">{activeRail.toUpperCase()}</p>
             <h2>
               {activeRail === "home"
                 ? "Continue where you left off."
-                : `${activeRail} is ready for its next adapter.`}
+                : `${activeRail[0].toUpperCase()}${activeRail.slice(1)} isn't available in this beta yet.`}
             </h2>
             <p>
               The global player stays alive while product surfaces change. This is the

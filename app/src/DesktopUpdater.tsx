@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { userMessage } from "./errors";
 
 // Preview builds intentionally have no update signing key or updater endpoint.
 // Only signed tag releases opt into this capability.
@@ -42,7 +43,7 @@ export default function DesktopUpdater({ visible }: Props) {
       }
     } catch (error) {
       setVersion(null);
-      setStatus(`Update check failed: ${String(error)}`);
+      setStatus(`Update check failed: ${userMessage(error)}`);
     } finally {
       busy.current = false;
       setIsBusy(false);
@@ -84,7 +85,7 @@ export default function DesktopUpdater({ visible }: Props) {
       setStatus("Update installed. Restarting…");
       await relaunch();
     } catch (error) {
-      setStatus(`Update installation failed: ${String(error)}`);
+      setStatus(`Update installation failed: ${userMessage(error)}`);
     } finally {
       busy.current = false;
       setIsBusy(false);

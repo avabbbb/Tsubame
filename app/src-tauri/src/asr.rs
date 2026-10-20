@@ -1,12 +1,13 @@
+use crate::jobs::ProgressSink;
 use crate::providers::ProviderConfig;
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     env, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     time::Duration,
 };
 
@@ -31,7 +32,7 @@ pub struct AsrResult {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrRunInput {
     pub media_id: i64,
     pub provider_id: String,
@@ -60,21 +61,78 @@ struct RemoteSegment {
     avg_logprob: Option<f64>,
 }
 
-fn worker_script(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../workers/asr")
-        .join(name)
+fn worker_script(name: &str) -> Result<PathBuf, String> {
+    // Debug builds run workers straight from the repository checkout.
+    #[cfg(debug_assertions)]
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/asr");
+    // Release builds use the copy bundled via tauri.conf.json bundle.resources;
+    // no build-machine path is compiled in.
+    #[cfg(not(debug_assertions))]
+    let dir = bundled_resource_dir()?.join("workers").join("asr");
+    Ok(dir.join(name))
+}
+
+#[cfg(not(debug_assertions))]
+fn bundled_resource_dir() -> Result<PathBuf, String> {
+    let exe =
+        env::current_exe().map_err(|e| format!("cannot locate the YUZUKI executable: {e}"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "YUZUKI executable has no parent directory".to_string())?;
+    if cfg!(target_os = "macos") {
+        Ok(exe_dir.join("../Resources"))
+    } else {
+        Ok(exe_dir.to_path_buf())
+    }
+}
+
+/// Error text a job cancel produces when it stops an ASR run.
+pub const ASR_CANCELLED: &str = "transcription was cancelled";
+
+/// Waits for `child` while draining its pipes, killing it as soon as `sink`
+/// reports a cancel so Stop in the UI frees the CPU/GPU right away.
+fn wait_cancellable(mut child: Child, sink: &dyn ProgressSink) -> Result<Output, String> {
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if sink.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(ASR_CANCELLED.into());
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 fn run_json_worker(
     python_env: &str,
     script_name: &str,
     request: &WorkerRequest,
+    sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
     let python = env::var(python_env).map_err(|_| {
         format!("{python_env} is not configured; install the matching runtime pack")
     })?;
-    let script = worker_script(script_name);
+    let script = worker_script(script_name)?;
     if !script.exists() {
         return Err(format!(
             "ASR worker script is missing: {}",
@@ -98,7 +156,7 @@ fn run_json_worker(
         .write_all(&payload)
         .map_err(|e| e.to_string())?;
 
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let output = wait_cancellable(child, sink)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("ASR worker failed: {}", stderr.trim()));
@@ -116,6 +174,7 @@ pub fn run_faster_whisper(
     model_id: &str,
     language: Option<String>,
     prompt: Option<String>,
+    sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
     run_json_worker(
         "TSUBAME_FASTER_WHISPER_PYTHON",
@@ -129,6 +188,7 @@ pub fn run_faster_whisper(
             language,
             prompt,
         },
+        sink,
     )
 }
 
@@ -138,6 +198,7 @@ pub fn run_funasr(
     model_id: &str,
     language: Option<String>,
     prompt: Option<String>,
+    sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
     run_json_worker(
         "TSUBAME_FUNASR_PYTHON",
@@ -151,6 +212,7 @@ pub fn run_funasr(
             language,
             prompt,
         },
+        sink,
     )
 }
 
@@ -158,6 +220,7 @@ pub fn run_apple_speech(
     media_path: &str,
     duration_ms: i64,
     language: Option<String>,
+    sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
     if !cfg!(target_os = "macos") {
         return Err("Apple SpeechAnalyzer is only available on supported Apple platforms".into());
@@ -187,7 +250,7 @@ pub fn run_apple_speech(
         .ok_or_else(|| "Apple Speech helper stdin unavailable".to_string())?
         .write_all(&serde_json::to_vec(&request).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let output = wait_cancellable(child, sink)?;
     if !output.status.success() {
         return Err(format!(
             "Apple Speech helper failed: {}",
@@ -204,40 +267,41 @@ pub fn run_whisper_cpp(
     media_path: &str,
     model_id: &str,
     language: Option<String>,
+    sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
-    let bin = env::var("TSUBAME_WHISPER_CPP_BIN")
-        .map_err(|_| "TSUBAME_WHISPER_CPP_BIN is not configured".to_string())?;
-    let model = if model_id.trim().is_empty() {
-        env::var("TSUBAME_WHISPER_CPP_MODEL")
-            .map_err(|_| "TSUBAME_WHISPER_CPP_MODEL is not configured".to_string())?
-    } else {
-        model_id.to_string()
-    };
+    // Active runtime/model packs; env vars are developer overrides and are
+    // surfaced in result notes, never applied silently.
+    let paths = crate::runtime::resolve_whisper(model_id.trim())?;
+    let bin = paths.bin.to_string_lossy().into_owned();
+    let model = paths.model.to_string_lossy().into_owned();
 
-    let input = Path::new(media_path);
-    let ext = input
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if ext != "wav" {
-        return Err("whisper.cpp adapter currently requires 16-bit WAV input; media extraction lands in Runtime Bootstrap".into());
-    }
+    // whisper.cpp reads 16 kHz mono 16-bit WAV; any other source (mp3, m4a,
+    // flac, ogg, other WAV layouts...) is decoded into the decode cache first.
+    // Decode failures surface with their own code (no silent fallback).
+    let input = crate::media_decode::ensure_wav(
+        Path::new(media_path),
+        crate::media_decode::DecodeTarget::WHISPER,
+        sink,
+    )
+    .map_err(|e| e.to_string())?;
 
     let temp = env::temp_dir().join(format!("tsubame-whisper-{}", uuid::Uuid::new_v4()));
-    let output = Command::new(bin)
+    let child = Command::new(bin)
         .arg("-m")
         .arg(&model)
         .arg("-f")
-        .arg(media_path)
+        .arg(&input.path)
         .arg("-oj")
         .arg("-of")
         .arg(&temp)
         .arg("-np")
         .arg("-l")
         .arg(language.as_deref().unwrap_or("auto"))
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("failed to start whisper.cpp: {e}"))?;
+    let output = wait_cancellable(child, sink)?;
 
     if !output.status.success() {
         return Err(format!(
@@ -287,12 +351,13 @@ pub fn run_whisper_cpp(
         model_id: model,
         language,
         segments,
-        notes: vec![],
+        notes: paths.notes,
     };
     validate_result(&result)?;
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn post_remote_transcription(
     provider: &ProviderConfig,
     secret: Option<&str>,
@@ -328,7 +393,7 @@ async fn post_remote_transcription(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
-        .user_agent("Tsubame/0.1 ASR")
+        .user_agent(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())?;
     let mut request = client.post(url).multipart(form);
@@ -543,5 +608,68 @@ mod tests {
             .segments
             .iter()
             .any(|segment| segment.text.contains("おやすみ")));
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    struct FlagSink(AtomicBool);
+    impl ProgressSink for FlagSink {
+        fn progress(&self, _stage: &str, _done: u64, _total: u64) {}
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn long_running() -> Child {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn cancel_kills_asr_subprocess_promptly() {
+        let sink = FlagSink(AtomicBool::new(true));
+        let started = Instant::now();
+        let err = wait_cancellable(long_running(), &sink).unwrap_err();
+        assert_eq!(err, ASR_CANCELLED);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn uncancelled_subprocess_output_is_collected() {
+        let sink = FlagSink(AtomicBool::new(false));
+        let child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "echo yuzuki"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        } else {
+            Command::new("sh")
+                .args(["-c", "echo yuzuki"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let output = wait_cancellable(child, &sink).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("yuzuki"));
     }
 }

@@ -6,6 +6,16 @@ import type {
   MediaItem,
   Segment,
 } from "./types";
+import RuntimePacksCard from "./RuntimePacksCard";
+import ErrorNotice from "./ErrorNotice";
+import { useJobs } from "./jobs";
+
+/** Providers the app installs through runtime packs (runtime.rs `provider_pack_ids`). */
+const PACK_MANAGED_PROVIDERS: Record<string, true> = { "local.whisper-cpp": true };
+
+function isReadyTarget(target: CapabilityTarget) {
+  return target.available && target.provider_availability === "ready";
+}
 
 type Props = {
   media: MediaItem;
@@ -20,6 +30,32 @@ export default function AsrPanel({ media, onSegments }: Props) {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState<unknown>(null);
+  const { jobs, cancel } = useJobs({ media_id: media.id, kind: "asr" });
+  const activeJob =
+    jobs.find((job) => job.status === "queued" || job.status === "running") ?? null;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [busy]);
+
+  const stop = async () => {
+    if (!activeJob) return;
+    try {
+      await cancel(activeJob.id);
+      setMessage("Stopping transcription…");
+    } catch (err) {
+      setError(err);
+    }
+  };
 
   const providers = useMemo(() => {
     const seen = new Map<string, CapabilityTarget>();
@@ -44,54 +80,53 @@ export default function AsrPanel({ media, onSegments }: Props) {
   );
 
   const load = async () => {
+    setError(null);
     const rows = await invoke<CapabilityTarget[]>("resolve_capability_targets", {
       capability: "speech.asr",
     });
     setTargets(rows);
 
+    // A ready target first, then a pack-managed provider the app can install
+    // (RuntimePacksCard below). Never preselect a not-ready provider that has
+    // no install action.
     const preferred =
-      rows.find(
-        (target) =>
-          target.provider_id === "local.faster-whisper" &&
-          target.available &&
-          target.provider_availability === "ready",
-      ) ??
-      rows.find(
-        (target) =>
-          target.available && target.provider_availability === "ready",
-      ) ??
-      rows[0];
+      rows.find(isReadyTarget) ??
+      rows.find((target) => PACK_MANAGED_PROVIDERS[target.provider_id] === true) ??
+      null;
+    const currentProviderIsValid = rows.some(
+      (target) => target.provider_id === providerId,
+    );
+    const nextProviderId = currentProviderIsValid
+      ? providerId
+      : (preferred?.provider_id ?? "");
+    setProviderId(nextProviderId);
 
-    if (preferred) {
-      const currentProviderIsValid = rows.some(
-        (target) => target.provider_id === providerId,
+    if (!nextProviderId) {
+      setModelId("");
+      setMessage(
+        rows.length
+          ? "No speech recognition provider is ready yet. Configure one in Settings, or pick one above to see what it needs."
+          : "No speech recognition provider is available. Add one in Settings.",
       );
-      const nextProviderId = currentProviderIsValid
-        ? providerId
-        : preferred.provider_id;
-      setProviderId(nextProviderId);
+      return;
+    }
 
-      const currentModelIsValid = rows.some(
-        (target) =>
-          target.provider_id === nextProviderId &&
-          target.model_id === modelId,
-      );
-      if (!currentModelIsValid) {
-        const firstForProvider =
-          rows.find(
-            (target) =>
-              target.provider_id === nextProviderId &&
-              target.available &&
-              target.provider_availability === "ready",
-          ) ??
-          rows.find((target) => target.provider_id === nextProviderId);
-        setModelId(firstForProvider?.model_id ?? "");
-      }
+    const currentModelIsValid = rows.some(
+      (target) =>
+        target.provider_id === nextProviderId && target.model_id === modelId,
+    );
+    if (!currentModelIsValid) {
+      const firstForProvider =
+        rows.find(
+          (target) =>
+            target.provider_id === nextProviderId && isReadyTarget(target),
+        ) ?? rows.find((target) => target.provider_id === nextProviderId);
+      setModelId(firstForProvider?.model_id ?? "");
     }
   };
 
   useEffect(() => {
-    void load().catch((error) => setMessage(String(error)));
+    void load().catch(setError);
     // Provider/runtime state may change outside this surface; refresh per track.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [media.id]);
@@ -100,10 +135,7 @@ export default function AsrPanel({ media, onSegments }: Props) {
     if (!providerModels.length) return;
     if (!providerModels.some((target) => target.model_id === modelId)) {
       setModelId(
-        providerModels.find(
-          (target) =>
-            target.available && target.provider_availability === "ready",
-        )?.model_id ?? providerModels[0].model_id,
+        providerModels.find(isReadyTarget)?.model_id ?? providerModels[0].model_id,
       );
     }
   }, [modelId, providerModels]);
@@ -125,6 +157,7 @@ export default function AsrPanel({ media, onSegments }: Props) {
     }
 
     setBusy(true);
+    setError(null);
     setMessage(
       "Transcribing… existing Segments are replaced only after a valid result returns.",
     );
@@ -147,8 +180,13 @@ export default function AsrPanel({ media, onSegments }: Props) {
           outcome.segments.length +
           " segments",
       );
-    } catch (error) {
-      setMessage(String(error));
+    } catch (err) {
+      if (String(err).includes("cancelled")) {
+        setMessage("Transcription stopped. Your existing Segments were kept.");
+      } else {
+        setMessage("");
+        setError(err);
+      }
     } finally {
       setBusy(false);
     }
@@ -165,7 +203,7 @@ export default function AsrPanel({ media, onSegments }: Props) {
             through the same speech.asr capability.
           </small>
         </div>
-        <button className="secondary" disabled={busy} onClick={() => void load()}>
+        <button className="secondary" disabled={busy} onClick={() => void load().catch(setError)}>
           Refresh
         </button>
       </div>
@@ -251,6 +289,16 @@ export default function AsrPanel({ media, onSegments }: Props) {
           </div>
         )}
 
+        {selectedTarget &&
+          PACK_MANAGED_PROVIDERS[selectedTarget.provider_id] === true &&
+          selectedTarget.provider_availability !== "ready" && (
+            <RuntimePacksCard
+              providerId={selectedTarget.provider_id}
+              models={providerModels}
+              onInstalled={() => void load().catch(setError)}
+            />
+          )}
+
         <div className="asr-run-actions">
           <span>
             Provider + Model are resolved by capability; adapter details stay
@@ -267,8 +315,15 @@ export default function AsrPanel({ media, onSegments }: Props) {
             }
             onClick={() => void run()}
           >
-            {busy ? "Transcribing…" : "Transcribe track"}
+            {busy
+              ? `Transcribing… ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
+              : "Transcribe track"}
           </button>
+          {busy && activeJob && (
+            <button className="secondary" onClick={() => void stop()}>
+              Stop
+            </button>
+          )}
         </div>
 
         {media.media_type !== "audio" && (
@@ -276,7 +331,12 @@ export default function AsrPanel({ media, onSegments }: Props) {
             Video audio extraction is intentionally deferred to Runtime Bootstrap.
           </div>
         )}
-        {message && <div className="asr-message">{message}</div>}
+        {message && (
+          <div className="asr-message" role="status">
+            {message}
+          </div>
+        )}
+        {error != null && <ErrorNotice error={error} className="asr-message" />}
       </div>
     </section>
   );

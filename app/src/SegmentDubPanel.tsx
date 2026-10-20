@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { canCancel, jobProgress, useJobs } from "./jobs";
 import type { ResolvedTtsAsset, Segment, SpatialRenderOutcome } from "./types";
+import { userMessage } from "./errors";
 
 type Props = {
   segment: Segment;
@@ -36,7 +37,7 @@ export default function SegmentDubPanel({ segment, unsaved }: Props) {
       .then(setAsset)
       .catch((error) => {
         setAsset(null);
-        setNote(String(error));
+        setNote(userMessage(error));
       });
   }, [segment.id, segment.revision, segment.tts_asset_key]);
 
@@ -98,7 +99,7 @@ export default function SegmentDubPanel({ segment, unsaved }: Props) {
           : "Spatialized. Play in context to hear it.",
       );
     } catch (error) {
-      setNote(String(error));
+      setNote(userMessage(error));
     } finally {
       setSpatialBusy(false);
     }
@@ -109,7 +110,7 @@ export default function SegmentDubPanel({ segment, unsaved }: Props) {
     try {
       await cancel(spatialJob.id);
     } catch (error) {
-      setNote(String(error));
+      setNote(userMessage(error));
     }
   }
 

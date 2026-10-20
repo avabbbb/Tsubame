@@ -6,6 +6,7 @@ import type {
   VoiceProfile,
   VoiceProfileInput,
 } from "./types";
+import { userMessage } from "./errors";
 
 const EMPTY: VoiceProfileInput = {
   id: null,
@@ -53,7 +54,7 @@ export default function VoiceProfileSettings() {
   }, []);
 
   useEffect(() => {
-    void load().catch((error) => setMessage(String(error)));
+    void load().catch((error) => setMessage(userMessage(error)));
   }, [load]);
 
   const targetValue = draft.provider_id
@@ -88,7 +89,7 @@ export default function VoiceProfileSettings() {
       setDraft(toInput(saved));
       setMessage(`Saved voice “${saved.name}”.`);
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     } finally {
       setBusy(false);
     }
@@ -103,7 +104,7 @@ export default function VoiceProfileSettings() {
       await load();
       setMessage("Voice deleted. Clips already synthesized stay in the cache.");
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     } finally {
       setBusy(false);
     }

@@ -8,6 +8,8 @@ import type {
   ProviderTestResult,
 } from "./types";
 import VoiceProfileSettings from "./VoiceProfileSettings";
+import RuntimePacksCard from "./RuntimePacksCard";
+import { userMessage } from "./errors";
 
 const EMPTY_DRAFT: ProviderInput = {
   id: null,
@@ -161,7 +163,7 @@ export default function ProviderSettings() {
         });
       }
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     } finally {
       setBusy(false);
     }
@@ -185,7 +187,7 @@ export default function ProviderSettings() {
         ok: false,
         status: "error",
         model_count: 0,
-        message: String(error),
+        message: userMessage(error),
       });
     } finally {
       setBusy(false);
@@ -208,7 +210,7 @@ export default function ProviderSettings() {
       await loadProviders();
       setMessage(`Discovered ${discovered.filter((model) => model.available).length} available models.`);
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
       await loadProviders();
     } finally {
       setBusy(false);
@@ -227,7 +229,7 @@ export default function ProviderSettings() {
       if (!nextId) setDraft(EMPTY_DRAFT);
       setMessage("Provider removed. Its credential reference was deleted too.");
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     } finally {
       setBusy(false);
     }
@@ -249,7 +251,7 @@ export default function ProviderSettings() {
         ),
       );
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 
@@ -269,7 +271,7 @@ export default function ProviderSettings() {
           <p className="eyebrow">MODEL & PROVIDER REGISTRY</p>
           <h2>Local and remote, one registry.</h2>
           <p>
-            Tsubame resolves capabilities across local runtimes, native OS models,
+            YUZUKI resolves capabilities across local runtimes, native OS models,
             localhost servers and BYOK APIs. Remote credentials stay outside SQLite.
           </p>
         </div>
@@ -516,6 +518,16 @@ export default function ProviderSettings() {
               )}
             </div>
           )}
+
+          {selectedProvider?.system_managed &&
+            selectedProvider.availability !== "unsupported-platform" &&
+            selectedProvider.id === "local.whisper-cpp" && (
+              <RuntimePacksCard
+                providerId={selectedProvider.id}
+                models={models}
+                onInstalled={() => void loadProviders()}
+              />
+            )}
 
           {draft.id && (
             <div className="provider-model-card">

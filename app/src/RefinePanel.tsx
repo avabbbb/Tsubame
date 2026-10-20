@@ -10,6 +10,7 @@ import type {
   RefineProposal,
   Segment,
 } from "./types";
+import { userMessage } from "./errors";
 
 type Props = {
   media: MediaItem;
@@ -82,7 +83,7 @@ export default function RefinePanel({
 
   useEffect(() => {
     setMessage("");
-    void load().catch((error) => setMessage(String(error)));
+    void load().catch((error) => setMessage(userMessage(error)));
   }, [load]);
 
   const check = async () => {
@@ -109,7 +110,7 @@ export default function RefinePanel({
           : `Checked ${outcome.checked_segments} lines. ${outcome.new_proposals} suggestion(s) to review.${skipped}`,
       );
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     } finally {
       setBusy(false);
     }
@@ -132,7 +133,7 @@ export default function RefinePanel({
       });
       handleDecision(proposal, decision);
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 
@@ -143,7 +144,7 @@ export default function RefinePanel({
       });
       handleDecision(proposal, decision);
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 
@@ -158,7 +159,7 @@ export default function RefinePanel({
         if (decision.outcome === "stale") stale += 1;
         handleDecision(proposal, decision);
       } catch (error) {
-        setMessage(String(error));
+        setMessage(userMessage(error));
         break;
       }
     }
@@ -178,7 +179,7 @@ export default function RefinePanel({
       setNewTerm("");
       setNewAliases("");
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 
@@ -187,7 +188,7 @@ export default function RefinePanel({
       await invoke("delete_glossary_term", { id: term.id });
       setGlossary((rows) => rows.filter((row) => row.id !== term.id));
     } catch (error) {
-      setMessage(String(error));
+      setMessage(userMessage(error));
     }
   };
 
