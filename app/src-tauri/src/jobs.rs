@@ -264,6 +264,7 @@ impl JobStore {
     pub fn open(path: &Path) -> rusqlite::Result<Arc<Self>> {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         Self::from_connection(conn)
     }
 
@@ -277,7 +278,7 @@ impl JobStore {
         conn.execute(
             &format!(
                 "UPDATE jobs SET status = 'failed', error_code = 'interrupted',
-                   error_message = 'Tsubame stopped before this job finished',
+                   error_message = 'YUZUKI stopped before this job finished',
                    retryable = 1, updated_at = {NOW}
                  WHERE status IN ('queued','running')"
             ),

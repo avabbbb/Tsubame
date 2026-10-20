@@ -101,6 +101,10 @@ impl MediaDb {
 
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // JobStore writes progress on its own connection; WAL + busy_timeout
+        // keep playback/segment writes from failing with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS media_files (
@@ -1528,7 +1532,7 @@ mod tests {
     #[test]
     fn alignment_is_timing_only_and_keeps_tts_reusable() -> rusqlite::Result<()> {
         let (mut db, media) = setup()?;
-        let rows = asr_rows(&mut db, media.id)?;
+        asr_rows(&mut db, media.id)?;
         db.conn.execute(
             "UPDATE segments SET dirty_tts=0, dirty_mix=0, dirty_subtitle=0 WHERE media_id=?1",
             [media.id],
