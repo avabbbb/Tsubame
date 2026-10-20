@@ -1,0 +1,269 @@
+{
+  "generated_at": "2026-10-19T09:50:51.800Z",
+  "commit": "7215e32",
+  "mode": "full",
+  "overall": 4.26,
+  "beta_gate": 3.5,
+  "verdict": "beta-ready",
+  "open_p0": 0,
+  "dimensions": {
+    "Documentation": {
+      "auto": 5,
+      "audit": null,
+      "weight": 0.5,
+      "score": 5
+    },
+    "Correctness": {
+      "auto": 5,
+      "audit": null,
+      "weight": 2,
+      "score": 5
+    },
+    "Maintainability": {
+      "auto": 5,
+      "audit": null,
+      "weight": 1,
+      "score": 5
+    },
+    "First-run UX": {
+      "auto": 4.5,
+      "audit": 2,
+      "weight": 2,
+      "score": 3.25
+    },
+    "Security": {
+      "auto": 5,
+      "audit": null,
+      "weight": 2,
+      "score": 5
+    },
+    "Release": {
+      "auto": 4,
+      "audit": 1.8,
+      "weight": 1.5,
+      "score": 2.9
+    }
+  },
+  "checks": [
+    {
+      "id": "docs",
+      "dimension": "Documentation",
+      "title": "Docs contract (scripts/check_docs.py)",
+      "status": "pass",
+      "detail": "",
+      "ms": 222,
+      "metrics": {}
+    },
+    {
+      "id": "workers-spatial",
+      "dimension": "Correctness",
+      "title": "Spatial worker tests (unittest)",
+      "status": "pass",
+      "detail": "31 tests",
+      "ms": 6209,
+      "metrics": {
+        "tests": 31,
+        "summary": "31 tests"
+      }
+    },
+    {
+      "id": "workers-protocol",
+      "dimension": "Correctness",
+      "title": "Dubber protocol tests (unittest)",
+      "status": "pass",
+      "detail": "9 tests",
+      "ms": 754,
+      "metrics": {
+        "tests": 9,
+        "summary": "9 tests"
+      }
+    },
+    {
+      "id": "frontend-build",
+      "dimension": "Maintainability",
+      "title": "Frontend typecheck + build",
+      "status": "pass",
+      "detail": "JS 396.66 kB (121.28 kB gzip)",
+      "ms": 4666,
+      "metrics": {
+        "js_kb": 396.66,
+        "js_gzip_kb": 121.28,
+        "summary": "JS 396.66 kB (121.28 kB gzip)"
+      }
+    },
+    {
+      "id": "cargo-fmt",
+      "dimension": "Maintainability",
+      "title": "rustfmt",
+      "status": "pass",
+      "detail": "",
+      "ms": 623,
+      "metrics": {}
+    },
+    {
+      "id": "cargo-test",
+      "dimension": "Correctness",
+      "title": "Rust test suite",
+      "status": "pass",
+      "detail": "213 passed, 0 failed",
+      "ms": 32912,
+      "metrics": {
+        "passed": 213,
+        "failed": 0,
+        "summary": "213 passed, 0 failed"
+      }
+    },
+    {
+      "id": "ux-orphans",
+      "dimension": "First-run UX",
+      "title": "No finished screens left unmounted",
+      "status": "pass",
+      "detail": "all screens reachable",
+      "metrics": {
+        "orphans": []
+      }
+    },
+    {
+      "id": "ux-placeholders",
+      "dimension": "First-run UX",
+      "title": "No placeholder surfaces in navigation",
+      "status": "pass",
+      "detail": "0 placeholder string(s) in App.tsx",
+      "metrics": {
+        "placeholders": 0
+      }
+    },
+    {
+      "id": "ux-errors",
+      "dimension": "First-run UX",
+      "title": "Errors shown as friendly messages",
+      "status": "pass",
+      "detail": "40 friendly vs 0 raw error renders (100%)",
+      "metrics": {
+        "notices": 40,
+        "rawErrors": 0
+      }
+    },
+    {
+      "id": "ux-i18n",
+      "dimension": "First-run UX",
+      "title": "Localization scaffold present",
+      "status": "warn",
+      "detail": "English-only strings; no locale layer"
+    },
+    {
+      "id": "sec-secrets",
+      "dimension": "Security",
+      "title": "No hard-coded secrets",
+      "status": "pass",
+      "detail": "84 files scanned"
+    },
+    {
+      "id": "sec-csp",
+      "dimension": "Security",
+      "title": "Tauri CSP set",
+      "status": "pass",
+      "detail": "csp configured"
+    },
+    {
+      "id": "rel-signing",
+      "dimension": "Release",
+      "title": "Windows code signing in release workflow",
+      "status": "warn",
+      "detail": "unsigned installers trigger SmartScreen on first run"
+    },
+    {
+      "id": "rel-eval-ci",
+      "dimension": "Release",
+      "title": "Eval workflow has a harness",
+      "status": "pass",
+      "detail": ""
+    }
+  ],
+  "findings": [
+    {
+      "id": "EH-1",
+      "priority": "P1",
+      "dimension": "Correctness",
+      "title": "mix non-WAV test failed without decode cache root",
+      "status": "fixed"
+    },
+    {
+      "id": "EH-3",
+      "priority": "P2",
+      "dimension": "Maintainability",
+      "title": "rustfmt drift",
+      "status": "fixed"
+    },
+    {
+      "id": "EH-11",
+      "priority": "P2",
+      "dimension": "Maintainability",
+      "title": "unused binding warning in db alignment test",
+      "status": "fixed"
+    },
+    {
+      "id": "SR-01",
+      "priority": "P1",
+      "dimension": "Security",
+      "title": "Stored API key sent to a new host after base_url edit",
+      "status": "fixed"
+    },
+    {
+      "id": "F3",
+      "priority": "P1",
+      "dimension": "Correctness",
+      "title": "Silent whisper model fallback",
+      "status": "fixed"
+    },
+    {
+      "id": "UX-P0-1",
+      "priority": "P0",
+      "dimension": "First-run UX",
+      "title": "GetStarted checklist implemented but never mounted",
+      "status": "fixed"
+    },
+    {
+      "id": "UX-P0-2",
+      "priority": "P0",
+      "dimension": "First-run UX",
+      "title": "JobsView implemented but Jobs rail shows a placeholder",
+      "status": "fixed"
+    },
+    {
+      "id": "UX-P1-1",
+      "priority": "P1",
+      "dimension": "First-run UX",
+      "title": "ASR has no progress or cancel",
+      "status": "fixed"
+    },
+    {
+      "id": "UX-P1-2",
+      "priority": "P1",
+      "dimension": "First-run UX",
+      "title": "~93% of error paths show raw backend strings",
+      "status": "fixed"
+    },
+    {
+      "id": "UX-P2-1",
+      "priority": "P2",
+      "dimension": "First-run UX",
+      "title": "No localization (English only)",
+      "status": "open"
+    },
+    {
+      "id": "REL-1",
+      "priority": "P1",
+      "dimension": "Release",
+      "title": "Windows installers unsigned",
+      "status": "open"
+    },
+    {
+      "id": "REL-2",
+      "priority": "P1",
+      "dimension": "Release",
+      "title": "eval.yml calls a missing scripts/eval/run.mjs",
+      "status": "fixed"
+    }
+  ]
+}

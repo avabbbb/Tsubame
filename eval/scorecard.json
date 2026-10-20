@@ -1,0 +1,26 @@
+{
+  "beta_gate": 3.5,
+  "framework": "ISO/IEC 25010 quality characteristics + Google HEART (first-run) + DORA/SRE release signals",
+  "dimensions": {
+    "Correctness": { "weight": 2, "audit_score": null },
+    "Maintainability": { "weight": 1, "audit_score": null },
+    "First-run UX": { "weight": 2, "audit_score": 2.0 },
+    "Security": { "weight": 2, "audit_score": null },
+    "Release": { "weight": 1.5, "audit_score": 1.8 },
+    "Documentation": { "weight": 0.5, "audit_score": null }
+  },
+  "findings": [
+    { "id": "EH-1", "priority": "P1", "dimension": "Correctness", "title": "mix non-WAV test failed without decode cache root", "status": "fixed" },
+    { "id": "EH-3", "priority": "P2", "dimension": "Maintainability", "title": "rustfmt drift", "status": "fixed" },
+    { "id": "EH-11", "priority": "P2", "dimension": "Maintainability", "title": "unused binding warning in db alignment test", "status": "fixed" },
+    { "id": "SR-01", "priority": "P1", "dimension": "Security", "title": "Stored API key sent to a new host after base_url edit", "status": "fixed" },
+    { "id": "F3", "priority": "P1", "dimension": "Correctness", "title": "Silent whisper model fallback", "status": "fixed" },
+    { "id": "UX-P0-1", "priority": "P0", "dimension": "First-run UX", "title": "GetStarted checklist implemented but never mounted", "status": "fixed" },
+    { "id": "UX-P0-2", "priority": "P0", "dimension": "First-run UX", "title": "JobsView implemented but Jobs rail shows a placeholder", "status": "fixed" },
+    { "id": "UX-P1-1", "priority": "P1", "dimension": "First-run UX", "title": "ASR has no progress or cancel", "status": "fixed" },
+    { "id": "UX-P1-2", "priority": "P1", "dimension": "First-run UX", "title": "~93% of error paths show raw backend strings", "status": "fixed" },
+    { "id": "UX-P2-1", "priority": "P2", "dimension": "First-run UX", "title": "No localization (English only)", "status": "open" },
+    { "id": "REL-1", "priority": "P1", "dimension": "Release", "title": "Windows installers unsigned", "status": "open" },
+    { "id": "REL-2", "priority": "P1", "dimension": "Release", "title": "eval.yml calls a missing scripts/eval/run.mjs", "status": "fixed" }
+  ]
+}

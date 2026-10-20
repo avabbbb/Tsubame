@@ -1,0 +1,58 @@
+[
+  {
+    "at": "2026-10-19T03:36:52.955Z",
+    "commit": "7215e32",
+    "mode": "full",
+    "overall": 3.69,
+    "dimensions": {
+      "Documentation": 5,
+      "Correctness": 3.67,
+      "Maintainability": 5,
+      "First-run UX": 2,
+      "Security": 5,
+      "Release": 2.9
+    }
+  },
+  {
+    "at": "2026-10-19T03:44:24.421Z",
+    "commit": "7215e32",
+    "mode": "full",
+    "overall": 4.21,
+    "dimensions": {
+      "Documentation": 5,
+      "Correctness": 5,
+      "Maintainability": 5,
+      "First-run UX": 3,
+      "Security": 5,
+      "Release": 2.9
+    }
+  },
+  {
+    "at": "2026-10-19T03:46:35.336Z",
+    "commit": "7215e32",
+    "mode": "full",
+    "overall": 4.26,
+    "dimensions": {
+      "Documentation": 5,
+      "Correctness": 5,
+      "Maintainability": 5,
+      "First-run UX": 3.25,
+      "Security": 5,
+      "Release": 2.9
+    }
+  },
+  {
+    "at": "2026-10-19T09:50:51.800Z",
+    "commit": "7215e32",
+    "mode": "full",
+    "overall": 4.26,
+    "dimensions": {
+      "Documentation": 5,
+      "Correctness": 5,
+      "Maintainability": 5,
+      "First-run UX": 3.25,
+      "Security": 5,
+      "Release": 2.9
+    }
+  }
+]
