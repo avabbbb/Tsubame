@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tsubame protocol v1 test worker.
+"""YUZUKI protocol v1 test worker.
 
 Used by the Rust worker-host tests (``app/src-tauri/src/worker.rs``) and as the
 smallest working example of the ``tsubame_worker`` SDK. It has no third-party

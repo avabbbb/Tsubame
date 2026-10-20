@@ -1,4 +1,4 @@
-"""Tsubame ``audio.spatialize`` worker (spatial follow), protocol v1.
+"""YUZUKI ``audio.spatialize`` worker (spatial follow), protocol v1.
 
 Portions adapted from ASMR-Dubber (MIT), Copyright (c) 2026 ASMR Dubber
 contributors, https://github.com/EveningStudy/asmr-dubber commit 2faea94f.

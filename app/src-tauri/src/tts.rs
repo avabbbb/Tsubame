@@ -14,7 +14,7 @@
 //! `tts.py:tts_cache_key` / `tts_backends.py:_generic_tts_api_runner`
 //! (MIT, Copyright (c) 2026 ASMR Dubber contributors,
 //! https://github.com/EveningStudy/asmr-dubber, commit `2faea94f`). This is a
-//! re-implementation, evolved for Tsubame: the key excludes sentence id,
+//! re-implementation, evolved for YUZUKI: the key excludes sentence id,
 //! source-media hash and timing (timing edits never invalidate TTS), adapters
 //! are chosen by Provider kind (never by model name), and there is no
 //! reference-audio / voice-clone path.
@@ -226,6 +226,7 @@ impl TtsAdapter for OpenAiCompatibleTts {
         OPENAI_COMPATIBLE_ADAPTER_VERSION
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn synthesize<'a>(
         &'a self,
         request: &'a TtsRequest,
@@ -243,7 +244,7 @@ impl TtsAdapter for OpenAiCompatibleTts {
             sink.progress("synthesize", 0, 1);
             let mut builder = Client::builder()
                 .timeout(self.timeout)
-                .user_agent("Tsubame/0.1 SpeechTts");
+                .user_agent(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")));
             if is_loopback_url(&self.base_url) {
                 // A localhost server must never be routed through a system proxy.
                 builder = builder.no_proxy();
@@ -345,6 +346,7 @@ impl TtsAdapter for MockTts {
         MOCK_ADAPTER_VERSION
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn synthesize<'a>(
         &'a self,
         request: &'a TtsRequest,
@@ -410,6 +412,7 @@ impl TtsAdapter for AnyTtsAdapter {
         }
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn synthesize<'a>(
         &'a self,
         request: &'a TtsRequest,
@@ -1119,6 +1122,7 @@ pub(crate) async fn synthesize_asset<A: TtsAdapter>(
 
 /// Single-sentence synthesis. Holds the DB lock only for short synchronous
 /// phases, never across the adapter call.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_synthesis<A: TtsAdapter>(
     db: &Mutex<MediaDb>,
     store: &AssetStore,

@@ -215,7 +215,7 @@ bins, half the phase on each ear, energy-preserving gains; level envelope
 blocks with 0.2 s crossfaded pads, each block RMS-matched back to the dry clip;
 `rtf` strength blends with the dry mono.
 
-Tsubame evolutions:
+YUZUKI evolutions:
 - **Time mapping.** `source_trajectory`: clip sample *j* ↦ reference time
   `src_start + (src_end − src_start)·j/N` (the sentence path stretched to the clip).
   `concurrent`: *j* ↦ `dub_start + j/rate`; a block whose window has < 25 %

@@ -1,12 +1,12 @@
 # Notices
 
-Tsubame is an independent open-source project.
+YUZUKI is an independent open-source project.
 
 ## Namesake
 
-The name **Tsubame** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
+The name **YUZUKI** is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)**.
 
-Tsubame is not affiliated with, endorsed by, sponsored by, or an official product of Yuzuki Tsubame.
+YUZUKI is not affiliated with, endorsed by, sponsored by, or an official product of Yuzuki Tsubame.
 
 No voice recording, voice model, likeness, logo or other branding asset of Yuzuki Tsubame is included by virtue of this naming choice.
 
@@ -16,14 +16,14 @@ No voice recording, voice model, likeness, logo or other branding asset of Yuzuk
 
 - ASPlayer — GPL-3.0 — https://github.com/yumili426/ASPlayer
 
-ASPlayer may be consulted for product/interaction research only. Tsubame does not copy, adapt, vendor, link, or distribute ASPlayer source code.
+ASPlayer may be consulted for product/interaction research only. YUZUKI does not copy, adapt, vendor, link, or distribute ASPlayer source code.
 
 ### Incorporated MIT-derived code
 
 - ASMR-Dubber — MIT — https://github.com/EveningStudy/asmr-dubber (reference commit
   `2faea94fff102297d223996d43266d1cc20f6ca8`)
 
-Ported or adapted into Tsubame, each file keeping MIT attribution in its header:
+Ported or adapted into YUZUKI, each file keeping MIT attribution in its header:
 
 - loudness matching and peak-ceiling logic (`audio.py`) → `app/src-tauri/src/mix.rs`;
 - translation batching, prompt and validation rules (`translation.py`,
@@ -79,4 +79,4 @@ preserved as required.
 
 - wavesurfer.js — BSD-3-Clause — https://github.com/katspaugh/wavesurfer.js
 
-Tsubame uses wavesurfer.js for waveform visualization and its Regions/Timeline plugins. Preserve its BSD-3-Clause notice in distributions as required.
+YUZUKI uses wavesurfer.js for waveform visualization and its Regions/Timeline plugins. Preserve its BSD-3-Clause notice in distributions as required.

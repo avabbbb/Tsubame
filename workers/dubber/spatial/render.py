@@ -12,7 +12,7 @@ files ``src/asmr_dubber/spatial_rtf.py`` (``stft``, ``istft``, ``filters``,
     No noise-only covariance is available: this is NOT covariance whitening or DP-RTF.
     Only differential filtering is identifiable; common room response is not recovered.
 
-Tsubame changes:
+YUZUKI changes:
 - cues come from the cached per-media ``SpatialTrack`` instead of re-analysing
   every block; the reference STFT is still computed for the window only;
 - two time mappings: ``source_trajectory`` (sentence path stretched to the clip

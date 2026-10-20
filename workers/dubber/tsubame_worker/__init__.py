@@ -1,4 +1,4 @@
-"""Tsubame worker SDK (protocol v1). See ``protocol.py``."""
+"""YUZUKI worker SDK (protocol v1). See ``protocol.py``."""
 
 from .protocol import (
     PROTOCOL_VERSION,

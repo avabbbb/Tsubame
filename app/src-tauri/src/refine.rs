@@ -418,7 +418,9 @@ pub async fn chat_completion(
         ],
     });
 
-    let mut http = client("Tsubame/0.1")?.post(url).json(&body);
+    let mut http = client(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")))?
+        .post(url)
+        .json(&body);
     match provider.auth_mode.as_str() {
         "none" => {}
         "bearer" => {

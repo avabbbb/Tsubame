@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tsubame ``audio.spatialize`` worker: protocol v1 over stdio.
+"""YUZUKI ``audio.spatialize`` worker: protocol v1 over stdio.
 
 Run as ``python3 workers/dubber/spatial/worker.py`` (or ``python3 -m spatial.worker``
 from ``workers/dubber``). Request ``op`` is the capability ``audio.spatialize``; the

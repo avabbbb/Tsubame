@@ -10,7 +10,7 @@ file ``src/asmr_dubber/spatial_cues.py`` (``analyze``, ``smooth``, ``_fill``,
     Positive ITD means the right ear receives the sound later (source toward left).
     Broadband/time-smoothed features deliberately avoid copying Japanese phonemes.
 
-Tsubame changes (numerically equivalent per frame, see tests/test_golden.py):
+YUZUKI changes (numerically equivalent per frame, see tests/test_golden.py):
 - runs once per media over the whole reference and streams it in frame batches
   from a memory-mapped WAV instead of loading it;
 - per-frame FFT work is vectorised across a batch of frames;
@@ -181,7 +181,7 @@ class SpatialTrack:
     meta: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
-        """Dubber ``Cues.summary`` plus Tsubame activity/reliability fractions."""
+        """Dubber ``Cues.summary`` plus YUZUKI activity/reliability fractions."""
         itd = self.itd_seconds
         return {
             "method": "reference-guided spectral ILD + GCC-PHAT ITD + relative level/color",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tsubame FunASR/SenseVoice worker."""
+"""YUZUKI FunASR/SenseVoice worker."""
 
 from __future__ import annotations
 

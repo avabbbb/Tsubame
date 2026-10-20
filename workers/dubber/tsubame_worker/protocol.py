@@ -1,4 +1,4 @@
-"""Tsubame worker protocol v1 — Python SDK.
+"""YUZUKI worker protocol v1 — Python SDK.
 
 JSON Lines over stdio, see ``docs/19-dubbing-pipeline.md`` ("Worker protocol v1").
 
@@ -20,7 +20,7 @@ JSON Lines over stdio, see ``docs/19-dubbing-pipeline.md`` ("Worker protocol v1"
   ``out_of_memory`` (retryable); any other exception with ``internal``.
 * Workers never write SQLite and must write only inside ``input["out_dir"]``.
 
-Written for Tsubame (MIT). No ASMR-Dubber code is ported in this module.
+Written for YUZUKI (MIT). No ASMR-Dubber code is ported in this module.
 """
 
 from __future__ import annotations

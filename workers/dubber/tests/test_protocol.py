@@ -1,4 +1,4 @@
-"""Unit tests for the Tsubame worker SDK (protocol v1).
+"""Unit tests for the YUZUKI worker SDK (protocol v1).
 
 Run: python3 -m unittest discover -s workers/dubber/tests -v
 """

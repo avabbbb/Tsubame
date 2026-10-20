@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tsubame Faster-Whisper worker.
+"""YUZUKI Faster-Whisper worker.
 
 Reads one JSON request from stdin and writes one versioned ASR result to stdout.
 The runtime pack owns Python/CTranslate2/model installation; this file owns only
-the Tsubame worker contract.
+the YUZUKI worker contract.
 """
 
 from __future__ import annotations
