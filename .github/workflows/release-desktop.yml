@@ -88,7 +88,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "app/src-tauri -> target"
+          workspaces: ". -> target"
       - name: Require updater credentials and matching version; write ignored release overlay
         env:
           YUZUKI_UPDATER_PUBLIC_KEY: ${{ vars.YUZUKI_UPDATER_PUBLIC_KEY }}
@@ -96,7 +96,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node scripts/generate-release-config.mjs
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
         working-directory: app
       - name: Generate platform icons
         run: npm run tauri -- icon src-tauri/icons/icon.png

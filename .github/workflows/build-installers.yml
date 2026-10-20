@@ -44,9 +44,9 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "app/src-tauri -> target"
+          workspaces: ". -> target"
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
         working-directory: app
       - name: Generate platform icons
         run: npm run tauri -- icon src-tauri/icons/icon.png

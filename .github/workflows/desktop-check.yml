@@ -4,13 +4,19 @@ on:
   pull_request:
     paths:
       - "app/**"
+      - "workers/**"
+      - "scripts/**"
       - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/desktop-check.yml"
   push:
     branches: [main]
     paths:
       - "app/**"
+      - "workers/**"
+      - "scripts/**"
       - "Cargo.toml"
+      - "Cargo.lock"
 
 jobs:
   frontend:
@@ -20,20 +26,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install
+      - run: npm ci
         working-directory: app
       - run: npm run build
         working-directory: app
 
   rust:
-    runs-on: ubuntu-latest
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
       - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -46,4 +63,21 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
-      - run: cargo test --workspace --lib
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+      - name: Test (lib, integration and doc-tests)
+        run: cargo test --workspace
+
+  workers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install pytest -r workers/dubber/spatial/requirements.txt
+      - name: Run worker tests
+        working-directory: workers/dubber
+        run: python -m pytest spatial/tests tests
