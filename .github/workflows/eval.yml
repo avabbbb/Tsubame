@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install worker test dependencies
+        run: python -m pip install -r workers/dubber/spatial/requirements.txt
       - name: Run fast eval
         run: node scripts/eval/run.mjs --fast
       - name: Upload eval report
