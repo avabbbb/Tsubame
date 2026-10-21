@@ -101,7 +101,11 @@ jobs:
       - name: Generate platform icons
         run: npm run tauri -- icon src-tauri/icons/icon.png
         working-directory: app
-      - name: Build installers, updater signatures and latest.json
+      # Tauri treats a defined APPLE_CERTIFICATE as a request to import it, even
+      # when the secret is missing and the value is empty. So the Apple variables
+      # are only present in the step that actually signs with Developer ID.
+      - name: Build installers, updater signatures and latest.json (Developer ID)
+        if: runner.os == 'macOS' && needs.preflight.outputs.mac_signed == 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -109,11 +113,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           YUZUKI_UPDATER_PUBLIC_KEY: ${{ vars.YUZUKI_UPDATER_PUBLIC_KEY }}
           VITE_YUZUKI_UPDATER_ENABLED: "true"
-          # Developer ID signing + notarization when the preflight found every
-          # Apple secret; otherwise ad-hoc ("-") inside an explicit prerelease.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ needs.preflight.outputs.mac_signed == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -128,6 +130,29 @@ jobs:
           retryAttempts: 3
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+      # Windows, and macOS without Developer ID: no Apple variables at all; macOS
+      # gets an ad-hoc ("-") signature inside an explicit prerelease.
+      - name: Build installers, updater signatures and latest.json
+        if: runner.os != 'macOS' || needs.preflight.outputs.mac_signed != 'true'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          YUZUKI_UPDATER_PUBLIC_KEY: ${{ vars.YUZUKI_UPDATER_PUBLIC_KEY }}
+          VITE_YUZUKI_UPDATER_ENABLED: "true"
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+        with:
+          projectPath: app
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
+          tagName: ${{ github.ref_name }}
+          releaseName: YUZUKI ${{ github.ref_name }}
+          releaseBody: "YUZUKI Desktop installers and signed in-app updates. Publish this draft only after every platform has passed. Prerelease means at least one platform installer is not code-signed."
+          releaseDraft: true
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          retryAttempts: 3
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
 
-# The updater polls GitHub's *published* latest release; draft releases
+# The updater polls GitHub's published latest release; draft releases
 # cannot silently update installed applications.
