@@ -17,6 +17,8 @@ on:
       - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".github/workflows/desktop-check.yml"
+  workflow_dispatch:
 
 jobs:
   frontend:
