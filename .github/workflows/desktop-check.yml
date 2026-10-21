@@ -63,6 +63,18 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
+      # tauri-build needs icons/icon.ico on Windows; icons are generated, not
+      # committed (see .gitignore), same as build-installers.
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Windows'
+        with:
+          node-version: "22"
+      - name: Generate platform icons
+        if: runner.os == 'Windows'
+        working-directory: app
+        run: |
+          npm ci
+          npm run tauri -- icon src-tauri/icons/icon.png
       - name: Clippy (advisory)
         continue-on-error: true
         run: cargo clippy --workspace --all-targets
