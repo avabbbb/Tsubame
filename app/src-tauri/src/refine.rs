@@ -280,7 +280,7 @@ pub fn apply_glossary(text: &str, glossary: &[GlossaryTerm]) -> String {
                 .map(move |alias| (alias.trim(), term.term.as_str()))
         })
         .collect();
-    pairs.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+    pairs.sort_by_key(|pair| std::cmp::Reverse(pair.0.chars().count()));
     let mut out = text.to_string();
     for (alias, canonical) in pairs {
         if alias.is_ascii() {
