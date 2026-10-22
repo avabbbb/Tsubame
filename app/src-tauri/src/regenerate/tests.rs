@@ -1178,6 +1178,7 @@ impl TtsAdapter for CancellingTts {
         MOCK_ADAPTER_VERSION
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn synthesize<'a>(
         &'a self,
         request: &'a TtsRequest,

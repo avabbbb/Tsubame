@@ -77,9 +77,8 @@ jobs:
         run: |
           npm ci
           npm run tauri -- icon src-tauri/icons/icon.png
-      - name: Clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test (lib, integration and doc-tests)
         run: cargo test --workspace
 
