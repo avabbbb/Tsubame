@@ -1,11 +1,20 @@
 ---
 name: yuzuki
-description: Bootstrap, diagnose, configure, launch, and operate the local YUZUKI Desktop through its stable CLI/MCP control plane.
+description: Bootstrap, diagnose, configure, launch, and operate the local YUZUKI Desktop. The CLI/MCP control plane is planned (PR #13) and not yet shipped.
 ---
 
 # YUZUKI Skill
 
 Use this Skill when the user wants to install, initialize, configure, launch, diagnose or operate YUZUKI.
+
+## Implementation status (read first)
+
+As of v0.1.0 the yuzuki CLI, the YUZUKI MCP server and the local RPC endpoint are planned, not implemented (PR #13). Every yuzuki ... command in this Skill and in references/commands.md is a contract target.
+
+Until they ship:
+- do not invoke yuzuki commands or assume a yuzuki binary on PATH; report that the control plane is not available yet;
+- operate YUZUKI through the Desktop GUI, or inspect files only for read-only diagnostics;
+- never write to the YUZUKI SQLite database or asset store directly.
 
 ## Principle
 

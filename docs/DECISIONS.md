@@ -110,7 +110,7 @@ Accepted.
 Provider rows store only a `secret_ref`. The Desktop resolves the actual credential through the OS credential store. UI, CLI and MCP surfaces expose redacted state/reference metadata only.
 
 
-## ADR-015 — Local and remote inference share one Provider Registry
+## ADR-018 — Local and remote inference share one Provider Registry
 
 Accepted.
 
