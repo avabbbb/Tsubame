@@ -53,7 +53,6 @@ Freeze the long-term implementation boundary:
 ### PR #7 — Modular ASR adapters
 
 - Faster-Whisper;
-- whisper.cpp;
 - SenseVoice/FunASR;
 - Apple Speech on macOS;
 - cloud ASR adapters.
@@ -61,7 +60,7 @@ Freeze the long-term implementation boundary:
 ### PR #8 — Unified local/remote Provider execution
 
 - remote API / local server / local runtime / native OS execution modes;
-- Faster-Whisper / SenseVoice / whisper.cpp / Apple Speech become Providers;
+- Faster-Whisper / SenseVoice / Apple Speech become Providers;
 - LM Studio/local OpenAI-compatible models use the same registry;
 - ASR Studio selects Provider + Model;
 - translation/refinement can choose paid APIs or local models without a separate branch.

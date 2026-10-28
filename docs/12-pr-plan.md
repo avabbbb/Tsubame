@@ -94,7 +94,6 @@ Goal: make transcription execution replaceable behind one canonical ASR result c
 
 Initial adapters:
 - Faster-Whisper;
-- whisper.cpp;
 - SenseVoice/FunASR;
 - Apple Speech;
 - OpenAI-compatible transcription.
@@ -123,7 +122,7 @@ Scope:
 - translation/refinement architecture explicitly supports both paid APIs and local LLMs.
 
 Acceptance:
-- Faster-Whisper, SenseVoice, whisper.cpp and Apple Speech appear as Providers;
+- Faster-Whisper, SenseVoice and Apple Speech appear as Providers;
 - Studio selects Provider + Model, never Engine + Model;
 - local server models and remote API models can satisfy the same capability;
 - system-managed local Providers cannot be deleted/overwritten;
@@ -187,7 +186,7 @@ select Segment
 
 ## PR #12 — Runtime and model bootstrap
 
-Status: in progress on feat/runtime-bootstrap. Install engine, whisper.cpp runtime/model packs, doctor and the Settings/ASR install UI are implemented; runtime tests still need a verified run. Non-WAV media decode and a TTS pack remain before internal testing. Contract: Runtime bootstrap.
+Status: in progress on feat/runtime-bootstrap. Install engine, the faster-whisper BASE runtime pack plus the optional NVIDIA GPU pack (archives built; release assets NOT YET PUBLISHED), non-WAV media decode, doctor and the Settings/ASR install UI are implemented. Publishing the pack assets and a TTS pack remain before internal testing. Contract: Runtime bootstrap.
 
 Goal: normal users configure no developer environment.
 

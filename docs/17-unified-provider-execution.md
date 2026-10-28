@@ -71,7 +71,6 @@ YUZUKI owns/launches a local runtime or sidecar.
 Examples:
 - Faster-Whisper;
 - SenseVoice/FunASR;
-- whisper.cpp CLI/runtime;
 - future IndexTTS worker.
 
 Runtime/model installation is delegated to Runtime Packs.
@@ -131,7 +130,6 @@ Initial system-managed local Providers:
 
 - `local.faster-whisper`
 - `local.sensevoice`
-- `local.whisper-cpp`
 - `local.apple-speech`
 
 User-configured OpenAI-compatible Providers can also expose `speech.asr`.

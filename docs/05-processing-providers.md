@@ -60,7 +60,6 @@ PR #7 implements the shared ASR result contract and internal adapters described 
 
 The architecture should accommodate at least:
 
-- whisper.cpp as a system-managed local Provider;
 - Faster-Whisper / CTranslate2;
 - SenseVoice / FunASR;
 - Apple SpeechAnalyzer/SpeechTranscriber on supported macOS;

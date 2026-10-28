@@ -160,7 +160,6 @@ System-managed Providers are present in the same registry:
 
 - `local.faster-whisper`;
 - `local.sensevoice`;
-- `local.whisper-cpp`;
 - `local.apple-speech`.
 
 They cannot be deleted or overwritten from the connection form. Their readiness is supplied by Runtime/OS state.
@@ -195,4 +194,4 @@ PR #7 originally introduced ASR adapters. PR #8 removes the second product-level
 
 See [Unified Provider Execution](17-unified-provider-execution.md).
 
-It will add actual execution adapters for Faster-Whisper, whisper.cpp, SenseVoice/FunASR, Apple Speech and remote ASR providers. Those adapters must resolve through capability/provider contracts established here.
+It will add actual execution adapters for Faster-Whisper, SenseVoice/FunASR, Apple Speech and remote ASR providers. Those adapters must resolve through capability/provider contracts established here.

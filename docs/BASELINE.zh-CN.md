@@ -58,7 +58,7 @@ Model
 Runtime / Transport
 ```
 
-ASR 可以来自 Whisper.cpp、Faster-Whisper、SenseVoice、Apple Speech、阿里云模型或未来的新模型。
+ASR 可以来自 Faster-Whisper、SenseVoice、Apple Speech、阿里云模型或未来的新模型。
 
 翻译、精修、TTS 同理。
 
@@ -90,7 +90,7 @@ Provider 的执行方式可以是：
 
 - `remote_api`：OpenAI、阿里等付费/BYOK API；
 - `local_server`：LM Studio、Ollama、llama.cpp server 等 localhost/LAN 服务；
-- `local_runtime`：Faster-Whisper、SenseVoice、whisper.cpp 等 YUZUKI 本地 Runtime；
+- `local_runtime`：Faster-Whisper、SenseVoice 等 YUZUKI 本地 Runtime；
 - `native_os`：Apple SpeechAnalyzer 等系统原生能力。
 
 因此 ASR、翻译、精修、TTS 都可以在同一个能力选择器中同时出现“本地模型”和“远端 API”。功能代码不能写 `if local` / `if online` 两套逻辑，而是解析满足 Capability 的 Provider + Model。

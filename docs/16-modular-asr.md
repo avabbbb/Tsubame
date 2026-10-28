@@ -69,24 +69,9 @@ SenseVoice/FunASR can produce rich speech-understanding output. YUZUKI normalize
 
 If a checkpoint/runtime exposes timestamps without reliable sentence grouping, the worker does **not invent sentence boundaries**. It returns a whole-span Segment and records a note. Refinement/alignment is a later stage.
 
-Development runtime hook: \`TSUBAME_FUNASR_PYTHON\`.
+Runtime: the app-managed `runtime.funasr` pack (embeddable CPython 3.12.0, funasr 1.4.16, CPU torch; see [Runtime bootstrap](06-runtime-bootstrap.md)). `TSUBAME_FUNASR_PYTHON` overrides it and is always reported. The worker keeps stdout for the JSON result only (model logs go to stderr), splits speech with `fsmn-vad`, transcribes each span with SenseVoice, applies `rich_transcription_postprocess`, and turns ITN off for Japanese and Korean. Segment times are VAD speech boundaries, recorded in the result notes.
 
 Default model hint: \`iic/SenseVoiceSmall\`.
-
-### whisper.cpp
-
-Provider: `local.whisper-cpp` · execution: `local_runtime` · adapter: native CLI.
-
-Reference:
-- https://github.com/ggml-org/whisper.cpp
-
-The adapter requests JSON output and consumes segment offsets/text.
-
-Development/runtime hooks:
-- \`TSUBAME_WHISPER_CPP_BIN\`
-- \`TSUBAME_WHISPER_CPP_MODEL\`
-
-This PR accepts 16-bit WAV input for whisper.cpp. General media extraction/normalization belongs to Runtime Bootstrap so the ASR layer does not acquire a second FFmpeg lifecycle.
 
 ### Apple SpeechAnalyzer
 
@@ -117,9 +102,24 @@ It first requests segment timestamps with \`verbose_json\`. If the compatible en
 
 Plain-text JSON responses become one whole-track Segment when the media duration is known. This is explicit lower-fidelity timing, not fake sentence alignment.
 
+## Model evaluation (2026-10)
+
+Same 120 s Japanese ASMR clip, RTX 3050 Ti Laptop (4 GB), faster-whisper 1.2.1, `compute_type=int8_float16`:
+
+| Model | Wall time | Segments | Verdict |
+|---|---|---|---|
+| `large-v3-turbo` | 15 s | 29 | Accurate text and timings, ~2.0/4 GB VRAM. **Default.** |
+| whisper.cpp `small` (old default) | 42 s | 33 | Baseline; turbo is ~2.8x faster. Removed (ADR-019). |
+| `anime-whisper` (`quantumcookie/anime-whisper-ct2`) | 16 s | 4 | ~30 s blocks, end timestamps only a few hundred ms after start, repeated hallucination. Not offered in the model list. |
+| `Fun-ASR-MLT-Nano-2512` | — | — | Not tested: no timestamp output yet (model card roadmap item unchecked), needs PyTorch + `funasr>=1.4.1` + `trust_remote_code`, 1.97 GB checkpoint. Blocked for subtitles. |
+
+The worker reads the app-decoded 16 kHz mono WAV with `wave` + numpy instead of PyAV: PyAV 19 breaks faster-whisper 1.2.1 (`metadata_errors` argument).
+
+Runtime packs: the spike (embeddable CPython 3.12.0 running the worker from the hash-locked set, ~2.4 GB installed, dominated by cuDNN and cuBLAS) became two packs: `runtime.faster-whisper` (CPU BASE, 97,115,053-byte archive) and the optional `runtime.faster-whisper.cuda` (NVIDIA GPU libraries, 1,372,642,304-byte archive). Sizes, hashes, device selection and publication status: [Runtime bootstrap](06-runtime-bootstrap.md).
+
 ## Runtime separation
 
-This PR intentionally does not install Python, CTranslate2, FunASR, whisper.cpp binaries or model checkpoints.
+PR #7 itself installs nothing: Python, CTranslate2 and FunASR come from runtime packs (PR #11/#12, [Runtime bootstrap](06-runtime-bootstrap.md)).
 
 \`\`\`text
 PR #7

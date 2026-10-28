@@ -26,9 +26,9 @@ Features cannot hard-code concrete provider/model names.
 
 ## ADR-005 — Provider and model are separate concepts
 
-Accepted.
+Superseded by ADR-015.
 
-Provider = auth/discovery/transport. Model = capability descriptor.
+Provider = auth/discovery/transport. Model = capability descriptor. ADR-015 is the canonical statement and adds capability resolution and independent discovery URLs.
 
 ## ADR-006 — Desktop users configure no developer environment
 
@@ -110,6 +110,16 @@ Accepted.
 Provider rows store only a `secret_ref`. The Desktop resolves the actual credential through the OS credential store. UI, CLI and MCP surfaces expose redacted state/reference metadata only.
 
 
+## ADR-017 — Restore YUZUKI as the product name
+
+Accepted on 2026-10-14. Supersedes ADR-012.
+
+The user-facing product name is **YUZUKI** (uppercase in application branding); the GitHub repository is `avabbbb/Yuzuki`. The planned agent Skill and CLI command use lowercase `yuzuki`. This is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)** and does not imply affiliation, endorsement or rights to her name, likeness, recordings or voice model. `docs/09-security-rights.md` continues to govern those boundaries.
+
+For compatibility, existing Tauri bundle identifier `com.avabbbb.tsubame`, Rust crate/module identifiers, worker protocol namespaces, existing localStorage keys, asset/database paths and cache key domains are **not renamed** in this branding-only change. Any future internal rename requires explicit migration and compatibility tests to prevent loss of existing state and credentials.
+
+Install-path consequence [INFERENCE, not yet verified with a packaged upgrade]: the Windows installer derives its install directory and Add/Remove Programs entry from `productName`, so an existing `Tsubame` install is not upgraded in place by a `YUZUKI` installer; both can coexist until the old one is uninstalled. User data is unaffected because the bundle identifier (and therefore the app data directory, `tsubame.db` and keyring entries) is unchanged. Release notes for the first YUZUKI build must tell Windows users to uninstall Tsubame after upgrading.
+
 ## ADR-018 — Local and remote inference share one Provider Registry
 
 Accepted.
@@ -135,13 +145,8 @@ Feature code, Processing Profiles, provenance, CLI and MCP identify **Provider +
 
 This applies equally to ASR, translation, transcript refinement, TTS and future capabilities.
 
+## ADR-019 — faster-whisper large-v3-turbo is the default ASR
 
-## ADR-017 — Restore YUZUKI as the product name
+Accepted.
 
-Accepted on 2026-10-14. Supersedes ADR-012.
-
-The user-facing product name is **YUZUKI** (uppercase in application branding); the GitHub repository is `avabbbb/Yuzuki`. The planned agent Skill and CLI command use lowercase `yuzuki`. This is a personal homage to voice actress **Yuzuki Tsubame (柚木つばめ)** and does not imply affiliation, endorsement or rights to her name, likeness, recordings or voice model. `docs/09-security-rights.md` continues to govern those boundaries.
-
-For compatibility, existing Tauri bundle identifier `com.avabbbb.tsubame`, Rust crate/module identifiers, worker protocol namespaces, existing localStorage keys, asset/database paths and cache key domains are **not renamed** in this branding-only change. Any future internal rename requires explicit migration and compatibility tests to prevent loss of existing state and credentials.
-
-Install-path consequence [INFERENCE, not yet verified with a packaged upgrade]: the Windows installer derives its install directory and Add/Remove Programs entry from `productName`, so an existing `Tsubame` install is not upgraded in place by a `YUZUKI` installer; both can coexist until the old one is uninstalled. User data is unaffected because the bundle identifier (and therefore the app data directory, `tsubame.db` and keyring entries) is unchanged. Release notes for the first YUZUKI build must tell Windows users to uninstall Tsubame after upgrading.
+On the reference 120 s Japanese clip, `local.faster-whisper` with `large-v3-turbo` was ~2.8x faster than whisper.cpp `small` with accurate timings. whisper.cpp is retired. `anime-whisper` is excluded because its timestamps are unusable for subtitles, and Fun-ASR is deferred until it returns timestamps. See `16-modular-asr.md` → Model evaluation.
