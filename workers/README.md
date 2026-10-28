@@ -17,7 +17,6 @@ Runtime packs will supply the Python interpreter, packages and model assets. The
 
 Other ASR execution boundaries:
 
-- whisper.cpp → native CLI adapter in Rust;
 - Apple SpeechAnalyzer → native macOS helper boundary;
 - remote providers → HTTP transport in Rust.
 

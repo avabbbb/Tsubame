@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""YUZUKI FunASR/SenseVoice worker."""
+"""YUZUKI FunASR/SenseVoice worker.
+
+Reads one JSON request from stdin and writes one versioned ASR result to stdout.
+The runtime pack (runtime.funasr) owns Python, PyTorch (CPU) and FunASR; models
+download through ModelScope into MODELSCOPE_CACHE. SenseVoice emits no
+timestamps, so FSMN-VAD splits the audio into speech spans and each span is
+transcribed on its own: segment times are the VAD boundaries.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
+
+VAD_MODEL = "fsmn-vad"
+SAMPLE_RATE = 16000
 
 
 def fail(message: str) -> None:
@@ -12,22 +23,31 @@ def fail(message: str) -> None:
     raise SystemExit(2)
 
 
-def normalize_timestamps(raw, text: str, duration_ms: int):
-    if isinstance(raw, list) and raw:
-        rows = []
-        # FunASR timestamps are commonly [start_ms, end_ms] pairs.
-        for item in raw:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            start, end = int(item[0]), int(item[1])
+def load_audio(path: str):
+    import numpy as np
+    import soundfile as sf
+
+    data, rate = sf.read(path, dtype="float32", always_2d=True)
+    data = data.mean(axis=1)
+    if rate != SAMPLE_RATE:
+        import librosa
+
+        data = librosa.resample(data, orig_sr=rate, target_sr=SAMPLE_RATE)
+    return np.ascontiguousarray(data, dtype=np.float32)
+
+
+def vad_spans(vad, audio, duration_ms: int):
+    result = vad.generate(input=audio, fs=SAMPLE_RATE)
+    first = result[0] if isinstance(result, list) and result else {}
+    spans = []
+    for item in (first.get("value") or []) if isinstance(first, dict) else []:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            start, end = max(0, int(item[0])), int(item[1])
+            if end < 0:  # open-ended span at the end of the input
+                end = duration_ms
             if end > start:
-                rows.append((start, end))
-        if rows:
-            # Some checkpoints expose word/character timestamps without sentence
-            # grouping. Preserve the whole text as a single honest span rather
-            # than inventing sentence boundaries.
-            return 0, max(end for _, end in rows)
-    return 0, max(1, int(duration_ms))
+                spans.append((start, end))
+    return spans
 
 
 def main() -> None:
@@ -39,50 +59,63 @@ def main() -> None:
     if request.get("contract_version") != 1:
         fail("unsupported ASR contract version")
 
-    try:
-        from funasr import AutoModel
-    except Exception as exc:
-        fail(f"FunASR runtime is unavailable: {exc}")
-
     model_id = str(request.get("model_id") or "iic/SenseVoiceSmall")
-    model = AutoModel(model=model_id)
-    kwargs = {"input": request["media_path"]}
     language = request.get("language")
-    if language not in (None, "", "auto"):
-        kwargs["language"] = language
+    language = language if language not in (None, "", "auto") else None
 
-    result = model.generate(**kwargs)
-    first = result[0] if isinstance(result, list) and result else result
-    if not isinstance(first, dict):
-        fail("FunASR returned an unsupported result shape")
+    # FunASR and ModelScope print banners and progress to stdout; stdout carries
+    # only the result JSON, so everything before it goes to stderr.
+    with contextlib.redirect_stdout(sys.stderr):
+        try:
+            from funasr import AutoModel
+            from funasr.utils.postprocess_utils import rich_transcription_postprocess
+        except Exception as exc:
+            fail(f"FunASR runtime is unavailable: {exc}")
 
-    text = str(first.get("text") or "").strip()
-    if not text:
+        audio = load_audio(request["media_path"])
+        duration_ms = int(len(audio) * 1000 / SAMPLE_RATE)
+        vad = AutoModel(model=VAD_MODEL, disable_update=True, device="cpu")
+        asr = AutoModel(model=model_id, disable_update=True, device="cpu")
+        spans = vad_spans(vad, audio, duration_ms)
+
+        segments = []
+        for start, end in spans:
+            chunk = audio[start * SAMPLE_RATE // 1000 : end * SAMPLE_RATE // 1000]
+            if len(chunk) < SAMPLE_RATE // 10:
+                continue
+            out = asr.generate(
+                input=chunk,
+                fs=SAMPLE_RATE,
+                language=language or "auto",
+                # ITN punctuates zh/en/yue well but splits Japanese and Korean
+                # words with spaces and commas, so those stay raw.
+                use_itn=language not in ("ja", "ko"),
+            )
+            first = out[0] if isinstance(out, list) and out else out
+            if not isinstance(first, dict):
+                fail("FunASR returned an unsupported result shape")
+            text = rich_transcription_postprocess(str(first.get("text") or "")).strip()
+            if text:
+                segments.append(
+                    {"start_ms": start, "end_ms": end, "text": text, "confidence": None}
+                )
+
+    if not segments:
         fail("FunASR returned no transcript text")
 
-    start_ms, end_ms = normalize_timestamps(
-        first.get("timestamp"),
-        text,
-        int(request.get("media_duration_ms") or 0),
-    )
     output = {
         "contract_version": 1,
         "adapter_id": "funasr-sensevoice",
         "model_id": model_id,
-        "language": language if language not in (None, "", "auto") else None,
-        "segments": [
-            {
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "text": text,
-                "confidence": None,
-            }
-        ],
+        "language": language,
+        "segments": segments,
         "notes": [
-            "SenseVoice/FunASR checkpoint output is normalized without inventing sentence boundaries."
+            f"device=cpu vad={VAD_MODEL} spans={len(spans)}; segment times are VAD speech boundaries"
         ],
     }
-    json.dump(output, sys.stdout, ensure_ascii=False)
+    # Explicit UTF-8: a piped sys.stdout on Windows uses the ANSI code page.
+    sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":
