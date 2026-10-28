@@ -701,3 +701,11 @@ fn migration_upgrades_an_existing_database() {
         assert!(voice::list(db.connection()).unwrap().is_empty());
     }
 }
+
+#[test]
+fn request_body_sends_only_redacted_sentence_text() {
+    let mut req = request("preset");
+    req.text = "联系 a.b@mail.example.co.jp 或 090-1234-5678".into();
+    let body = OpenAiCompatibleTts::request_body(&req);
+    assert_eq!(body["input"].as_str(), Some("联系 ⟦EMAIL1⟧ 或 ⟦PHONE1⟧"));
+}

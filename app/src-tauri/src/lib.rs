@@ -1,21 +1,31 @@
+mod data_root; // project-local data root: DB, runtime packs, models, caches
 mod alignment;
 mod asr;
+mod control;
 mod db;
+mod dictionary; // P7: user-imported offline dictionaries (JMdict JSON, ECDICT CSV)
+#[allow(dead_code)] // M3a: GPU discovery + ASR tier policy; M3c wires it into provider defaults
+mod gpu;
 mod jobs; // PR #10: jobs table + runner
 mod media_decode; // non-WAV source decode (symphonia) + decode cache
 mod mix;
+mod operations; // docs/07: Operation Registry shared by UI, CLI and MCP
 mod placement;
 mod providers;
+mod redact;
 mod refine;
 mod regenerate; // PR plan #11: single-sentence regenerate loop
 mod runtime; // docs/06: runtime/model packs, install jobs, doctor
+mod sources; // PR #14: Source Registry, Download Manager, Local + DLsite adapters
 mod spatial; // audio.spatialize host: keys, cache, `spatial` jobs
 mod subtitle;
 mod takes; // PR plan #11: per-Segment TTS takes
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod translate;
 mod tts;
 mod voice;
-mod worker; // PR #10: worker protocol v1 host
+mod worker; // PR #10: worker protocol v1 host // fixture Desktop for crates/yuzuki-cli tests
 
 use alignment::{AlignmentResult, AlignmentTarget};
 use asr::{AsrResult, AsrRunInput};
@@ -43,12 +53,54 @@ struct AppState {
     db: Mutex<MediaDb>,
 }
 
+/// P7: offline dictionary index, kept in its own dictionary.db.
+struct DictState(dictionary::DictStore);
+
+#[tauri::command]
+async fn dict_import(
+    kind: dictionary::DictKind,
+    path: String,
+    app: AppHandle,
+) -> Result<dictionary::DictSource, String> {
+    let validated = validate_ipc_path(&path, &["json", "csv"], "dictionary")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<DictState>().0.import_file(kind, &validated)
+    })
+    .await
+    .map_err(|err| format!("dictionary import failed: {err}"))?
+}
+
+#[tauri::command]
+fn dict_lookup(
+    query: String,
+    state: State<DictState>,
+) -> Result<Option<dictionary::DictLookup>, String> {
+    state.0.lookup(&query, 8)
+}
+
+#[tauri::command]
+fn dict_sources(state: State<DictState>) -> Result<Vec<dictionary::DictSource>, String> {
+    state.0.sources()
+}
+
+#[tauri::command]
+fn dict_remove(kind: dictionary::DictKind, state: State<DictState>) -> Result<(), String> {
+    state.0.remove_source(kind)
+}
+
+fn op_ctx<'a>(state: &'a AppState, jobs: &'a JobsState) -> operations::OperationContext<'a> {
+    operations::OperationContext {
+        db: &state.db,
+        jobs: &jobs.0,
+    }
+}
+
 /// Extensions accepted by the media picker in App.tsx.
 const MEDIA_EXTENSIONS: &[&str] = &[
     "mp3", "m4a", "wav", "flac", "ogg", "opus", "aac", "m4b", "mp4", "m4v", "webm", "mkv", "mov",
     "avi",
 ];
-const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt"];
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt", "lrc"];
 
 /// Validates a webview-supplied path: absolute, no .., allowlisted extension.
 fn validate_ipc_path(path: &str, allowed: &[&str], kind: &str) -> Result<PathBuf, String> {
@@ -77,13 +129,15 @@ fn validate_ipc_path(path: &str, allowed: &[&str], kind: &str) -> Result<PathBuf
 }
 
 #[tauri::command]
-fn list_media(state: State<AppState>) -> Result<Vec<MediaItem>, String> {
-    state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())?
-        .list_media()
-        .map_err(|e| e.to_string())
+fn list_media(state: State<AppState>, jobs: State<JobsState>) -> Result<Vec<MediaItem>, String> {
+    operations::invoke::<operations::MediaList>(&op_ctx(&state, &jobs), operations::NoInput {})
+        .map_err(|e| e.message)
+}
+
+/// Implemented sources only (PR #14); the Sources sidebar renders this list.
+#[tauri::command]
+fn list_sources() -> Vec<sources::SourceInfo> {
+    sources::list()
 }
 
 #[tauri::command]
@@ -102,6 +156,78 @@ fn import_media(path: String, app: AppHandle, state: State<AppState>) -> Result<
         .allow_file(&item.path)
         .map_err(|e| format!("failed to allow playback of {}: {e}", item.path))?;
     Ok(item)
+}
+
+/// Directory levels import_folder descends; deeper trees are almost always a mistake.
+const FOLDER_IMPORT_MAX_DEPTH: usize = 16;
+
+/// Media files under dir, recursively, sorted by path so episodes import in
+/// order. Hidden (dot-prefixed) entries and symlinks are skipped, so a link
+/// cycle can never loop the scan.
+fn collect_media_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((current, depth)) = pending.pop() {
+        for entry in std::fs::read_dir(&current)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                if depth + 1 < FOLDER_IMPORT_MAX_DEPTH {
+                    pending.push((path, depth + 1));
+                }
+            } else if file_type.is_file() {
+                let extension = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_default();
+                if MEDIA_EXTENSIONS.contains(&extension.as_str()) {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Same-directory subtitle sidecars (01.vtt, 01.mp3.lrc, 01.srt) seed
+/// the transcript of a freshly imported file, but never overwrite one the
+/// library already has (re-import keeps edits). Returns whether it seeded.
+fn seed_sidecar_subtitles(db: &mut db::MediaDb, media_id: i64, file: &Path) -> Result<bool, String> {
+    let existing: i64 = db
+        .connection()
+        .query_row("SELECT COUNT(1) FROM segments WHERE media_id = ?1", [media_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if existing != 0 {
+        return Ok(false);
+    }
+    for sidecar in sources::local::sidecars(file).unwrap_or_default() {
+        let Ok(format) = SubtitleFormat::from_path(&sidecar) else { continue };
+        let Ok(content) = fs::read_to_string(&sidecar) else { continue };
+        let Ok(cues) = subtitle::parse(&content, format) else { continue };
+        db.replace_segments(media_id, &cues, &format!("import:{}", format.label()))
+            .map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+fn import_folder(
+    path: String,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<Vec<MediaItem>, String> {
+    operations::invoke::<operations::MediaImportFolder>(
+        &op_ctx(&state, &jobs),
+        operations::MediaImportFolderInput { path },
+    )
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
@@ -131,13 +257,16 @@ fn save_playback_state(
 }
 
 #[tauri::command]
-fn get_segments(media_id: i64, state: State<AppState>) -> Result<Vec<Segment>, String> {
-    state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())?
-        .get_segments(media_id)
-        .map_err(|e| e.to_string())
+fn get_segments(
+    media_id: i64,
+    state: State<AppState>,
+    jobs_state: State<JobsState>,
+) -> Result<Vec<Segment>, String> {
+    operations::invoke::<operations::SegmentList>(
+        &op_ctx(&state, &jobs_state),
+        operations::SegmentListInput { media_id },
+    )
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
@@ -150,6 +279,7 @@ fn get_segment(id: i64, state: State<AppState>) -> Result<Option<Segment>, Strin
         .map_err(|e| e.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn update_segment(
     id: i64,
@@ -159,25 +289,20 @@ fn update_segment(
     start_ms: i64,
     end_ms: i64,
     state: State<AppState>,
+    jobs_state: State<JobsState>,
 ) -> Result<Segment, String> {
-    if start_ms < 0 {
-        return Err("segment start must be non-negative".to_string());
-    }
-    if end_ms <= start_ms {
-        return Err("segment end must be after start".to_string());
-    }
-
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.update_segment(
-        id,
-        expected_revision,
-        &source_text,
-        &translated_text,
-        start_ms,
-        end_ms,
+    operations::invoke::<operations::SegmentUpdate>(
+        &op_ctx(&state, &jobs_state),
+        operations::SegmentUpdateInput {
+            id,
+            expected_revision,
+            source_text: Some(source_text),
+            translated_text: Some(translated_text),
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+        },
     )
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "segment revision conflict".to_string())
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
@@ -263,7 +388,7 @@ struct AsrTranscriptionOutcome {
 
 async fn run_transcription(
     state: &AppState,
-    input: AsrRunInput,
+    mut input: AsrRunInput,
     sink: &dyn jobs::ProgressSink,
 ) -> Result<AsrTranscriptionOutcome, String> {
     sink.progress("transcribe", 0, 0);
@@ -281,13 +406,14 @@ async fn run_transcription(
         );
     }
 
+    let migration = asr::migrate_retired_target(&mut input);
     let provider_id = input.provider_id.trim().to_string();
     if provider_id.is_empty() {
         return Err("ASR requires provider_id".into());
     }
     let model_id = input.model_id.clone().unwrap_or_default();
 
-    let result = if let Some(provider) = builtin_provider(&provider_id) {
+    let mut result = if let Some(provider) = builtin_provider(&provider_id) {
         if !provider.enabled {
             return Err("selected local provider is disabled on this platform".into());
         }
@@ -329,22 +455,6 @@ async fn run_transcription(
                 input.prompt.clone(),
                 sink,
             )?,
-            "whisper-cpp" => {
-                let logical_model = resolved_model.clone();
-                let adapter_model = if logical_model == "runtime-model" {
-                    String::new()
-                } else {
-                    logical_model.clone()
-                };
-                let mut result = asr::run_whisper_cpp(
-                    &media.path,
-                    &adapter_model,
-                    input.language.clone(),
-                    sink,
-                )?;
-                result.model_id = logical_model;
-                result
-            }
             "apple-speech" => {
                 asr::run_apple_speech(&media.path, media.duration_ms, input.language.clone(), sink)?
             }
@@ -406,6 +516,9 @@ async fn run_transcription(
     };
 
     asr::validate_result(&result)?;
+    if let Some(note) = migration {
+        result.notes.insert(0, note);
+    }
     let cues = result
         .segments
         .iter()
@@ -487,20 +600,12 @@ fn provider_capabilities() -> Vec<String> {
 }
 
 #[tauri::command]
-fn list_providers(state: State<AppState>) -> Result<Vec<ProviderConfig>, String> {
-    let mut providers = state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())?
-        .list_providers()
-        .map_err(|e| e.to_string())?;
-    providers.extend(builtin_local_providers());
-    providers.sort_by(|a, b| {
-        b.system_managed
-            .cmp(&a.system_managed)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    Ok(providers)
+fn list_providers(
+    state: State<AppState>,
+    jobs: State<jobs::JobsState>,
+) -> Result<Vec<ProviderConfig>, String> {
+    operations::invoke::<operations::ProviderList>(&op_ctx(&state, &jobs), operations::NoInput {})
+        .map_err(|e| e.message)
 }
 
 /// scheme://host:port of a URL, default ports normalised; None when unparsable.
@@ -527,6 +632,42 @@ fn credential_origin_changed(
     };
     url_origin(old_base) != url_origin(new_base)
         || effective(old_list, old_base) != effective(new_list, new_base)
+}
+
+#[cfg(test)]
+mod folder_import_tests {
+    use super::collect_media_files;
+
+    #[test]
+    fn collects_media_recursively_in_path_order_skipping_hidden_and_other_files() {
+        let root =
+            std::env::temp_dir().join(format!("yuzuki-folder-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("disc 2")).unwrap();
+        std::fs::create_dir_all(root.join(".cache")).unwrap();
+        for file in [
+            "02.mp3",
+            "01.WAV",
+            "notes.txt",
+            "disc 2/01.flac",
+            ".cache/x.mp3",
+            ".hidden.mp3",
+        ] {
+            std::fs::write(root.join(file), b"").unwrap();
+        }
+        let found: Vec<String> = collect_media_files(&root)
+            .unwrap()
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, ["01.WAV", "02.mp3", "disc 2/01.flac"]);
+    }
 }
 
 #[cfg(test)]
@@ -584,9 +725,9 @@ fn save_provider(input: ProviderInput, state: State<AppState>) -> Result<Provide
     if name.is_empty() {
         return Err("provider name is required".into());
     }
-    if input.kind != "openai-compatible" {
+    if !matches!(input.kind.as_str(), "openai-compatible" | "anthropic") {
         return Err(
-            "user-configured providers currently require the openai-compatible adapter".into(),
+            "user-configured providers require the openai-compatible or anthropic adapter".into(),
         );
     }
     if !matches!(input.execution.as_str(), "remote_api" | "local_server") {
@@ -1009,7 +1150,7 @@ async fn refine_transcript(
         (provider, segments, glossary)
     };
 
-    if provider.kind != "openai-compatible" {
+    if !matches!(provider.kind.as_str(), "openai-compatible" | "anthropic") {
         return Err(format!(
             "provider adapter {} does not implement transcript.refine yet",
             provider.kind
@@ -1272,7 +1413,7 @@ async fn run_translate_job(
         (provider, segments, glossary)
     };
 
-    if provider.kind != "openai-compatible" {
+    if !matches!(provider.kind.as_str(), "openai-compatible" | "anthropic") {
         return Err(unavailable(&format!(
             "provider adapter {} does not implement text.translate yet",
             provider.kind
@@ -1496,10 +1637,26 @@ async fn export_dub_mix(
     .await
 }
 
+/// WebView2 user data (profile, cache, localStorage) under the data root;
+/// the main and mini windows must share one directory.
+fn webview_data_dir() -> Option<PathBuf> {
+    data_root::get().map(|root| root.join("webview"))
+}
+
+/// The mini window is created from JS and passes this as dataDirectory.
+#[tauri::command]
+fn webview_data_directory() -> Option<String> {
+    webview_data_dir().map(|dir| dir.display().to_string())
+}
+
 pub fn run() {
     // Only signed release builds expose the updater. Keeping old app identifiers
     // preserves on-disk data and credentials across the YUZUKI rebrand.
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
     if option_env!("YUZUKI_UPDATER_PUBLIC_KEY").is_some() {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1507,9 +1664,21 @@ pub fn run() {
     }
     builder
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
+            // Data lives next to the project/exe, not in the per-user profile
+            // (data_root.rs); only control.json stays in app data for the CLI.
+            let app_data = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data)?;
+            let dir = data_root::init(Some(&app_data))?;
+            app.asset_protocol_scope().allow_directory(&dir, true)?;
             runtime::init_root(dir.join("runtime"));
+            // ADR-019 migration: whisper.cpp packs are retired; drop their dirs.
+            match runtime::remove_retired_packs(&dir.join("runtime")) {
+                Ok(removed) if !removed.is_empty() => {
+                    eprintln!("runtime: removed retired packs {removed:?}")
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("runtime: retired pack cleanup failed: {e}"),
+            }
             media_decode::init_cache_root(dir.join("cache").join("decoded"));
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
             // tauri.conf.json scopes the asset protocol to app data only;
@@ -1519,6 +1688,9 @@ pub fn run() {
                 scope.allow_file(&item.path)?;
             }
             app.manage(AppState { db: Mutex::new(db) });
+            app.manage(DictState(dictionary::DictStore::open(
+                &dir.join("dictionary.db"),
+            )?));
             // PR #10: jobs + job://update, and the in-process stage runners
             // (`retry_job` re-runs a job through these).
             let store = jobs::install(app, &dir.join("tsubame.db"))?;
@@ -1543,14 +1715,60 @@ pub fn run() {
             );
             store.register_runner(runtime::INSTALL_JOB, runtime::install_runner());
             store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
+            // T5: loopback control endpoint for the yuzuki CLI and MCP. The
+            // Desktop works without it, so a bind failure is logged, not fatal.
+            let control_app = app.handle().clone();
+            let dispatch: control::Dispatch = Arc::new(move |name, input| {
+                let state = control_app.state::<AppState>();
+                let jobs = control_app.state::<jobs::JobsState>();
+                operations::invoke_json(&op_ctx(&state, &jobs), name, input)
+            });
+            if let Err(error) = control::start(&app_data, dispatch) {
+                eprintln!("control endpoint unavailable: {error}");
+            }
+            // Imports through any surface (UI, CLI, MCP) unlock playback of the
+            // new files and tell the library view to refresh.
+            let import_app = app.handle().clone();
+            operations::on_media_imported(Box::new(move |items| {
+                let scope = import_app.asset_protocol_scope();
+                for item in items {
+                    if let Err(error) = scope.allow_file(&item.path) {
+                        eprintln!("failed to allow playback of {}: {error}", item.path);
+                    }
+                }
+                let _ = tauri::Emitter::emit(&import_app, "library://changed", items.len());
+            }));
+            // Built here rather than from tauri.conf.json ("create": false) so
+            // WebView2 keeps its profile under the data root, not %LOCALAPPDATA%.
+            // Last in setup: every managed state exists before the UI loads.
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned()
+                .ok_or("tauri.conf.json has no main window")?;
+            let mut main = tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?;
+            if let Some(webview_dir) = webview_data_dir() {
+                main = main.data_directory(webview_dir);
+            }
+            main.build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_media,
+            webview_data_directory,
             runtime::runtime_install_plan,
             runtime::install_runtime_packs,
             runtime::runtime_doctor,
             import_media,
+            import_folder,
+            list_sources,
+            dict_import,
+            dict_lookup,
+            dict_sources,
+            dict_remove,
             update_media_duration,
             save_playback_state,
             get_segments,
@@ -1603,4 +1821,61 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running YUZUKI");
+}
+
+#[cfg(test)]
+mod sidecar_import_tests {
+    use super::{collect_media_files, seed_sidecar_subtitles};
+    use crate::db::MediaDb;
+
+    #[test]
+    fn real_folder_import_seeds_lrc_srt_vtt_sidecars_once() {
+        let tmp = std::env::temp_dir();
+        let root = tmp.join(format!("yuzuki-sidecar-import-{}", std::process::id()));
+        let db_path = tmp.join(format!("yuzuki-sidecar-import-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&db_path);
+        std::fs::create_dir_all(&root).unwrap();
+        let files = [
+            ("01.mp3", ""),
+            ("01.mp3.lrc", "[ar:CV]\n[00:01.00]一行目\n[00:02.50]二行目\n[00:04.00]\n"),
+            ("02.mp3", ""),
+            ("02.srt", "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n"),
+            ("03.mp3", ""),
+            ("03.vtt", "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA\n\n00:00:03.000 --> 00:00:04.000\nB\n"),
+            ("04.mp3", ""),
+            ("台本.txt", "script"),
+        ];
+        for (name, body) in files {
+            std::fs::write(root.join(name), body).unwrap();
+        }
+        let mut db = MediaDb::open(&db_path).unwrap();
+        let count = |db: &MediaDb, id: i64| -> i64 {
+            db.connection()
+                .query_row("SELECT COUNT(1) FROM segments WHERE media_id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        let mut seen = Vec::new();
+        for file in collect_media_files(&root).unwrap() {
+            let item = db.import_media(file.to_str().unwrap()).unwrap();
+            let seeded = seed_sidecar_subtitles(&mut db, item.id, &file).unwrap();
+            let again = seed_sidecar_subtitles(&mut db, item.id, &file).unwrap();
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            seen.push((name, seeded, again, count(&db, item.id)));
+        }
+        drop(db);
+        let _ = std::fs::remove_dir_all(&root);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+        }
+        assert_eq!(
+            seen,
+            [
+                ("01.mp3".to_string(), true, false, 2),
+                ("02.mp3".to_string(), true, false, 1),
+                ("03.mp3".to_string(), true, false, 2),
+                ("04.mp3".to_string(), false, false, 0),
+            ]
+        );
+    }
 }

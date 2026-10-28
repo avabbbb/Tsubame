@@ -1,0 +1,93 @@
+[
+ {
+  "workno": "RJ239066",
+  "work_name": "チ○ポ係",
+  "maker_name": "ベレス解部",
+  "circle_id": "RG27440",
+  "regist_date": "2018-11-19 00:00:00",
+  "creaters": {
+   "illust_by": [
+    {
+     "id": "15431",
+     "name": "小林ちさと",
+     "classification": "illust_by",
+     "sub_classification": null
+    }
+   ],
+   "voice_by": [
+    {
+     "id": "1",
+     "name": "大山チロル",
+     "classification": "voice_by",
+     "sub_classification": null
+    },
+    {
+     "id": "2",
+     "name": " 秋山はるる ",
+     "classification": "voice_by",
+     "sub_classification": null
+    }
+   ]
+  },
+  "genres": [
+   {
+    "name": "脚",
+    "id": 62,
+    "search_val": "062",
+    "name_base": "脚"
+   },
+   {
+    "name": "少女",
+    "id": 206,
+    "search_val": "206",
+    "name_base": "少女"
+   },
+   {
+    "name": "同級生/同僚",
+    "id": 281,
+    "search_val": "281",
+    "name_base": "同級生/同僚"
+   },
+   {
+    "name": "学校/学園",
+    "id": 1,
+    "search_val": "001",
+    "name_base": "学校/学園"
+   },
+   {
+    "name": "手コキ",
+    "id": 124,
+    "search_val": "124",
+    "name_base": "手コキ"
+   },
+   {
+    "name": "中出し",
+    "id": 128,
+    "search_val": "128",
+    "name_base": "中出し"
+   }
+  ],
+  "image_main": {
+   "workno": "RJ239066",
+   "type": "image_main",
+   "file_name": "RJ239066_img_main.jpg",
+   "file_size": "74809",
+   "file_size_unit": "73.06KB",
+   "width": "560",
+   "height": "420",
+   "hash": null,
+   "display_mode": "",
+   "update_date": "2025-09-10 19:21:26",
+   "id": "22264805",
+   "upper(work_files.type)": "IMAGE_MAIN",
+   "extension": "jpg",
+   "relative_url": "modpub/images2/work/doujin/RJ240000/RJ239066_img_main.jpg",
+   "path_short": "doujin/RJ240000/RJ239066_img_main.jpg",
+   "url": "//img.dlsite.jp/modpub/images2/work/doujin/RJ240000/RJ239066_img_main.jpg",
+   "resize_url": "resize/images2/work/doujin/RJ240000/RJ239066_img_main"
+  },
+  "options": "SND#TRI#DLP#REV#JPN",
+  "work_type": "SOU",
+  "age_category": 3
+ }
+]

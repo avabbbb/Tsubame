@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "YUZUKI",
         "width": 1440,
         "height": 900,

@@ -13,7 +13,7 @@
 //!   does not bump `revision`.
 
 use crate::db::{MediaDb, Segment};
-use crate::jobs::{JobError, JobHandle, JobRunner, NewJob, NoopSink, ProgressSink};
+use crate::jobs::{JobError, JobHandle, JobRunner, NoopSink, ProgressSink};
 use crate::mix::{self, ExportKind, MixOptions};
 use crate::placement::{self, DubSentenceRow, Placement, PlacementParams};
 use crate::spatial::{self, RenderWindow, SpatialMode, Strengths};
@@ -1228,46 +1228,29 @@ pub fn render_preview(
 #[tauri::command]
 pub async fn regenerate_segment(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
-    jobs_state: tauri::State<'_, crate::jobs::JobsState>,
     segment_id: i64,
     expected_revision: i64,
     voice_profile_id: Option<String>,
     spatial_mode: Option<SpatialMode>,
 ) -> Result<Value, String> {
-    let (media_id, voice_profile_id, generation) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let segment = db
-            .get_segment(segment_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| not_found("segment not found").to_string())?;
-        let voice = match voice_profile_id.filter(|id| !id.trim().is_empty()) {
-            Some(id) => id,
-            None => {
-                default_voice_profile(db.connection(), segment_id).map_err(|e| e.to_string())?
-            }
-        };
-        // This request supersedes any regenerate of the Segment still running.
-        let generation =
-            takes::bump_generation(db.connection(), segment_id).map_err(|e| e.to_string())?;
-        (segment.media_id, voice, generation)
-    };
-    let input = serde_json::to_value(RegenerateInput {
+    let input = crate::operations::SegmentRegenerateInput {
         segment_id,
         expected_revision,
         voice_profile_id,
-        generation: Some(generation),
-        spatial_mode: spatial_mode.unwrap_or_default(),
+        spatial_mode,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let jobs = app.state::<crate::jobs::JobsState>();
+        crate::operations::invoke::<crate::operations::SegmentRegenerate>(
+            &crate::op_ctx(&state, &jobs),
+            input,
+        )
+        .map_err(|e| e.message)
     })
-    .map_err(|e| e.to_string())?;
-    crate::jobs::run_to_completion(
-        std::sync::Arc::clone(&jobs_state.0),
-        NewJob::new(REGENERATE_JOB, media_id)
-            .segment(segment_id)
-            .input(input),
-        regenerate_runner(app.clone()),
-    )
     .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

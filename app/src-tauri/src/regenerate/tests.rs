@@ -1,5 +1,5 @@
 use super::*;
-use crate::jobs::{Job, JobStatus, JobStore};
+use crate::jobs::{Job, JobStatus, JobStore, NewJob};
 use crate::subtitle::SubtitleCue;
 use crate::tts::{MockTts, TtsRequest, MOCK_ADAPTER_VERSION};
 use crate::voice::{self, VoiceProfileInput};
@@ -1178,19 +1178,16 @@ impl TtsAdapter for CancellingTts {
         MOCK_ADAPTER_VERSION
     }
 
-    #[allow(clippy::manual_async_fn)]
-    fn synthesize<'a>(
+    async fn synthesize<'a>(
         &'a self,
         request: &'a TtsRequest,
         _sink: &'a dyn ProgressSink,
-    ) -> impl Future<Output = Result<Vec<u8>, TtsError>> + Send + 'a {
-        async move {
-            let id = self.job_id.lock().unwrap().clone();
-            if let Some(id) = id {
-                self.jobs.cancel(&id).unwrap();
-            }
-            self.inner.synthesize(request, &NoopSink).await
+    ) -> Result<Vec<u8>, TtsError> {
+        let id = self.job_id.lock().unwrap().clone();
+        if let Some(id) = id {
+            self.jobs.cancel(&id).unwrap();
         }
+        self.inner.synthesize(request, &NoopSink).await
     }
 }
 

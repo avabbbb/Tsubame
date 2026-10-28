@@ -1,0 +1,25 @@
+[package]
+name = "yuzuki-cli"
+version = "0.1.0"
+description = "yuzuki: command-line client for the YUZUKI Desktop control endpoint"
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "yuzuki_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "yuzuki"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+yuzuki-client = { path = "../yuzuki-client" }
+
+[dev-dependencies]
+# Golden tests drive a real control endpoint over an in-memory Desktop.
+tsubame = { path = "../../app/src-tauri", features = ["test-support"] }
+# agent_e2e reads the fixture Desktop's SQLite file read-only.
+rusqlite = "0.32"

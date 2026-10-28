@@ -393,10 +393,16 @@ pub struct ChatCompletion {
     pub finish_reason: Option<String>,
 }
 
-/// Calls an OpenAI-compatible `/chat/completions` endpoint with one system and
-/// one user message. The same code path serves paid APIs and local servers
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Anthropic requires an explicit output cap; generous enough for a batch.
+const ANTHROPIC_MAX_TOKENS: u32 = 8192;
+
+/// Calls one chat turn (one system and one user message) on a Provider.
+/// kind == "anthropic" speaks the Anthropic Messages API (/messages,
+/// x-api-key, anthropic-version); every other kind speaks OpenAI-compatible
+/// /chat/completions. The same code path serves paid APIs and local servers
 /// (LM Studio, Ollama, llama.cpp): there is no online/local branch and no
-/// model-name switch. `label` only prefixes error messages.
+/// model-name switch. label only prefixes error messages.
 pub async fn chat_completion(
     provider: &ProviderConfig,
     secret: Option<&str>,
@@ -405,27 +411,52 @@ pub async fn chat_completion(
     user: &str,
     label: &str,
 ) -> Result<ChatCompletion, String> {
-    let url = format!(
-        "{}/chat/completions",
-        provider.base_url.trim_end_matches('/')
-    );
-    let body = json!({
-        "model": model_id,
-        "temperature": 0,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user },
-        ],
-    });
+    let anthropic = provider.kind == "anthropic";
+    let base = provider.base_url.trim_end_matches('/');
+    let url = if anthropic {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/chat/completions")
+    };
+    // Only subtitle text may leave the device: identifying spans become
+    // placeholders and are restored in the local answer (docs/09).
+    let mut redactor = crate::redact::Redactor::new();
+    let system = redactor.redact(system);
+    let user = redactor.redact(user);
+    let body = if anthropic {
+        json!({
+            "model": model_id,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
+            "temperature": 0,
+            "system": system,
+            "messages": [{ "role": "user", "content": user }],
+        })
+    } else {
+        json!({
+            "model": model_id,
+            "temperature": 0,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+        })
+    };
 
     let mut http = client(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")))?
         .post(url)
         .json(&body);
+    if anthropic {
+        http = http.header("anthropic-version", ANTHROPIC_VERSION);
+    }
     match provider.auth_mode.as_str() {
         "none" => {}
         "bearer" => {
             let secret = secret.ok_or_else(|| "provider API key is not configured".to_string())?;
-            http = http.bearer_auth(secret);
+            http = if anthropic {
+                http.header("x-api-key", secret)
+            } else {
+                http.bearer_auth(secret)
+            };
         }
         other => return Err(format!("unsupported provider auth mode: {other}")),
     }
@@ -438,16 +469,40 @@ pub async fn chat_completion(
     }
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{label} provider returned invalid JSON: {e}"))?;
-    let content = value
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("{label} provider response has no message content"))?;
-    let finish_reason = value
-        .pointer("/choices/0/finish_reason")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let no_content = || format!("{label} provider response has no message content");
+    let (content, finish_reason) = if anthropic {
+        let blocks = value
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(no_content)?;
+        let content: String = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect();
+        if content.is_empty() {
+            return Err(no_content());
+        }
+        // Normalise to the OpenAI vocabulary callers already check.
+        let finish_reason = value
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map(|r| if r == "max_tokens" { "length" } else { r }.to_string());
+        (content, finish_reason)
+    } else {
+        let content = value
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(no_content)?
+            .to_string();
+        let finish_reason = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (content, finish_reason)
+    };
     Ok(ChatCompletion {
-        content: content.to_string(),
+        content: redactor.restore(&content),
         finish_reason,
     })
 }
@@ -766,6 +821,64 @@ mod tests {
         let raw = server.join().unwrap().to_ascii_lowercase();
         assert!(!raw.contains("authorization:"));
         assert!(result.proposals.is_empty());
+    }
+
+    fn anthropic_message(text: &str, stop_reason: &str) -> String {
+        json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": text }],
+            "stop_reason": stop_reason
+        })
+        .to_string()
+    }
+
+    fn anthropic_provider(base_url: &str) -> ProviderConfig {
+        let mut p = provider(base_url, "bearer");
+        p.kind = "anthropic".into();
+        p
+    }
+
+    #[test]
+    fn conformance_anthropic_messages_request_and_parsed_proposals() {
+        let content = json!({
+            "proposals": [{ "segment_id": 2, "text": "秋山はるるです。", "reason": "glossary", "confidence": 0.9 }]
+        });
+        let (base_url, server) = mock_server("200 OK", anthropic_message(&content.to_string(), "end_turn"));
+        let result = tauri::async_runtime::block_on(run_openai_compatible(
+            &anthropic_provider(&base_url),
+            Some("test-key"),
+            "claude-local",
+            &request(),
+        ))
+        .unwrap();
+        let raw = server.join().unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(raw.starts_with("POST /v1/messages "));
+        assert!(lower.contains("x-api-key: test-key"));
+        assert!(lower.contains("anthropic-version: 2023-06-01"));
+        assert!(!lower.contains("authorization:"));
+        assert!(raw.contains("\"max_tokens\":"));
+        assert!(raw.contains("\"system\":"));
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(result.proposals[0].segment_id, 2);
+    }
+
+    #[test]
+    fn anthropic_max_tokens_maps_to_length() {
+        let (base_url, server) = mock_server("200 OK", anthropic_message("部分", "max_tokens"));
+        let completion = tauri::async_runtime::block_on(chat_completion(
+            &anthropic_provider(&base_url),
+            Some("test-key"),
+            "claude-local",
+            "sys",
+            "hi",
+            "test",
+        ))
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(completion.content, "部分");
+        assert_eq!(completion.finish_reason.as_deref(), Some("length"));
     }
 
     #[test]

@@ -336,7 +336,7 @@ fn reinstall_same_version_replaces_in_place() {
 #[test]
 fn falls_back_to_next_source() {
     let root = temp_root("sources");
-    let model = b"ggml model bytes".to_vec();
+    let model = b"model bytes".to_vec();
     let file = root.join("fixture.bin");
     fs::write(&file, &model).unwrap();
     let mut pack = file_pack("m", "model.bin", &model);
@@ -395,58 +395,41 @@ fn builtin_catalog_is_consistent() {
         );
         safe_relative(&pack.entry).unwrap();
     }
-    assert_eq!(catalog[1].sources.len(), 2);
-    assert!(catalog[0].sources[0].ends_with("/v1.9.2/whisper-bin-x64.zip"));
-    let ids = provider_pack_ids("local.whisper-cpp", "small").unwrap();
-    assert_eq!(ids, vec![WHISPER_RUNTIME, WHISPER_MODEL_SMALL]);
+    assert_eq!(catalog.len(), 3);
+    assert!(catalog[0].sources[0].ends_with("/runtime.faster-whisper-1.2.1-1-windows-x86_64.zip"));
+    assert_eq!(
+        catalog[1].requires,
+        vec![FASTER_WHISPER_RUNTIME.to_string()]
+    );
+    assert_eq!(catalog[1].hardware.as_deref(), Some(HARDWARE_NVIDIA_CUDA));
+    let cpu = provider_pack_ids_for("local.faster-whisper", "large-v3-turbo", false).unwrap();
+    assert_eq!(cpu, vec![FASTER_WHISPER_RUNTIME]);
+    let ids = provider_pack_ids_for("local.faster-whisper", "large-v3-turbo", true).unwrap();
+    assert_eq!(ids, vec![FASTER_WHISPER_RUNTIME, FASTER_WHISPER_CUDA]);
     assert_eq!(expand(&catalog, &ids).unwrap().len(), 2);
-    assert_eq!(whisper_model_pack("runtime-model"), WHISPER_MODEL_BASE);
-}
-
-#[test]
-fn whisper_resolution_prefers_active_packs_and_reports_overrides() {
-    let root = temp_root("resolve");
-    let runtime_zip = zip_bytes(&[("Release/whisper-cli.exe", b"bin")]);
-    let mut runtime = zip_pack(WHISPER_RUNTIME, "1.9.2", &runtime_zip, 3);
-    runtime.entry = "Release/whisper-cli.exe".into();
-    install(&root, &MemFetcher::new(runtime_zip), &runtime, &ok_probe).unwrap();
-
-    let no_env = |_: &str| -> Option<String> { None };
-    let err = resolve_whisper_in(Some(&root), "", &no_env).unwrap_err();
-    assert!(err.contains(WHISPER_MODEL_BASE), "{err}");
-
-    let weights = b"base weights".to_vec();
-    let model = file_pack(WHISPER_MODEL_BASE, "ggml-base.bin", &weights);
-    install(&root, &MemFetcher::new(weights), &model, &default_probe).unwrap();
-
-    let paths = resolve_whisper_in(Some(&root), "runtime-model", &no_env).unwrap();
-    assert_eq!(
-        paths.bin,
-        pack_dir(&root, WHISPER_RUNTIME, "1.9.2").join("Release/whisper-cli.exe")
-    );
-    assert_eq!(
-        paths.model,
-        pack_dir(&root, WHISPER_MODEL_BASE, "1").join("ggml-base.bin")
-    );
-    assert!(paths.notes.is_empty());
-    assert!(resolve_whisper_in(Some(&root), "small", &no_env).is_err());
-
-    let env = |name: &str| (name == ENV_WHISPER_BIN).then(|| "D:/dev/whisper-cli.exe".to_string());
-    let paths = resolve_whisper_in(Some(&root), "", &env).unwrap();
-    assert_eq!(paths.bin, PathBuf::from("D:/dev/whisper-cli.exe"));
-    assert_eq!(paths.notes.len(), 1);
-    assert!(paths.notes[0].contains(ENV_WHISPER_BIN));
+    assert!(catalog[2]
+        .sources
+        .last()
+        .unwrap()
+        .ends_with("/runtime-funasr-1.4.16-1/runtime.funasr-1.4.16-1-windows-x86_64.zip"));
+    assert!(catalog[2].requires.is_empty() && catalog[2].hardware.is_none());
+    for nvidia in [false, true] {
+        let ids = provider_pack_ids_for("local.sensevoice", "iic/SenseVoiceSmall", nvidia).unwrap();
+        assert_eq!(ids, vec![FUNASR_RUNTIME]);
+    }
+    assert_eq!(override_env_for(FUNASR_RUNTIME), Some(ENV_FUNASR_PYTHON));
 }
 
 #[test]
 fn doctor_reports_state_override_and_probe() {
     let root = temp_root("doctor");
     let bytes = zip_bytes(&[("Release/tool.exe", b"bin")]);
-    let mut active = zip_pack(WHISPER_RUNTIME, "1", &bytes, 3);
+    let mut active = zip_pack("t", "1", &bytes, 3);
     install(&root, &MemFetcher::new(bytes), &active, &ok_probe).unwrap();
     active.version = "2".into();
-    let missing = file_pack(WHISPER_MODEL_BASE, "ggml-base.bin", b"w");
-    let env = |name: &str| (name == ENV_WHISPER_MODEL).then(|| "Z:/nope.bin".to_string());
+    let missing = zip_pack(FASTER_WHISPER_RUNTIME, "1.2.1-1", b"py", 2);
+    let env =
+        |name: &str| (name == ENV_FASTER_WHISPER_PYTHON).then(|| "Z:/nope/python.exe".to_string());
 
     let report = doctor(Some(&root), &[active, missing], &env, &ok_probe);
     assert_eq!(report[0].state, "active");
@@ -456,6 +439,135 @@ fn doctor_reports_state_override_and_probe() {
     assert_eq!(report[0].probe.as_ref().map(|p| p.ok), Some(true));
     assert_eq!(report[1].state, "missing");
     let env_override = report[1].env_override.as_ref().unwrap();
-    assert_eq!(env_override.name, ENV_WHISPER_MODEL);
+    assert_eq!(env_override.name, ENV_FASTER_WHISPER_PYTHON);
     assert!(!env_override.exists);
+}
+
+/// Job runners are plain std threads with no Tokio context. Network-bound,
+/// so opt in: YUZUKI_NET_TEST_URL=<any http(s) URL> cargo test -- --ignored
+#[test]
+#[ignore]
+fn http_fetcher_runs_on_plain_thread() {
+    use std::io::Read;
+    let url = std::env::var("YUZUKI_NET_TEST_URL").expect("YUZUKI_NET_TEST_URL");
+    std::thread::spawn(move || {
+        let fetcher = super::HttpFetcher::new().expect("client");
+        let mut opened = super::Fetcher::open(&fetcher, &url, 0).expect("open");
+        let mut buf = [0u8; 4096];
+        let n = opened.reader.read(&mut buf).expect("read");
+        assert!(n > 0);
+        drop(opened);
+        drop(fetcher);
+    })
+    .join()
+    .expect("fetcher thread panicked");
+}
+
+#[test]
+fn faster_whisper_python_prefers_override_then_pack() {
+    let root = temp_root("fw-python");
+    let no_env = |_: &str| -> Option<String> { None };
+    let err = resolve_faster_whisper_python_in(Some(&root), &no_env).unwrap_err();
+    assert!(err.contains("faster-whisper runtime pack"), "{err}");
+    assert!(resolve_faster_whisper_python_in(None, &no_env).is_err());
+
+    let env =
+        |name: &str| (name == ENV_FASTER_WHISPER_PYTHON).then(|| "D:/dev/python.exe".to_string());
+    let python = resolve_faster_whisper_python_in(Some(&root), &env).unwrap();
+    assert_eq!(python, PathBuf::from("D:/dev/python.exe"));
+    assert_eq!(
+        override_env_for(FASTER_WHISPER_RUNTIME),
+        Some(ENV_FASTER_WHISPER_PYTHON)
+    );
+}
+
+fn active_entry(version: &str, entry: &str) -> ActiveEntry {
+    ActiveEntry {
+        version: version.into(),
+        entry: entry.into(),
+        sha256: "00".into(),
+        previous: None,
+    }
+}
+
+#[test]
+fn retired_packs_are_removed_and_others_kept() {
+    let root = temp_root("retired");
+    let layout = [
+        ("whisper.cpp", "1.9.2", "Release/whisper-cli.exe"),
+        ("whisper.cpp.model.small", "1", "ggml-small.bin"),
+        (FASTER_WHISPER_RUNTIME, "1.2.1-1", "python.exe"),
+    ];
+    let mut index = ActiveIndex::default();
+    for (id, version, entry) in layout {
+        let file = pack_dir(&root, id, version).join(entry);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+        index.packs.insert(id.into(), active_entry(version, entry));
+    }
+    write_active(&root, &index).unwrap();
+
+    let removed = remove_retired_packs(&root).unwrap();
+    assert_eq!(removed, vec!["whisper.cpp", "whisper.cpp.model.small"]);
+    assert!(!root.join("packs").join("whisper.cpp").exists());
+    assert!(!root.join("packs").join("whisper.cpp.model.small").exists());
+    assert!(pack_dir(&root, FASTER_WHISPER_RUNTIME, "1.2.1-1")
+        .join("python.exe")
+        .exists());
+    let active = read_active(&root);
+    assert_eq!(
+        active.packs.keys().collect::<Vec<_>>(),
+        vec![FASTER_WHISPER_RUNTIME]
+    );
+
+    // Idempotent: a second startup finds nothing to remove.
+    assert!(remove_retired_packs(&root).unwrap().is_empty());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn remove_pack_rejects_path_like_ids() {
+    let root = temp_root("remove-invalid");
+    for id in ["", ".", "..", "a/b", "a\\b"] {
+        let err = remove_pack(&root, id).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{id:?}");
+    }
+    // A missing pack is not an error, just nothing removed.
+    assert!(!remove_pack(&root, "never-installed").unwrap());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mirror_source_maps_dirs_and_urls_to_pack_files() {
+    let file = "runtime.faster-whisper-1.2.1-1-windows-x86_64.zip";
+    let win = mirror_source(r"H:\data\packs\", file).unwrap();
+    assert_eq!(win, format!("file:///H:/data/packs/{file}"));
+    assert_eq!(file_url_path(&win).unwrap(), std::path::PathBuf::from(format!("H:/data/packs/{file}")));
+    assert_eq!(mirror_source("/srv/packs", file).unwrap(), format!("file:///srv/packs/{file}"));
+    assert_eq!(
+        mirror_source("https://mirror.example/packs/", file).unwrap(),
+        format!("https://mirror.example/packs/{file}")
+    );
+    assert!(mirror_source("  ", file).is_none());
+}
+
+#[test]
+fn cuda_dir_override_wins_over_missing_pack() {
+    let env = |name: &str| (name == ENV_FW_CUDA_DIR).then(|| "H:/cuda".to_string());
+    assert_eq!(resolve_faster_whisper_cuda_dir_in(None, &env), Some(PathBuf::from("H:/cuda")));
+    let none = |_: &str| None;
+    assert_eq!(resolve_faster_whisper_cuda_dir_in(None, &none), None);
+}
+
+#[test]
+fn funasr_python_prefers_override_then_pack() {
+    let root = std::env::temp_dir().join("yuzuki-funasr-resolve-test-empty");
+    let no_env = |_: &str| -> Option<String> { None };
+    let err = resolve_funasr_python_in(Some(&root), &no_env).unwrap_err();
+    assert!(err.contains("FunASR runtime pack"), "{err}");
+    assert!(resolve_funasr_python_in(None, &no_env).is_err());
+
+    let env = |name: &str| (name == ENV_FUNASR_PYTHON).then(|| "D:/dev/python.exe".to_string());
+    let python = resolve_funasr_python_in(Some(&root), &env).unwrap();
+    assert_eq!(python, PathBuf::from("D:/dev/python.exe"));
 }

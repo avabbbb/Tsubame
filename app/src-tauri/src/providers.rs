@@ -163,17 +163,26 @@ pub fn presets() -> Vec<ProviderPreset> {
             auth_mode: "none",
             note: "Any localhost/LAN OpenAI-compatible server such as Ollama or llama.cpp server.",
         },
+        ProviderPreset {
+            id: "anthropic",
+            name: "Anthropic",
+            kind: "anthropic",
+            execution: "remote_api",
+            base_url: concat!("https", "://", "api.anthropic", ".com/v1"),
+            model_list_url: concat!("https", "://", "api.anthropic", ".com/v1/models"),
+            auth_mode: "bearer",
+            note: "Anthropic Messages API; the key is sent as x-api-key. Also fits Anthropic-compatible gateways.",
+        },
     ]
 }
 
 pub fn builtin_local_providers() -> Vec<ProviderConfig> {
     use std::env;
 
-    let faster_ready = env::var("TSUBAME_FASTER_WHISPER_PYTHON").is_ok();
-    let funasr_ready = env::var("TSUBAME_FUNASR_PYTHON").is_ok();
-    // docs/06: active runtime + model pack; TSUBAME_WHISPER_CPP_* are explicit
-    // developer overrides resolved (and reported) by runtime::resolve_whisper.
-    let whisper_ready = crate::runtime::resolve_whisper("").is_ok();
+    // Active runtime.faster-whisper pack, or the reported developer override.
+    let faster_ready = crate::runtime::resolve_faster_whisper_python().is_ok();
+    // Active runtime.funasr pack, or the TSUBAME_FUNASR_PYTHON override.
+    let funasr_ready = crate::runtime::resolve_funasr_python().is_ok();
     let apple_supported = cfg!(target_os = "macos");
     let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
 
@@ -198,18 +207,6 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
             funasr_ready,
             if funasr_ready {
                 "Local SenseVoice/FunASR runtime is ready."
-            } else {
-                "Runtime/model pack is not installed yet."
-            },
-        ),
-        make_builtin_provider(
-            "local.whisper-cpp",
-            "whisper.cpp",
-            "whisper-cpp",
-            "local_runtime",
-            whisper_ready,
-            if whisper_ready {
-                "Local whisper.cpp runtime and model are ready."
             } else {
                 "Runtime/model pack is not installed yet."
             },
@@ -286,17 +283,12 @@ pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
         .is_some_and(|provider| provider.availability == "ready");
     let model_ids: Vec<(&str, &str)> = match provider_id {
         "local.faster-whisper" => vec![
+            ("large-v3-turbo", "Whisper Large v3 Turbo (recommended)"),
             ("large-v3", "Whisper Large v3"),
-            ("large-v3-turbo", "Whisper Large v3 Turbo"),
             ("medium", "Whisper Medium"),
             ("small", "Whisper Small"),
         ],
         "local.sensevoice" => vec![("iic/SenseVoiceSmall", "SenseVoice Small")],
-        "local.whisper-cpp" => vec![
-            ("runtime-model", "Installed whisper.cpp model"),
-            ("base", "whisper.cpp base (ggml-base.bin)"),
-            ("small", "whisper.cpp small (ggml-small.bin)"),
-        ],
         "local.apple-speech" => vec![("speech-transcriber", "Apple SpeechTranscriber")],
         _ => vec![],
     };
@@ -575,11 +567,19 @@ async fn model_request(
     let url = derive_model_list_url(provider)?;
     let mut request = client()?.get(url);
 
+    let anthropic = provider.kind == "anthropic";
+    if anthropic {
+        request = request.header("anthropic-version", "2023-06-01");
+    }
     match provider.auth_mode.as_str() {
         "none" => {}
         "bearer" => {
             let secret = secret.ok_or_else(|| "provider API key is not configured".to_string())?;
-            request = request.bearer_auth(secret);
+            request = if anthropic {
+                request.header("x-api-key", secret)
+            } else {
+                request.bearer_auth(secret)
+            };
         }
         other => return Err(format!("unsupported provider auth mode: {other}")),
     }

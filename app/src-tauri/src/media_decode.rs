@@ -1,6 +1,6 @@
 //! Pure-Rust decode of imported source media to PCM WAV (symphonia, MPL-2.0).
 //!
-//! Stages that need a WAV (whisper.cpp ASR, the dub mixer) go through
+//! Stages that need a WAV (local faster-whisper ASR, the dub mixer) go through
 //! [ensure_wav]: a source that already satisfies the stage's
 //! [DecodeTarget] is used as-is; anything else (mp3, m4a/mp4/m4b, aac,
 //! flac, ogg/vorbis, mkv/webm audio, alac, adpcm, non-PCM WAV) is decoded once
@@ -49,8 +49,8 @@ pub struct DecodeTarget {
 }
 
 impl DecodeTarget {
-    /// whisper.cpp input: 16 kHz, mono, 16-bit.
-    pub const WHISPER: Self = Self {
+    /// Local ASR input (faster-whisper worker): 16 kHz, mono, 16-bit.
+    pub const ASR_16K_MONO: Self = Self {
         sample_rate: Some(16_000),
         mono: true,
     };
@@ -615,7 +615,7 @@ mod tests {
         write_sine(&src, 44_100, 2, 2.0);
         let dest = dir.0.join("out.wav");
 
-        let info = decode_to_pcm_wav(&src, &dest, DecodeTarget::WHISPER, &NoopSink).unwrap();
+        let info = decode_to_pcm_wav(&src, &dest, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap();
         assert_eq!((info.sample_rate, info.channels), (16_000, 1));
         assert!(
             (info.duration_ms - 2000).abs() <= 20,
@@ -656,7 +656,8 @@ mod tests {
         let src = dir.0.join("noise.mp3");
         fs::write(&src, b"definitely not an mp3 stream, just ascii bytes").unwrap();
         let dest = dir.0.join("out.wav");
-        let error = decode_to_pcm_wav(&src, &dest, DecodeTarget::WHISPER, &NoopSink).unwrap_err();
+        let error =
+            decode_to_pcm_wav(&src, &dest, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -671,7 +672,7 @@ mod tests {
         let missing = prepare(
             Some(&dir.0),
             &dir.0.join("nope.m4a"),
-            DecodeTarget::WHISPER,
+            DecodeTarget::ASR_16K_MONO,
             &NoopSink,
         )
         .unwrap_err();
@@ -685,21 +686,21 @@ mod tests {
         let src = dir.0.join("track.wav");
         write_sine(&src, 44_100, 2, 0.5);
 
-        let first = prepare(Some(&cache), &src, DecodeTarget::WHISPER, &NoopSink).unwrap();
+        let first = prepare(Some(&cache), &src, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap();
         assert!(first.decoded && !first.reused);
         assert!(first.path.starts_with(&cache));
-        let second = prepare(Some(&cache), &src, DecodeTarget::WHISPER, &NoopSink).unwrap();
+        let second = prepare(Some(&cache), &src, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap();
         assert!(second.decoded && second.reused);
         assert_eq!(first.path, second.path);
 
         // A changed source (different size) gets a fresh decode.
         write_sine(&src, 44_100, 2, 0.75);
-        let third = prepare(Some(&cache), &src, DecodeTarget::WHISPER, &NoopSink).unwrap();
+        let third = prepare(Some(&cache), &src, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap();
         assert!(third.decoded && !third.reused);
         assert_ne!(third.path, first.path);
 
         // Without a cache root a decode is an explicit error, not a fallback.
-        let error = prepare(None, &src, DecodeTarget::WHISPER, &NoopSink).unwrap_err();
+        let error = prepare(None, &src, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap_err();
         assert_eq!(error, DecodeError::CacheUnavailable);
     }
 
@@ -708,7 +709,7 @@ mod tests {
         let dir = TempDir::new("passthrough");
         let mono16k = dir.0.join("mono16k.wav");
         write_sine(&mono16k, 16_000, 1, 0.25);
-        let prepared = prepare(None, &mono16k, DecodeTarget::WHISPER, &NoopSink).unwrap();
+        let prepared = prepare(None, &mono16k, DecodeTarget::ASR_16K_MONO, &NoopSink).unwrap();
         assert_eq!(prepared.path, mono16k);
         assert!(!prepared.decoded);
 
@@ -734,7 +735,7 @@ mod tests {
         let error = decode_to_pcm_wav(
             &src,
             &dest,
-            DecodeTarget::WHISPER,
+            DecodeTarget::ASR_16K_MONO,
             &Cancelled(AtomicBool::new(true)),
         )
         .unwrap_err();

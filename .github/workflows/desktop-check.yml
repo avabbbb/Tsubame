@@ -81,6 +81,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test (lib, integration and doc-tests)
         run: cargo test --workspace
+      - name: Agent end-to-end test (CLI only)
+        run: cargo test -p yuzuki-cli --all-features --locked --test agent_e2e
 
   workers:
     runs-on: ubuntu-latest

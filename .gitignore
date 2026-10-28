@@ -18,6 +18,7 @@ __pycache__/
 
 # Tsubame local state
 .tsubame/
+.yuzuki-data/
 runtime/
 runtimes/
 models/
@@ -25,6 +26,7 @@ downloads/
 media/
 cache/
 logs/
+fixtures/gold/audio/
 # Source modules that share a local-state directory name
 !app/src-tauri/src/runtime/
 
@@ -53,3 +55,4 @@ app/src-tauri/icons/icon.ico
 app/src-tauri/icons/icon.icns
 app/src-tauri/icons/android/
 app/src-tauri/icons/ios/
+eval/results/tts-roundtrip/

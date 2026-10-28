@@ -17,7 +17,7 @@
 //! before the active.json rename leaves the previous active version intact.
 //! Retryable failures keep the .part so the next attempt resumes.
 
-use crate::jobs::{Job, JobError, JobHandle, JobRunner, JobsState, NewJob};
+use crate::jobs::{Job, JobError, JobHandle, JobRunner, JobsState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -29,13 +29,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const INSTALL_JOB: &str = "runtime.install";
-pub const WHISPER_RUNTIME: &str = "whisper.cpp";
-pub const WHISPER_MODEL_BASE: &str = "whisper.cpp.model.base";
-pub const WHISPER_MODEL_SMALL: &str = "whisper.cpp.model.small";
-/// Developer overrides. They win over active packs and are always reported
-/// (doctor, ASR notes); they are never a silent fallback.
-pub const ENV_WHISPER_BIN: &str = "TSUBAME_WHISPER_CPP_BIN";
-pub const ENV_WHISPER_MODEL: &str = "TSUBAME_WHISPER_CPP_MODEL";
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
@@ -48,6 +41,8 @@ const SLASHES: &str = "//";
 pub enum PackKind {
     Runtime,
     Model,
+    /// Shared libraries loaded by another pack's runtime (no executable).
+    Library,
 }
 
 /// zip: unpacked into the version directory. file: the download itself is
@@ -102,64 +97,115 @@ pub fn current_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-fn hf_sources(file: &str) -> Vec<String> {
-    // The canonical Hugging Face host is unreachable from some networks;
-    // hf-mirror serves the same LFS objects (same sha256).
-    [("huggingface", ".co"), ("hf-mirror", ".com")]
-        .iter()
-        .map(|(host, tld)| {
-            format!("https:{SLASHES}{host}{tld}/ggerganov/whisper.cpp/resolve/main/{file}")
-        })
-        .collect()
+/// Release tag the faster-whisper pack archives are attached to.
+/// NOT YET PUBLISHED: the archives are built by
+/// scripts/runtime/lock_faster_whisper.py --build and must be uploaded to
+/// this release before a fresh install can download them.
+const FW_RELEASE_TAG: &str = "runtime-faster-whisper-1.2.1-1";
+/// GitHub release carrying runtime.funasr (one release per pack version).
+const FUNASR_RELEASE_TAG: &str = "runtime-funasr-1.4.16-1";
+
+/// Offline mirror tried before the release: a directory (or file:/http(s): URL
+/// base) holding the pack archives under their release file names, e.g. the
+/// OUT directory of scripts/runtime/lock_faster_whisper.py --build. The
+/// pinned sha256 still has to match.
+pub const ENV_RUNTIME_MIRROR: &str = "YUZUKI_RUNTIME_MIRROR";
+
+fn mirror_source(mirror: &str, file: &str) -> Option<String> {
+    let mirror = mirror.trim().trim_end_matches(['/', '\\']);
+    if mirror.is_empty() {
+        return None;
+    }
+    if mirror.starts_with("http:") || mirror.starts_with("https:") || mirror.starts_with("file:") {
+        return Some(format!("{mirror}/{file}"));
+    }
+    let path = mirror.replace('\\', "/");
+    let path = path.trim_start_matches('/');
+    Some(format!("file:{SLASHES}/{path}/{file}"))
+}
+
+fn fw_release_sources(file: &str) -> Vec<String> {
+    release_sources(FW_RELEASE_TAG, file)
+}
+
+fn funasr_release_sources(file: &str) -> Vec<String> {
+    release_sources(FUNASR_RELEASE_TAG, file)
+}
+
+/// Mirror (when set) first, then the GitHub release that publishes the pack.
+fn release_sources(tag: &str, file: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    if let Some(source) = std::env::var(ENV_RUNTIME_MIRROR)
+        .ok()
+        .and_then(|mirror| mirror_source(&mirror, file))
+    {
+        sources.push(source);
+    }
+    sources.push(format!(
+        "https:{SLASHES}github{}/avabbbb/Yuzuki/releases/download/{tag}/{file}",
+        ".com"
+    ));
+    sources
 }
 
 pub fn builtin_catalog() -> Vec<Pack> {
     vec![
+        // BASE: embeddable CPython 3.12 + faster-whisper 1.2.1 / CTranslate2
+        // 4.8.3 and their CPU deps (av and onnxruntime included: faster_whisper
+        // imports av at module load, and vad_filter uses Silero VAD).
+        // Locked by workers/asr/requirements-faster-whisper-windows.lock.
         Pack {
-            id: WHISPER_RUNTIME.into(),
-            version: "1.9.2".into(),
+            id: FASTER_WHISPER_RUNTIME.into(),
+            version: "1.2.1-1".into(),
             kind: PackKind::Runtime,
             platform: "windows-x86_64".into(),
             format: PackFormat::Zip,
-            sources: vec![format!(
-                "https:{SLASHES}github{}/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64{}",
-                ".com", ".zip"
-            )],
-            size: 8_194_445,
-            sha256: "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a".into(),
-            unpacked_size: 20_848_640,
-            entry: "Release/whisper-cli.exe".into(),
-            license: "MIT".into(),
+            sources: fw_release_sources("runtime.faster-whisper-1.2.1-1-windows-x86_64.zip"),
+            size: 97_115_053,
+            sha256: "7663e0bf700d304221ca8936ac2f0e8e2af1cf0c0175db7d8d3e81d5847d513d".into(),
+            unpacked_size: 271_995_105,
+            entry: "python.exe".into(),
+            license: "MIT (faster-whisper, CTranslate2); PSF-2.0 (CPython); deps under their own licenses".into(),
             requires: vec![],
             hardware: None,
         },
+        // Optional NVIDIA GPU: cuBLAS 12.9.2.10, cuDNN 9.27.0.42, NVRTC 12.9.86
+        // (cuBLASLt and cuDNN load NVRTC). Locked by
+        // workers/asr/requirements-faster-whisper-cuda-windows.lock. CPU works
+        // without it; device=cuda fails when it is missing.
         Pack {
-            id: WHISPER_MODEL_BASE.into(),
-            version: "1".into(),
-            kind: PackKind::Model,
-            platform: "any".into(),
-            format: PackFormat::File,
-            sources: hf_sources("ggml-base.bin"),
-            size: 147_951_465,
-            sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe".into(),
-            unpacked_size: 147_951_465,
-            entry: "ggml-base.bin".into(),
-            license: "MIT".into(),
-            requires: vec![],
-            hardware: None,
+            id: FASTER_WHISPER_CUDA.into(),
+            version: "1.2.1-1".into(),
+            kind: PackKind::Library,
+            platform: "windows-x86_64".into(),
+            format: PackFormat::Zip,
+            sources: fw_release_sources(
+                "runtime.faster-whisper.cuda-1.2.1-1-windows-x86_64.zip",
+            ),
+            size: 1_372_642_304,
+            sha256: "2b7fd0ea278a93027b448aa976fde62c6aa92771232e8cdaaf294d4e7b4fa7a9".into(),
+            unpacked_size: 2_108_417_417,
+            entry: "nvidia/cublas/bin/cublas64_12.dll".into(),
+            license: "NVIDIA Software License Agreement (redistributable CUDA/cuDNN components)".into(),
+            requires: vec![FASTER_WHISPER_RUNTIME.into()],
+            hardware: Some(HARDWARE_NVIDIA_CUDA.into()),
         },
+        // SenseVoice/FunASR: embeddable CPython 3.12 + funasr 1.4.16, PyTorch
+        // 2.14.1 (CPU) / torchaudio 2.11.0 and their deps; models (SenseVoice
+        // Small, FSMN-VAD) download through ModelScope on first use. Locked by
+        // workers/asr/requirements-funasr-windows.lock.
         Pack {
-            id: WHISPER_MODEL_SMALL.into(),
-            version: "1".into(),
-            kind: PackKind::Model,
-            platform: "any".into(),
-            format: PackFormat::File,
-            sources: hf_sources("ggml-small.bin"),
-            size: 487_601_967,
-            sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b".into(),
-            unpacked_size: 487_601_967,
-            entry: "ggml-small.bin".into(),
-            license: "MIT".into(),
+            id: FUNASR_RUNTIME.into(),
+            version: "1.4.16-1".into(),
+            kind: PackKind::Runtime,
+            platform: "windows-x86_64".into(),
+            format: PackFormat::Zip,
+            sources: funasr_release_sources("runtime.funasr-1.4.16-1-windows-x86_64.zip"),
+            size: 315_586_952,
+            sha256: "c126079b1ee52fe822de303277674cf4d91864413fab2d3d0ec40ed6e28ccf82".into(),
+            unpacked_size: 1_048_408_693,
+            entry: "python.exe".into(),
+            license: "MIT (FunASR); BSD-3-Clause (PyTorch); PSF-2.0 (CPython); deps under their own licenses".into(),
             requires: vec![],
             hardware: None,
         },
@@ -204,18 +250,26 @@ pub fn expand(catalog: &[Pack], ids: &[&str]) -> Result<Vec<Pack>, String> {
 
 /// Packs a built-in provider needs for model_id. None: not pack-managed.
 pub fn provider_pack_ids(provider_id: &str, model_id: &str) -> Option<Vec<&'static str>> {
-    match provider_id {
-        "local.whisper-cpp" => Some(vec![WHISPER_RUNTIME, whisper_model_pack(model_id)]),
-        _ => None,
-    }
+    provider_pack_ids_for(
+        provider_id,
+        model_id,
+        hardware_present(HARDWARE_NVIDIA_CUDA),
+    )
 }
 
-/// small -> small; base, runtime-model and empty -> base.
-pub fn whisper_model_pack(model_id: &str) -> &'static str {
-    if model_id == "small" {
-        WHISPER_MODEL_SMALL
-    } else {
-        WHISPER_MODEL_BASE
+/// nvidia: the host has an NVIDIA GPU; only then is the optional GPU pack
+/// planned next to the faster-whisper BASE pack.
+pub fn provider_pack_ids_for(
+    provider_id: &str,
+    _model_id: &str,
+    nvidia: bool,
+) -> Option<Vec<&'static str>> {
+    match provider_id {
+        "local.faster-whisper" if nvidia => Some(vec![FASTER_WHISPER_RUNTIME, FASTER_WHISPER_CUDA]),
+        "local.faster-whisper" => Some(vec![FASTER_WHISPER_RUNTIME]),
+        // CPU PyTorch; SenseVoice Small runs well below real time on CPU.
+        "local.sensevoice" => Some(vec![FUNASR_RUNTIME]),
+        _ => None,
     }
 }
 
@@ -284,6 +338,50 @@ pub fn active_entry_path(root: &Path, id: &str) -> Option<PathBuf> {
     let active = index.packs.get(id)?;
     let path = pack_dir(root, id, &active.version).join(&active.entry);
     path.exists().then_some(path)
+}
+
+/// Pack ids retired by ADR-019 (whisper.cpp runtime and its model packs).
+/// Startup removes their directories and active.json entries; nothing else
+/// under the runtime root is touched.
+pub const RETIRED_PACK_IDS: &[&str] = &[
+    "whisper.cpp",
+    "whisper.cpp.model.base",
+    "whisper.cpp.model.small",
+];
+
+/// Deletes packs/<id> (every version) and the pack's active.json entry.
+/// Returns true when anything was removed.
+pub fn remove_pack(root: &Path, id: &str) -> io::Result<bool> {
+    let invalid = id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\']);
+    if invalid {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid pack id {id:?}"),
+        ));
+    }
+    let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_active(root);
+    let had_entry = index.packs.remove(id).is_some();
+    if had_entry {
+        write_active(root, &index)?;
+    }
+    let dir = root.join("packs").join(id);
+    let had_dir = dir.exists();
+    if had_dir {
+        fs::remove_dir_all(&dir)?;
+    }
+    Ok(had_entry || had_dir)
+}
+
+/// Removes every retired pack; returns the ids that were actually removed.
+pub fn remove_retired_packs(root: &Path) -> io::Result<Vec<&'static str>> {
+    let mut removed = Vec::new();
+    for id in RETIRED_PACK_IDS {
+        if remove_pack(root, id)? {
+            removed.push(*id);
+        }
+    }
+    Ok(removed)
 }
 
 fn is_installed(root: &Path, index: &ActiveIndex, pack: &Pack) -> bool {
@@ -522,7 +620,11 @@ impl Fetcher for HttpFetcher {
         if offset > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
-        let response = tauri::async_runtime::block_on(request.send()).map_err(|e| e.to_string())?;
+        // send() starts the request eagerly (it arms the timeout timer before
+        // returning the future), so it must be called inside the runtime: job
+        // runners are plain std threads with no Tokio context.
+        let response = tauri::async_runtime::block_on(async move { request.send().await })
+            .map_err(|e| e.to_string())?;
         let status = response.status();
         let start = if status == reqwest::StatusCode::PARTIAL_CONTENT {
             offset
@@ -757,8 +859,10 @@ fn extract_zip(archive: &Path, dest: &Path, limit: u64) -> Result<u64, InstallEr
 /// (pack, unpacked version dir) -> Ok(detail) | Err(reason).
 pub type Prober = dyn Fn(&Pack, &Path) -> Result<String, String> + Send + Sync;
 
-/// Runtime: <entry> --help exits 0. Model: the sha256 was verified on
-/// download; here only the file's presence and size.
+/// Runtime: <entry> --help exits 0; the faster-whisper BASE pack instead
+/// imports ctranslate2 + faster_whisper with its own interpreter. Model: the
+/// sha256 was verified on download; here only the file's presence and size.
+/// Library: the entry file is present (another pack's runtime loads it).
 pub fn default_probe(pack: &Pack, dir: &Path) -> Result<String, String> {
     let entry = dir.join(&pack.entry);
     let meta = fs::metadata(&entry).map_err(|e| format!("{} missing: {e}", pack.entry))?;
@@ -775,14 +879,36 @@ pub fn default_probe(pack: &Pack, dir: &Path) -> Result<String, String> {
                 Ok("present; sha256 verified at install".into())
             }
         }
-        PackKind::Runtime => run_help(&entry),
+        PackKind::Library => Ok("present; sha256 verified at install".into()),
+        PackKind::Runtime if pack.id == FASTER_WHISPER_RUNTIME => run_probe(
+            &entry,
+            &["-c", FASTER_WHISPER_IMPORT_PROBE],
+            PYTHON_PROBE_TIMEOUT,
+        ),
+        PackKind::Runtime if pack.id == FUNASR_RUNTIME => run_probe(
+            &entry,
+            &["-c", FUNASR_IMPORT_PROBE],
+            FUNASR_PROBE_TIMEOUT,
+        ),
+        PackKind::Runtime => run_probe(&entry, &["--help"], PROBE_TIMEOUT),
     }
 }
 
-fn run_help(entry: &Path) -> Result<String, String> {
+/// Imported by the BASE pack probe; cold imports of onnxruntime/av/numpy can
+/// take a while on a slow disk, hence the longer timeout.
+const FASTER_WHISPER_IMPORT_PROBE: &str = "import ctranslate2, faster_whisper";
+const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Imported by the runtime.funasr probe: the worker's own imports. A cold
+/// torch + funasr import is several times slower than faster-whisper's.
+const FUNASR_IMPORT_PROBE: &str =
+    "import torch, soundfile, funasr; from funasr.utils.postprocess_utils import rich_transcription_postprocess";
+const FUNASR_PROBE_TIMEOUT: Duration = Duration::from_secs(240);
+
+fn run_probe(entry: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let shown = args.join(" ");
     let mut command = Command::new(entry);
     command
-        .arg("--help")
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -793,15 +919,15 @@ fn run_help(entry: &Path) -> Result<String, String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot start {}: {e}", entry.display()))?;
-    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) if status.success() => return Ok("--help exited 0".into()),
-            Some(status) => return Err(format!("--help exited with {status}")),
+            Some(status) if status.success() => return Ok(format!("{shown} exited 0")),
+            Some(status) => return Err(format!("{shown} exited with {status}")),
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("--help timed out after {PROBE_TIMEOUT:?}"));
+                return Err(format!("{shown} timed out after {timeout:?}"));
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
@@ -1133,65 +1259,112 @@ pub fn env_lookup(name: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WhisperPaths {
-    pub bin: PathBuf,
-    pub model: PathBuf,
-    /// Human-readable notes, e.g. that a developer override is in effect.
-    pub notes: Vec<String>,
+/// Runtime pack holding embeddable CPython + hash-locked faster-whisper wheels.
+pub const FASTER_WHISPER_RUNTIME: &str = "runtime.faster-whisper";
+pub const ENV_FASTER_WHISPER_PYTHON: &str = "TSUBAME_FASTER_WHISPER_PYTHON";
+
+/// Python interpreter for faster_whisper_worker.py: developer override first,
+/// then the active runtime pack entry. Never the system Python.
+pub fn resolve_faster_whisper_python_in(
+    root: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<PathBuf, String> {
+    if let Some(value) = env(ENV_FASTER_WHISPER_PYTHON) {
+        return Ok(PathBuf::from(value));
+    }
+    root.and_then(|root| active_entry_path(root, FASTER_WHISPER_RUNTIME))
+        .ok_or_else(|| "faster-whisper runtime pack is not installed".to_string())
 }
 
-fn active_whisper_model(root: &Path, model_id: &str) -> Option<PathBuf> {
-    match model_id {
-        "base" => active_entry_path(root, WHISPER_MODEL_BASE),
-        "small" => active_entry_path(root, WHISPER_MODEL_SMALL),
-        // No explicit choice: whichever model pack is installed, reported in notes.
-        "" | "runtime-model" => active_entry_path(root, WHISPER_MODEL_BASE)
-            .or_else(|| active_entry_path(root, WHISPER_MODEL_SMALL)),
-        _ => None,
+pub fn resolve_faster_whisper_python() -> Result<PathBuf, String> {
+    resolve_faster_whisper_python_in(root(), &env_lookup)
+}
+
+/// Runtime pack holding embeddable CPython + hash-locked FunASR / PyTorch (CPU)
+/// wheels for funasr_worker.py (SenseVoice + FSMN-VAD).
+pub const FUNASR_RUNTIME: &str = "runtime.funasr";
+pub const ENV_FUNASR_PYTHON: &str = "TSUBAME_FUNASR_PYTHON";
+
+/// Python interpreter for funasr_worker.py: developer override first, then the
+/// active runtime pack entry. Never the system Python.
+pub fn resolve_funasr_python_in(
+    root: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<PathBuf, String> {
+    if let Some(value) = env(ENV_FUNASR_PYTHON) {
+        return Ok(PathBuf::from(value));
+    }
+    root.and_then(|root| active_entry_path(root, FUNASR_RUNTIME))
+        .ok_or_else(|| "SenseVoice/FunASR runtime pack is not installed".to_string())
+}
+
+pub fn resolve_funasr_python() -> Result<PathBuf, String> {
+    resolve_funasr_python_in(root(), &env_lookup)
+}
+
+/// GPU pack: the NVIDIA cuBLAS/cuDNN/NVRTC DLLs that the BASE pack's
+/// ctranslate2 loads on CUDA. Requires runtime.faster-whisper.
+pub const FASTER_WHISPER_CUDA: &str = "runtime.faster-whisper.cuda";
+/// Worker variable carrying the GPU pack's version directory
+/// (workers/asr/faster_whisper_worker.py adds its nvidia/<lib>/bin dirs).
+pub const ENV_FW_CUDA_DIR: &str = "YUZUKI_FW_CUDA_DIR";
+/// Catalog hardware tag for packs that only help on an NVIDIA GPU.
+pub const HARDWARE_NVIDIA_CUDA: &str = "nvidia-cuda";
+
+/// Version directory of the active GPU pack, when it is installed.
+pub fn active_faster_whisper_cuda_dir_in(root: Option<&Path>) -> Option<PathBuf> {
+    let root = root?;
+    active_entry_path(root, FASTER_WHISPER_CUDA)?;
+    let version = read_active(root)
+        .packs
+        .get(FASTER_WHISPER_CUDA)?
+        .version
+        .clone();
+    Some(pack_dir(root, FASTER_WHISPER_CUDA, &version))
+}
+
+pub fn active_faster_whisper_cuda_dir() -> Option<PathBuf> {
+    active_faster_whisper_cuda_dir_in(root())
+}
+
+/// GPU DLL directory for the worker: developer override (YUZUKI_FW_CUDA_DIR,
+/// paired with TSUBAME_FASTER_WHISPER_PYTHON) first, then the active GPU pack.
+pub fn resolve_faster_whisper_cuda_dir_in(
+    root: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    if let Some(value) = env(ENV_FW_CUDA_DIR).filter(|v| !v.trim().is_empty()) {
+        return Some(PathBuf::from(value));
+    }
+    active_faster_whisper_cuda_dir_in(root)
+}
+
+pub fn resolve_faster_whisper_cuda_dir() -> Option<PathBuf> {
+    resolve_faster_whisper_cuda_dir_in(root(), &env_lookup)
+}
+
+/// Whether this host can use packs tagged with tag. nvidia-cuda: the
+/// NVIDIA driver's nvcuda.dll is installed (Windows); elsewhere false.
+pub fn hardware_present(tag: &str) -> bool {
+    match tag {
+        HARDWARE_NVIDIA_CUDA => nvidia_driver_present(),
+        _ => false,
     }
 }
 
-pub fn resolve_whisper_in(
-    root: Option<&Path>,
-    model_id: &str,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> Result<WhisperPaths, String> {
-    let mut notes = Vec::new();
-    let bin = match env(ENV_WHISPER_BIN) {
-        Some(value) => {
-            notes.push(format!("developer override {ENV_WHISPER_BIN}={value}"));
-            PathBuf::from(value)
-        }
-        None => root
-            .and_then(|root| active_entry_path(root, WHISPER_RUNTIME))
-            .ok_or_else(|| "whisper.cpp runtime pack is not installed".to_string())?,
-    };
-    let model = match env(ENV_WHISPER_MODEL) {
-        Some(value) => {
-            notes.push(format!("developer override {ENV_WHISPER_MODEL}={value}"));
-            PathBuf::from(value)
-        }
-        None => {
-            if !matches!(model_id, "" | "runtime-model" | "base" | "small") {
-                return Err(format!("unknown model for local.whisper-cpp: {model_id}"));
-            }
-            // Empty and runtime-model are documented aliases for base, not a
-            // fallback; only developer overrides are reported in notes.
-            root.and_then(|root| active_whisper_model(root, model_id))
-                .ok_or_else(|| {
-                    format!(
-                        "whisper.cpp model pack {} is not installed",
-                        whisper_model_pack(model_id)
-                    )
-                })?
-        }
-    };
-    Ok(WhisperPaths { bin, model, notes })
+#[cfg(windows)]
+fn nvidia_driver_present() -> bool {
+    std::env::var_os("SystemRoot").is_some_and(|root| {
+        Path::new(&root)
+            .join("System32")
+            .join("nvcuda.dll")
+            .exists()
+    })
 }
 
-pub fn resolve_whisper(model_id: &str) -> Result<WhisperPaths, String> {
-    resolve_whisper_in(root(), model_id, &env_lookup)
+#[cfg(not(windows))]
+fn nvidia_driver_present() -> bool {
+    false
 }
 
 // ----- Doctor -----
@@ -1228,8 +1401,8 @@ pub struct PackStatus {
 
 pub fn override_env_for(pack_id: &str) -> Option<&'static str> {
     match pack_id {
-        WHISPER_RUNTIME => Some(ENV_WHISPER_BIN),
-        WHISPER_MODEL_BASE | WHISPER_MODEL_SMALL => Some(ENV_WHISPER_MODEL),
+        FASTER_WHISPER_RUNTIME => Some(ENV_FASTER_WHISPER_PYTHON),
+        FUNASR_RUNTIME => Some(ENV_FUNASR_PYTHON),
         _ => None,
     }
 }
@@ -1305,39 +1478,40 @@ pub fn runtime_install_plan(
     provider_id: String,
     model_id: Option<String>,
 ) -> Result<InstallPlan, String> {
-    let model_id = model_id.unwrap_or_default();
-    let ids = provider_pack_ids(&provider_id, &model_id)
-        .ok_or_else(|| format!("{provider_id} has no installable packs"))?;
-    plan_packs(root(), &builtin_catalog(), &ids, &provider_id, &model_id)
+    crate::operations::plan_install(&provider_id, model_id.as_deref()).map_err(|e| e.message)
 }
 
 #[tauri::command]
 pub fn install_runtime_packs(
     provider_id: String,
     model_id: Option<String>,
-    state: tauri::State<'_, JobsState>,
+    state: tauri::State<'_, crate::AppState>,
+    jobs: tauri::State<'_, JobsState>,
 ) -> Result<Job, String> {
-    let plan = runtime_install_plan(provider_id.clone(), model_id.clone())?;
-    if let Some(blocker) = plan.blocker {
-        return Err(blocker);
-    }
-    let ids: Vec<String> = plan.items.into_iter().map(|item| item.id).collect();
-    let input = serde_json::json!({
-        "provider_id": provider_id,
-        "model_id": model_id.unwrap_or_default(),
-        "packs": ids,
-    });
-    // Runtime installs are not tied to a media item; media_id 0 by convention.
-    state.0.submit(NewJob::new(INSTALL_JOB, 0).input(input))
+    crate::operations::invoke::<crate::operations::RuntimeInstall>(
+        &crate::op_ctx(&state, &jobs),
+        crate::operations::RuntimePlanInput {
+            provider_id,
+            model_id,
+        },
+    )
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
-pub async fn runtime_doctor() -> Result<Vec<PackStatus>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        doctor(root(), &builtin_catalog(), &env_lookup, &default_probe)
+pub async fn runtime_doctor(app: tauri::AppHandle) -> Result<Vec<PackStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let jobs = app.state::<crate::jobs::JobsState>();
+        crate::operations::invoke::<crate::operations::RuntimeDoctor>(
+            &crate::op_ctx(&state, &jobs),
+            crate::operations::NoInput {},
+        )
+        .map_err(|e| e.message)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

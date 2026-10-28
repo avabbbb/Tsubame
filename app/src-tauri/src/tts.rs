@@ -203,7 +203,8 @@ impl OpenAiCompatibleTts {
             }
         }
         body.insert("model".into(), Value::String(request.model_id.clone()));
-        body.insert("input".into(), Value::String(request.text.clone()));
+        // Only sentence text leaves the device (docs/09); audio needs no restore.
+        body.insert("input".into(), Value::String(crate::redact::for_cloud(&request.text)));
         if !request.preset_voice.trim().is_empty() {
             body.insert(
                 "voice".into(),
@@ -213,7 +214,7 @@ impl OpenAiCompatibleTts {
         if request.voice_kind == "design" && !request.design_prompt.trim().is_empty() {
             body.insert(
                 "instructions".into(),
-                Value::String(request.design_prompt.trim().to_string()),
+                Value::String(crate::redact::for_cloud(request.design_prompt.trim())),
             );
         }
         body.insert("response_format".into(), Value::String("wav".into()));
@@ -1194,7 +1195,10 @@ pub async fn run_synthesis<A: TtsAdapter>(
 /// `<app data>/assets`.
 pub fn asset_store(app: &tauri::AppHandle) -> Result<AssetStore, String> {
     use tauri::Manager;
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = match crate::data_root::get() {
+        Some(dir) => dir.to_path_buf(),
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    };
     Ok(AssetStore::new(dir.join("assets")))
 }
 

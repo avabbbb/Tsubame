@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["app/src-tauri"]
+members = ["app/src-tauri", "crates/yuzuki-client", "crates/yuzuki-cli", "crates/yuzuki-mcp"]
 exclude = ["app/src-tauri/vendor"]
 
 [profile.release]

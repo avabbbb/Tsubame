@@ -236,6 +236,7 @@ impl MediaDb {
         crate::spatial::migrate(&conn)?; // audio.spatialize cache (spatial.rs)
 
         crate::jobs::migrate(&conn)?; // PR #10: jobs table (jobs.rs)
+        crate::sources::migrate(&conn)?; // PR #14: source_works, source_assets, downloads (sources/mod.rs)
 
         Ok(Self { conn })
     }

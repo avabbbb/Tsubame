@@ -1,0 +1,32 @@
+{
+  "data": [
+    {
+      "align_confidence": null,
+      "align_provenance": "",
+      "asr_confidence": null,
+      "asr_provenance": "",
+      "dirty_mix": true,
+      "dirty_subtitle": true,
+      "dirty_translation": false,
+      "dirty_tts": true,
+      "dub_pushed_ms": 0,
+      "dub_skip": false,
+      "end_ms": 2000,
+      "id": 1,
+      "media_id": 1,
+      "ordinal": 0,
+      "refine_confidence": null,
+      "refine_provenance": "",
+      "reviewed": true,
+      "revision": 1,
+      "source_text": "晚安。",
+      "start_ms": 1000,
+      "transcript_provenance": "human",
+      "translated_text": "Good night.",
+      "translation_provenance": "human",
+      "tts_asset_key": null,
+      "tts_provenance": ""
+    }
+  ],
+  "ok": true
+}

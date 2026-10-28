@@ -228,7 +228,9 @@ pub fn spatial_track_key(
     Ok(sha256_hex(&canonical_json(&payload)?))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SpatialMode {
     /// The original sentence path stretched to the clip (timing edits do not re-render).
@@ -492,7 +494,7 @@ pub const WORKER_RESOURCE: &str = "workers/dubber/spatial/worker.py";
 pub struct WorkerRoots {
     /// Tauri resource directory holding the bundled workers/dubber/ tree.
     pub resource_dir: Option<PathBuf>,
-    /// App data directory holding runtimes/<id>/current/.
+    /// Data root (data_root.rs) holding runtimes/<id>/current/.
     pub app_data_dir: Option<PathBuf>,
 }
 
@@ -501,7 +503,9 @@ impl WorkerRoots {
         use tauri::Manager;
         Self {
             resource_dir: app.path().resource_dir().ok(),
-            app_data_dir: app.path().app_data_dir().ok(),
+            app_data_dir: crate::data_root::get()
+                .map(|dir| dir.to_path_buf())
+                .or_else(|| app.path().app_data_dir().ok()),
         }
     }
 }

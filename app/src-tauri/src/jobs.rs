@@ -214,7 +214,7 @@ impl From<worker::WorkerError> for JobError {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct JobFilter {
     pub media_id: Option<i64>,
     pub segment_id: Option<i64>,
@@ -323,6 +323,14 @@ impl JobStore {
             .read()
             .map(|runners| runners.contains_key(kind))
             .unwrap_or(false)
+    }
+
+    /// The runner registered for kind, if any.
+    pub fn runner(&self, kind: &str) -> Option<JobRunner> {
+        self.runners
+            .read()
+            .ok()
+            .and_then(|runners| runners.get(kind).cloned())
     }
 
     fn emit(&self, job: &Job) {
@@ -842,35 +850,60 @@ pub fn install(
     Ok(store)
 }
 
-/// Creates a job, runs `runner` on a blocking thread and maps the terminal row
-/// back to a command result: the runner's output when it `succeeded`, else the
-/// runner's own error message (`failed`/`cancelled`). Lets a command keep its
+fn store_error(message: String) -> JobError {
+    JobError::new("job_store", false, message)
+}
+
+/// Creates a job and runs runner on the calling thread until the row is
+/// terminal: the runner's output when it succeeded, else a [JobError] with
+/// the row's error code and retryable flag and the runner's own message
+/// (failed/cancelled). Progress and cancel go through the jobs table and
+/// job://update. Blocks; call it from a blocking context.
+pub fn run_blocking(
+    store: &Arc<JobStore>,
+    new: NewJob,
+    runner: &JobRunner,
+) -> Result<Value, JobError> {
+    let id = store.create(new).map_err(store_error)?.id;
+    let last_error: Mutex<Option<JobError>> = Mutex::new(None);
+    let job = store
+        .execute(&id, &|handle: &JobHandle| {
+            runner(handle).inspect_err(|error| {
+                if let Ok(mut slot) = last_error.lock() {
+                    *slot = Some(error.clone());
+                }
+            })
+        })
+        .map_err(store_error)?;
+    if job.status == JobStatus::Succeeded {
+        return Ok(job.output_json.unwrap_or(Value::Null));
+    }
+    let status = job.status.as_str();
+    let runner_error = last_error.into_inner().ok().flatten();
+    Err(JobError {
+        code: job
+            .error_code
+            .or_else(|| runner_error.as_ref().map(|error| error.code.clone()))
+            .unwrap_or_else(|| format!("job_{status}")),
+        retryable: job.retryable,
+        message: runner_error
+            .map(|error| error.message)
+            .or(job.error_message)
+            .unwrap_or_else(|| format!("job {status}")),
+    })
+}
+
+/// [run_blocking] on a blocking thread, mapped to a command result (the
+/// runner's error message on failure). Lets a command keep its
 /// request/response shape while its progress and cancel go through the jobs
-/// table and `job://update`.
+/// table and job://update.
 pub async fn run_to_completion(
     store: Arc<JobStore>,
     new: NewJob,
     runner: JobRunner,
 ) -> Result<Value, String> {
-    let id = store.create(new)?.id;
     tauri::async_runtime::spawn_blocking(move || {
-        let last_error: Mutex<Option<String>> = Mutex::new(None);
-        let job = store.execute(&id, &|handle: &JobHandle| {
-            runner(handle).inspect_err(|error| {
-                if let Ok(mut slot) = last_error.lock() {
-                    *slot = Some(error.message.clone());
-                }
-            })
-        })?;
-        if job.status == JobStatus::Succeeded {
-            return Ok(job.output_json.unwrap_or(Value::Null));
-        }
-        Err(last_error
-            .into_inner()
-            .ok()
-            .flatten()
-            .or(job.error_message)
-            .unwrap_or_else(|| format!("job {}", job.status.as_str())))
+        run_blocking(&store, new, &runner).map_err(|error| error.message)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -879,14 +912,27 @@ pub async fn run_to_completion(
 #[tauri::command]
 pub fn list_jobs(
     filter: Option<JobFilter>,
-    state: tauri::State<'_, JobsState>,
+    state: tauri::State<'_, crate::AppState>,
+    jobs_state: tauri::State<'_, JobsState>,
 ) -> Result<Vec<Job>, String> {
-    state.0.list(&filter.unwrap_or_default())
+    crate::operations::invoke::<crate::operations::JobList>(
+        &crate::op_ctx(&state, &jobs_state),
+        crate::operations::JobListInput { filter },
+    )
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
-pub fn cancel_job(id: String, state: tauri::State<'_, JobsState>) -> Result<Job, String> {
-    state.0.cancel(&id)
+pub fn cancel_job(
+    id: String,
+    state: tauri::State<'_, crate::AppState>,
+    jobs_state: tauri::State<'_, JobsState>,
+) -> Result<Job, String> {
+    crate::operations::invoke::<crate::operations::JobCancel>(
+        &crate::op_ctx(&state, &jobs_state),
+        crate::operations::JobCancelInput { id },
+    )
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]

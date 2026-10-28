@@ -32,13 +32,35 @@ pub struct AsrResult {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AsrRunInput {
     pub media_id: i64,
     pub provider_id: String,
     pub model_id: Option<String>,
     pub language: Option<String>,
     pub prompt: Option<String>,
+}
+
+/// Provider id retired by ADR-019 (docs/DECISIONS.md).
+pub const RETIRED_WHISPER_CPP: &str = "local.whisper-cpp";
+pub const MIGRATED_PROVIDER: &str = "local.faster-whisper";
+pub const MIGRATED_MODEL: &str = "large-v3-turbo";
+
+/// Input that still names the retired whisper.cpp provider (a retried job,
+/// a CLI/MCP call, a saved selection) runs on local.faster-whisper +
+/// large-v3-turbo. Returns the note the caller must put in the result notes,
+/// so the switch is always visible; None leaves the input untouched.
+pub fn migrate_retired_target(input: &mut AsrRunInput) -> Option<String> {
+    if input.provider_id.trim() != RETIRED_WHISPER_CPP {
+        return None;
+    }
+    let from_model = input.model_id.clone().unwrap_or_default();
+    input.provider_id = MIGRATED_PROVIDER.into();
+    input.model_id = Some(MIGRATED_MODEL.into());
+    Some(format!(
+        "migrated: {RETIRED_WHISPER_CPP} (model {}) is retired; ran {MIGRATED_PROVIDER} with {MIGRATED_MODEL}",
+        if from_model.is_empty() { "default" } else { from_model.as_str() }
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,15 +145,33 @@ fn wait_cancellable(mut child: Child, sink: &dyn ProgressSink) -> Result<Output,
     })
 }
 
+/// Model caches for ASR workers, always under the data root so no download
+/// lands in the per-user Hugging Face / ModelScope / torch cache on the
+/// system drive. Inherited legacy cache variables are removed.
+fn model_cache_envs() -> Vec<(&'static str, Option<PathBuf>)> {
+    let Some(root) = crate::data_root::get() else {
+        return Vec::new();
+    };
+    let models = root.join("models");
+    let hf = models.join("huggingface");
+    vec![
+        ("YUZUKI_ASR_MODEL_DIR", Some(models.join("asr"))),
+        ("HF_HOME", Some(hf.clone())),
+        ("HF_HUB_CACHE", Some(hf.join("hub"))),
+        ("HUGGINGFACE_HUB_CACHE", None),
+        ("MODELSCOPE_CACHE", Some(models.join("modelscope"))),
+        ("TORCH_HOME", Some(models.join("torch"))),
+    ]
+}
+
+/// envs: Some sets the variable for the worker, None removes an inherited one.
 fn run_json_worker(
-    python_env: &str,
+    python: PathBuf,
     script_name: &str,
     request: &WorkerRequest,
+    envs: &[(&str, Option<PathBuf>)],
     sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
-    let python = env::var(python_env).map_err(|_| {
-        format!("{python_env} is not configured; install the matching runtime pack")
-    })?;
     let script = worker_script(script_name)?;
     if !script.exists() {
         return Err(format!(
@@ -140,11 +180,19 @@ fn run_json_worker(
         ));
     }
 
-    let mut child = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg(script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in envs {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to start ASR worker: {e}"))?;
 
@@ -176,18 +224,34 @@ pub fn run_faster_whisper(
     prompt: Option<String>,
     sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
+    // The worker reads 16 kHz mono 16-bit PCM WAV with wave (no PyAV
+    // decode); any other source is decoded into the decode cache first, and a
+    // decode failure keeps its own code (no silent fallback).
+    let input = crate::media_decode::ensure_wav(
+        Path::new(media_path),
+        crate::media_decode::DecodeTarget::ASR_16K_MONO,
+        sink,
+    )
+    .map_err(|e| e.to_string())?;
+    let media_path = input.path.to_string_lossy().into_owned();
+    // The active GPU pack (if any) is handed over explicitly; without it the
+    // worker runs on CPU or fails an explicit device=cuda request.
+    let cuda_dir = crate::runtime::resolve_faster_whisper_cuda_dir();
+    let mut envs = model_cache_envs();
+    envs.push((crate::runtime::ENV_FW_CUDA_DIR, cuda_dir));
     run_json_worker(
-        "TSUBAME_FASTER_WHISPER_PYTHON",
+        crate::runtime::resolve_faster_whisper_python()?,
         "faster_whisper_worker.py",
         &WorkerRequest {
             contract_version: ASR_CONTRACT_VERSION,
             adapter_id: "faster-whisper".into(),
-            media_path: media_path.into(),
+            media_path,
             media_duration_ms: duration_ms,
             model_id: model_id.into(),
             language,
             prompt,
         },
+        &envs,
         sink,
     )
 }
@@ -200,18 +264,28 @@ pub fn run_funasr(
     prompt: Option<String>,
     sink: &dyn ProgressSink,
 ) -> Result<AsrResult, String> {
+    // Same 16 kHz mono WAV as faster-whisper: the worker reads it with
+    // soundfile and splits it with FSMN-VAD.
+    let input = crate::media_decode::ensure_wav(
+        Path::new(media_path),
+        crate::media_decode::DecodeTarget::ASR_16K_MONO,
+        sink,
+    )
+    .map_err(|e| e.to_string())?;
+    let media_path = input.path.to_string_lossy().into_owned();
     run_json_worker(
-        "TSUBAME_FUNASR_PYTHON",
+        crate::runtime::resolve_funasr_python()?,
         "funasr_worker.py",
         &WorkerRequest {
             contract_version: ASR_CONTRACT_VERSION,
             adapter_id: "funasr-sensevoice".into(),
-            media_path: media_path.into(),
+            media_path,
             media_duration_ms: duration_ms,
             model_id: model_id.into(),
             language,
             prompt,
         },
+        &model_cache_envs(),
         sink,
     )
 }
@@ -259,100 +333,6 @@ pub fn run_apple_speech(
     }
     let result: AsrResult = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("invalid Apple Speech JSON: {e}"))?;
-    validate_result(&result)?;
-    Ok(result)
-}
-
-pub fn run_whisper_cpp(
-    media_path: &str,
-    model_id: &str,
-    language: Option<String>,
-    sink: &dyn ProgressSink,
-) -> Result<AsrResult, String> {
-    // Active runtime/model packs; env vars are developer overrides and are
-    // surfaced in result notes, never applied silently.
-    let paths = crate::runtime::resolve_whisper(model_id.trim())?;
-    let bin = paths.bin.to_string_lossy().into_owned();
-    let model = paths.model.to_string_lossy().into_owned();
-
-    // whisper.cpp reads 16 kHz mono 16-bit WAV; any other source (mp3, m4a,
-    // flac, ogg, other WAV layouts...) is decoded into the decode cache first.
-    // Decode failures surface with their own code (no silent fallback).
-    let input = crate::media_decode::ensure_wav(
-        Path::new(media_path),
-        crate::media_decode::DecodeTarget::WHISPER,
-        sink,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let temp = env::temp_dir().join(format!("tsubame-whisper-{}", uuid::Uuid::new_v4()));
-    let child = Command::new(bin)
-        .arg("-m")
-        .arg(&model)
-        .arg("-f")
-        .arg(&input.path)
-        .arg("-oj")
-        .arg("-of")
-        .arg(&temp)
-        .arg("-np")
-        .arg("-l")
-        .arg(language.as_deref().unwrap_or("auto"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to start whisper.cpp: {e}"))?;
-    let output = wait_cancellable(child, sink)?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "whisper.cpp failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    let json_path = PathBuf::from(format!("{}.json", temp.display()));
-    let bytes = fs::read(&json_path).map_err(|e| format!("cannot read whisper.cpp JSON: {e}"))?;
-    let _ = fs::remove_file(&json_path);
-    let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-
-    let language = value
-        .get("result")
-        .and_then(|v| v.get("language"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    let mut segments = Vec::new();
-    if let Some(rows) = value.get("transcription").and_then(Value::as_array) {
-        for row in rows {
-            let Some(text) = row.get("text").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(offsets) = row.get("offsets") else {
-                continue;
-            };
-            let Some(start_ms) = offsets.get("from").and_then(Value::as_i64) else {
-                continue;
-            };
-            let Some(end_ms) = offsets.get("to").and_then(Value::as_i64) else {
-                continue;
-            };
-            segments.push(AsrSegmentCandidate {
-                start_ms,
-                end_ms,
-                text: text.trim().to_string(),
-                confidence: None,
-            });
-        }
-    }
-
-    let result = AsrResult {
-        contract_version: ASR_CONTRACT_VERSION,
-        adapter_id: "whisper-cpp".into(),
-        model_id: model,
-        language,
-        segments,
-        notes: paths.notes,
-    };
     validate_result(&result)?;
     Ok(result)
 }
@@ -574,6 +554,41 @@ pub fn validate_result(result: &AsrResult) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn run_input(provider: &str, model: Option<&str>) -> AsrRunInput {
+        AsrRunInput {
+            media_id: 1,
+            provider_id: provider.into(),
+            model_id: model.map(Into::into),
+            language: Some("ja".into()),
+            prompt: None,
+        }
+    }
+
+    #[test]
+    fn retired_whisper_cpp_input_migrates_with_a_note() {
+        let mut input = run_input("local.whisper-cpp", Some("small"));
+        let note = migrate_retired_target(&mut input).expect("migration note");
+        assert_eq!(input.provider_id, "local.faster-whisper");
+        assert_eq!(input.model_id.as_deref(), Some("large-v3-turbo"));
+        assert_eq!(input.language.as_deref(), Some("ja"));
+        assert!(note.contains("local.whisper-cpp (model small)"), "{note}");
+        assert!(note.contains("large-v3-turbo"), "{note}");
+
+        let mut default_model = run_input(" local.whisper-cpp ", None);
+        let note = migrate_retired_target(&mut default_model).expect("migration note");
+        assert!(note.contains("(model default)"), "{note}");
+    }
+
+    #[test]
+    fn other_providers_are_not_migrated() {
+        for provider in ["local.faster-whisper", "local.funasr", "remote.openai"] {
+            let mut input = run_input(provider, Some("m"));
+            assert!(migrate_retired_target(&mut input).is_none());
+            assert_eq!(input.provider_id, provider);
+            assert_eq!(input.model_id.as_deref(), Some("m"));
+        }
+    }
 
     #[test]
     fn parses_verbose_remote_segments() {

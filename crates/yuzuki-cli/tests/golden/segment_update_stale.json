@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "revision_conflict",
+    "message": "segment revision conflict"
+  },
+  "ok": false
+}

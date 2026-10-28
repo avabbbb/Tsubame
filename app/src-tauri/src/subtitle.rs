@@ -11,6 +11,7 @@ pub struct SubtitleCue {
 pub enum SubtitleFormat {
     Srt,
     Vtt,
+    Lrc,
 }
 
 impl SubtitleFormat {
@@ -24,6 +25,7 @@ impl SubtitleFormat {
         {
             "srt" => Ok(Self::Srt),
             "vtt" => Ok(Self::Vtt),
+            "lrc" => Ok(Self::Lrc),
             other => Err(format!("unsupported subtitle format: {other}")),
         }
     }
@@ -32,6 +34,7 @@ impl SubtitleFormat {
         match self {
             Self::Srt => "srt",
             Self::Vtt => "vtt",
+            Self::Lrc => "lrc",
         }
     }
 }
@@ -40,6 +43,7 @@ pub fn parse(content: &str, format: SubtitleFormat) -> Result<Vec<SubtitleCue>, 
     match format {
         SubtitleFormat::Srt => parse_srt(content),
         SubtitleFormat::Vtt => parse_vtt(content),
+        SubtitleFormat::Lrc => parse_lrc(content),
     }
 }
 
@@ -47,6 +51,7 @@ pub fn serialize(cues: &[SubtitleCue], format: SubtitleFormat) -> String {
     match format {
         SubtitleFormat::Srt => serialize_srt(cues),
         SubtitleFormat::Vtt => serialize_vtt(cues),
+        SubtitleFormat::Lrc => serialize_lrc(cues),
     }
 }
 
@@ -292,5 +297,135 @@ mod tests {
     fn rejects_non_positive_duration() {
         let source = "1\n00:00:03,000 --> 00:00:03,000\ninvalid\n";
         assert!(parse(source, SubtitleFormat::Srt).is_err());
+    }
+}
+
+/// How long the last LRC line lasts when no end marker follows it.
+const LRC_LAST_CUE_MS: i64 = 5_000;
+
+/// [mm:ss.xx]text lines, several stamps per line allowed; an empty line
+/// after a stamp marks where the previous line ends. Tags like [ar:..] are
+/// skipped. A cue lasts until the next later stamp.
+fn parse_lrc(content: &str) -> Result<Vec<SubtitleCue>, String> {
+    let mut marks: Vec<(i64, String)> = Vec::new();
+    for line in content.lines() {
+        let mut rest = line.trim().trim_start_matches('\u{feff}');
+        let mut stamps = Vec::new();
+        while let Some(tail) = rest.strip_prefix('[') {
+            let Some(close) = tail.find(']') else { break };
+            let Some(ms) = parse_lrc_time(&tail[..close]) else {
+                break;
+            };
+            stamps.push(ms);
+            rest = tail[close + 1..].trim_start();
+        }
+        let text = rest.trim();
+        for ms in stamps {
+            marks.push((ms, text.to_string()));
+        }
+    }
+    marks.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut cues = Vec::new();
+    for i in 0..marks.len() {
+        let (start, text) = (marks[i].0, &marks[i].1);
+        if text.is_empty() {
+            continue;
+        }
+        let end = marks[i + 1..]
+            .iter()
+            .map(|mark| mark.0)
+            .find(|&ms| ms > start)
+            .unwrap_or(start + LRC_LAST_CUE_MS);
+        cues.push(SubtitleCue {
+            start_ms: start,
+            end_ms: end,
+            text: text.clone(),
+        });
+    }
+    validate_cues(cues)
+}
+
+/// mm:ss, mm:ss.x, mm:ss.xx, mm:ss.xxx (also : before the fraction).
+fn parse_lrc_time(tag: &str) -> Option<i64> {
+    let (min, sec) = tag.split_once(':')?;
+    let min: i64 = min.trim().parse().ok()?;
+    let (whole, frac) = sec.split_once(['.', ':']).unwrap_or((sec, ""));
+    let whole: i64 = whole.parse().ok()?;
+    if !(0..60).contains(&whole) || frac.len() > 3 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let frac_ms: i64 = format!("{frac:0<3}").parse().ok()?;
+    Some(min.checked_mul(60_000)? + whole.checked_mul(1_000)? + frac_ms)
+}
+
+fn serialize_lrc(cues: &[SubtitleCue]) -> String {
+    let mut out = String::new();
+    for (i, cue) in cues.iter().enumerate() {
+        out.push_str(&format!(
+            "[{}]{}\n",
+            format_lrc_timestamp(cue.start_ms),
+            cue.text.replace('\n', " ")
+        ));
+        if cues
+            .get(i + 1)
+            .map_or(true, |next| next.start_ms > cue.end_ms)
+        {
+            out.push_str(&format!("[{}]\n", format_lrc_timestamp(cue.end_ms)));
+        }
+    }
+    out
+}
+
+fn format_lrc_timestamp(ms: i64) -> String {
+    let ms = ms.max(0);
+    format!(
+        "{:02}:{:02}.{:02}",
+        ms / 60_000,
+        ms / 1_000 % 60,
+        ms % 1_000 / 10
+    )
+}
+
+#[cfg(test)]
+mod lrc_tests {
+    use super::{parse, serialize, SubtitleCue, SubtitleFormat};
+
+    fn cue(start_ms: i64, end_ms: i64, text: &str) -> SubtitleCue {
+        SubtitleCue {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn parses_stamps_end_markers_and_skips_tags() {
+        let lrc = "\u{feff}[ar:CV]\n[ti:おやすみ]\n[00:01.50]おはよう\n[00:03.00][00:10.000]もう一回\n[00:04.2]\n[00:12]最後\n";
+        let cues = parse(lrc, SubtitleFormat::Lrc).unwrap();
+        assert_eq!(
+            cues,
+            [
+                cue(1_500, 3_000, "おはよう"),
+                cue(3_000, 4_200, "もう一回"),
+                cue(10_000, 12_000, "もう一回"),
+                cue(12_000, 17_000, "最後"),
+            ]
+        );
+    }
+
+    #[test]
+    fn roundtrips_through_serialize() {
+        let cues = vec![
+            cue(1_500, 3_000, "a"),
+            cue(3_000, 4_200, "b"),
+            cue(10_000, 12_340, "c"),
+        ];
+        let text = serialize(&cues, SubtitleFormat::Lrc);
+        assert_eq!(
+            text,
+            "[00:01.50]a\n[00:03.00]b\n[00:04.20]\n[00:10.00]c\n[00:12.34]\n"
+        );
+        assert_eq!(parse(&text, SubtitleFormat::Lrc).unwrap(), cues);
+        assert!(parse("[ar:x]\nno stamps", SubtitleFormat::Lrc).is_err());
     }
 }
