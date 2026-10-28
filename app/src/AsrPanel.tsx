@@ -11,7 +11,10 @@ import ErrorNotice from "./ErrorNotice";
 import { useJobs } from "./jobs";
 
 /** Providers the app installs through runtime packs (runtime.rs `provider_pack_ids`). */
-const PACK_MANAGED_PROVIDERS: Record<string, true> = { "local.whisper-cpp": true };
+const PACK_MANAGED_PROVIDERS: Record<string, true> = {
+  "local.faster-whisper": true,
+  "local.sensevoice": true,
+};
 
 function isReadyTarget(target: CapabilityTarget) {
   return target.available && target.provider_availability === "ready";

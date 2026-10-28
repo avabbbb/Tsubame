@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import AsrPanel from "./AsrPanel";
 import DubExportActions from "./DubExportActions";
@@ -16,8 +17,39 @@ import RefinePanel from "./RefinePanel";
 import TranslatePanel from "./TranslatePanel";
 import ProviderSettings from "./ProviderSettings";
 import DesktopUpdater from "./DesktopUpdater";
+import VoiceProfileSettings from "./VoiceProfileSettings";
+
+const SETTINGS_TABS = [
+  { id: "providers", label: "Providers" },
+  { id: "voices", label: "Voices" },
+  { id: "shortcuts", label: "Shortcuts" },
+  { id: "dictionary", label: "Dictionary" },
+  { id: "updates", label: "Updates" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 import SegmentInspector from "./SegmentInspector";
 import { pushedLabel } from "./regenerate";
+import { register as registerGlobalShortcut, unregister as unregisterGlobalShortcut } from "@tauri-apps/plugin-global-shortcut";
+import {
+  GLOBAL_ACTIONS,
+  comboFromEvent,
+  comboKey,
+  keyFromCode,
+  loadKeymap,
+  matchLocal,
+  saveKeymap,
+  type Keymap,
+  type LocalAction,
+} from "./keymap";
+import ShortcutSettings from "./ShortcutSettings";
+import DictionaryPanel, { DictResults, lookupWord, type DictLookupResult } from "./DictionaryPanel";
+import {
+  MINI_EVENTS,
+  MINI_LABEL,
+  closeMiniWindow,
+  openMiniWindow,
+  type MiniSubtitlePayload,
+} from "./miniWindow";
 import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
 import GetStarted, { type GetStartedProgress } from "./GetStarted";
@@ -61,6 +93,27 @@ type UiState = {
   activeMediaId: number | null;
   theme: ThemePreference;
 };
+
+// Listening modes (ASPlayer parity, docs/13): kept apart from layout state.
+const LISTEN_KEY = "yuzuki-listening-v1";
+// Pause this early so a 250 ms timeupdate tick rarely spills into the next sentence.
+const AUTO_PAUSE_LEAD_MS = 80;
+
+type ContinueMode = "off" | "next" | "loop-list";
+
+type ListenPrefs = {
+  autoPause: boolean;
+  blindMode: boolean;
+  continueMode: ContinueMode;
+};
+
+function readListenPrefs(): Partial<ListenPrefs> {
+  try {
+    return JSON.parse(localStorage.getItem(LISTEN_KEY) || "{}") as Partial<ListenPrefs>;
+  } catch {
+    return {};
+  }
+}
 
 function readUiState(): Partial<UiState> {
   try {
@@ -133,6 +186,7 @@ export default function App() {
   const [systemDark, setSystemDark] = useState(prefersDark.matches);
   const [sentenceLoop, setSentenceLoop] = useState(false);
   const [loopA, setLoopA] = useState<number | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
   // First-run checklist progress, derived only from real app state.
   const getStartedProgress = useMemo<GetStartedProgress>(() => {
     const transcript = segments.length > 0;
@@ -173,6 +227,17 @@ export default function App() {
   const mediaWorkspaceVisible =
     activeRail === "library" || activeRail === "studio";
 
+  const [dictPopup, setDictPopup] = useState<{ query: string; result: DictLookupResult | null; x: number; y: number } | null>(null);
+  const lookupSelection = async (event: { clientX: number; clientY: number }) => {
+    const text = window.getSelection()?.toString().trim() ?? "";
+    if (!text || text.length > 40) return;
+    try {
+      const result = await lookupWord(text);
+      setDictPopup({ query: text, result, x: event.clientX, y: event.clientY });
+    } catch {
+      // No dictionary imported yet: selection stays a plain selection.
+    }
+  };
   const activeSegment = useMemo(() => {
     const nowMs = currentTime * 1000;
     return (
@@ -182,6 +247,87 @@ export default function App() {
     );
   }, [currentTime, segments]);
 
+  const listenInitial = useMemo(readListenPrefs, []);
+  const [autoPause, setAutoPause] = useState(listenInitial.autoPause ?? false);
+  const [blindMode, setBlindMode] = useState(listenInitial.blindMode ?? false);
+  const [revealHeld, setRevealHeld] = useState(false);
+  const [continueMode, setContinueMode] = useState<ContinueMode>(
+    listenInitial.continueMode ?? "off",
+  );
+  const lastTickMsRef = useRef(0);
+  const autoplayNextRef = useRef(false);
+  const translationHidden = blindMode && !revealHeld;
+
+  // P6: floating mini subtitle window fed from the main window's playback.
+  const [miniOpen, setMiniOpen] = useState(false);
+  const [miniLocked, setMiniLocked] = useState(false);
+  const miniPayload = useMemo<MiniSubtitlePayload>(
+    () => ({
+      source: activeSegment?.source_text ?? "",
+      translation: activeSegment?.translated_text ?? "",
+      hidden: translationHidden,
+    }),
+    [activeSegment?.source_text, activeSegment?.translated_text, translationHidden],
+  );
+  const miniPayloadRef = useRef(miniPayload);
+  useEffect(() => {
+    miniPayloadRef.current = miniPayload;
+    if (miniOpen) void emitTo(MINI_LABEL, MINI_EVENTS.subtitle, miniPayload).catch(() => undefined);
+  }, [miniOpen, miniPayload]);
+  useEffect(() => {
+    const subscriptions = [
+      listen(MINI_EVENTS.ready, () => {
+        setMiniOpen(true);
+        void emitTo(MINI_LABEL, MINI_EVENTS.subtitle, miniPayloadRef.current).catch(() => undefined);
+      }),
+      listen<boolean>(MINI_EVENTS.locked, (event) => setMiniLocked(event.payload)),
+      listen(MINI_EVENTS.closed, () => {
+        setMiniOpen(false);
+        setMiniLocked(false);
+      }),
+    ];
+    return () => {
+      subscriptions.forEach((pending) => void pending.then((unlisten) => unlisten()));
+    };
+  }, []);
+  const toggleMini = useCallback(async () => {
+    if (miniOpen) {
+      await closeMiniWindow();
+      setMiniOpen(false);
+      setMiniLocked(false);
+    } else {
+      await openMiniWindow();
+    }
+  }, [miniOpen]);
+  const unlockMini = useCallback(() => {
+    void emitTo(MINI_LABEL, MINI_EVENTS.setLock, false).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const prefs: ListenPrefs = { autoPause, blindMode, continueMode };
+    localStorage.setItem(LISTEN_KEY, JSON.stringify(prefs));
+  }, [autoPause, blindMode, continueMode]);
+
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [librarySort, setLibrarySort] = useState<"added" | "title" | "duration">("added");
+  const visibleItems = useMemo(() => {
+    const query = libraryQuery.trim().toLowerCase();
+    const rows = query
+      ? items.filter(
+          (item) =>
+            item.title.toLowerCase().includes(query) ||
+            item.path.toLowerCase().includes(query),
+        )
+      : items;
+    // list_media already returns newest first.
+    if (librarySort === "added") return rows;
+    return [...rows].sort((a, b) =>
+      librarySort === "title"
+        ? a.title.localeCompare(b.title, undefined, { numeric: true })
+        : a.duration_ms - b.duration_ms,
+    );
+  }, [items, libraryQuery, librarySort]);
+
   const resolvedTheme =
     theme === "system" ? (systemDark ? "dark" : "light") : theme;
 
@@ -190,7 +336,7 @@ export default function App() {
 
   const workbenchStyle = {
     "--sidebar-width": sidebarVisible ? `${sidebarWidth}px` : "0px",
-    "--inspector-width": inspectorVisible
+    "--inspector-width": inspectorVisible && activeRail !== "settings"
       ? `${inspectorWidth}px`
       : "0px",
   } as CSSProperties;
@@ -234,6 +380,12 @@ export default function App() {
     );
     return mediaItems;
   }, []);
+
+  // Imports from any surface (CLI/MCP media.import_folder) refresh the library.
+  useEffect(() => {
+    const pending = listen("library://changed", () => void refreshLibrary());
+    return () => void pending.then((unlisten) => unlisten());
+  }, [refreshLibrary]);
 
   const choose = useCallback(
     async (item: MediaItem, addTab = true) => {
@@ -299,6 +451,19 @@ export default function App() {
     if (mediaItems[0]) {
       await choose(mediaItems[0]);
     }
+  }, [choose, refreshLibrary]);
+
+  const [sourceList, setSourceList] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    invoke<{ id: string; label: string }[]>("list_sources").then(setSourceList, () => setSourceList([]));
+  }, []);
+
+  const importFolder = useCallback(async () => {
+    const picked = await open({ directory: true, multiple: false });
+    if (typeof picked !== "string") return;
+    const imported = await invoke<MediaItem[]>("import_folder", { path: picked });
+    await refreshLibrary();
+    if (imported[0]) await choose(imported[0]);
   }, [choose, refreshLibrary]);
 
   const closeTab = useCallback(
@@ -502,6 +667,8 @@ export default function App() {
 
     const now = media.currentTime;
     setCurrentTime(now);
+    const prevMs = lastTickMsRef.current;
+    lastTickMsRef.current = now * 1000;
 
     if (loopA !== null && loopB !== null && now >= loopB) {
       media.currentTime = loopA;
@@ -519,8 +686,26 @@ export default function App() {
       }
     }
 
+    // Auto-pause at sentence end: only a continuous crossing of an end counts,
+    // so seeking or resuming right after the pause never pauses again.
+    if (autoPause && !sentenceLoop && !media.paused) {
+      const nowMs = now * 1000;
+      const continuous = nowMs >= prevMs && nowMs - prevMs < 1500;
+      const ended =
+        continuous &&
+        segments.some(
+          (segment) =>
+            prevMs < segment.end_ms - AUTO_PAUSE_LEAD_MS &&
+            nowMs >= segment.end_ms - AUTO_PAUSE_LEAD_MS,
+        );
+      if (ended) {
+        media.pause();
+        return;
+      }
+    }
+
     void persistPlayback();
-  }, [loopA, loopB, persistPlayback, segments, sentenceLoop]);
+  }, [autoPause, loopA, loopB, persistPlayback, segments, sentenceLoop]);
 
   const onLoadedMetadata = useCallback(() => {
     const media = mediaRef.current;
@@ -540,6 +725,11 @@ export default function App() {
     }
     pendingResumeMsRef.current = 0;
 
+    if (autoplayNextRef.current) {
+      autoplayNextRef.current = false;
+      void media.play().catch(() => undefined);
+    }
+
     void invoke("update_media_duration", {
       id: current.id,
       durationMs: Math.round(nextDuration * 1000),
@@ -547,11 +737,32 @@ export default function App() {
   }, [current, playbackRate, volume]);
 
   const onEnded = useCallback(() => {
-    setPlaying(false);
+    const media = mediaRef.current;
+    if (media) media.currentTime = 0;
     setCurrentTime(0);
-    if (mediaRef.current) mediaRef.current.currentTime = 0;
     void persistPlayback(true);
-  }, [persistPlayback]);
+
+    // Continuous play: next item in library order, or wrap around the list.
+    if (continueMode !== "off" && current && items.length > 0) {
+      const index = items.findIndex((item) => item.id === current.id);
+      const nextItem =
+        index >= 0 && index + 1 < items.length
+          ? items[index + 1]
+          : continueMode === "loop-list"
+            ? items[0]
+            : null;
+      if (nextItem?.id === current.id) {
+        void media?.play().catch(() => undefined);
+        return;
+      }
+      if (nextItem) {
+        autoplayNextRef.current = true;
+        void choose({ ...nextItem, playback_position: 0 });
+        return;
+      }
+    }
+    setPlaying(false);
+  }, [choose, continueMode, current, items, persistPlayback]);
 
   const beginResize = useCallback(
     (side: "sidebar" | "inspector", event: ReactPointerEvent<HTMLDivElement>) => {
@@ -658,11 +869,82 @@ export default function App() {
     })();
   }, [choose, initial.activeMediaId, initial.openTabIds, refreshLibrary]);
 
+  // P5: every shortcut goes through the user's keymap (Settings → Shortcuts).
+  const [keymap, setKeymap] = useState<Keymap>(loadKeymap);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  useEffect(() => saveKeymap(keymap), [keymap]);
+
+  const runAction = useCallback(
+    (action: LocalAction) => {
+      switch (action) {
+        case "togglePlay":
+          void togglePlayback();
+          break;
+        case "seekBack":
+          seekBy(-5);
+          break;
+        case "seekForward":
+          seekBy(5);
+          break;
+        case "seekBackLong":
+          seekBy(-15);
+          break;
+        case "seekForwardLong":
+          seekBy(15);
+          break;
+        case "prevSegment":
+          stepSegment(-1);
+          break;
+        case "nextSegment":
+          stepSegment(1);
+          break;
+        case "sentenceLoop":
+          toggleSentenceLoop();
+          break;
+        case "loopA":
+          setLoopPoint("a");
+          break;
+        case "loopB":
+          setLoopPoint("b");
+          break;
+        case "clearLoop":
+          clearLoop();
+          break;
+        case "revealHold":
+          setRevealHeld(true);
+          break;
+        case "toggleBlind":
+          setBlindMode((value) => !value);
+          break;
+        case "toggleAutoPause":
+          setAutoPause((value) => !value);
+          break;
+        case "cycleContinue":
+          setContinueMode((value) =>
+            value === "off" ? "next" : value === "next" ? "loop-list" : "off",
+          );
+          break;
+      }
+    },
+    [clearLoop, seekBy, setLoopPoint, stepSegment, togglePlayback, toggleSentenceLoop],
+  );
+  const runActionRef = useRef(runAction);
   useEffect(() => {
+    runActionRef.current = runAction;
+  }, [runAction]);
+
+  useEffect(() => {
+    const repeatable: Partial<Record<LocalAction, true>> = {
+      seekBack: true,
+      seekForward: true,
+      seekBackLong: true,
+      seekForwardLong: true,
+      revealHold: true,
+    };
     const onKeydown = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
 
-      if (mod && event.key.toLowerCase() === "b") {
+      if (mod && !event.altKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
         if (event.shiftKey) {
           setInspectorVisible((value) => !value);
@@ -673,46 +955,69 @@ export default function App() {
       }
 
       if (isEditableTarget(event.target)) return;
-
-      if (event.code === "Space") {
-        event.preventDefault();
-        void togglePlayback();
-      } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        seekBy(event.shiftKey ? -15 : -5);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        seekBy(event.shiftKey ? 15 : 5);
-      } else if (event.key === "[") {
-        event.preventDefault();
-        stepSegment(-1);
-      } else if (event.key === "]") {
-        event.preventDefault();
-        stepSegment(1);
-      } else if (event.key.toLowerCase() === "l" && !event.shiftKey) {
-        event.preventDefault();
-        toggleSentenceLoop();
-      } else if (event.shiftKey && event.key.toLowerCase() === "a") {
-        event.preventDefault();
-        setLoopPoint("a");
-      } else if (event.shiftKey && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        setLoopPoint("b");
-      } else if (event.key === "Escape") {
-        clearLoop();
-      }
+      if (event.target instanceof Element && event.target.closest("[data-shortcut-capture]")) return;
+      const combo = comboFromEvent(event);
+      if (!combo) return;
+      const action = matchLocal(keymap, combo);
+      if (!action) return;
+      event.preventDefault();
+      if (event.repeat && !repeatable[action]) return;
+      runActionRef.current(action);
     };
+    const onKeyup = (event: KeyboardEvent) => {
+      if (keyFromCode(event.code) === comboKey(keymap.local.revealHold)) setRevealHeld(false);
+    };
+    const release = () => setRevealHeld(false);
 
     window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
-  }, [
-    clearLoop,
-    seekBy,
-    setLoopPoint,
-    stepSegment,
-    togglePlayback,
-    toggleSentenceLoop,
-  ]);
+    window.addEventListener("keyup", onKeyup);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("keyup", onKeyup);
+      window.removeEventListener("blur", release);
+    };
+  }, [keymap]);
+
+  // System-wide hotkeys are opt-in so YUZUKI never steals keys by default.
+  useEffect(() => {
+    if (!keymap.globalEnabled) {
+      setShortcutError(null);
+      return;
+    }
+    let cancelled = false;
+    let done = false;
+    const registered: string[] = [];
+    void (async () => {
+      const failed: string[] = [];
+      for (const { id } of GLOBAL_ACTIONS) {
+        const accelerator = keymap.global[id];
+        if (!accelerator || cancelled) continue;
+        try {
+          await registerGlobalShortcut(accelerator, (event) => {
+            if (event.state === "Pressed") runActionRef.current(id);
+          });
+          registered.push(accelerator);
+        } catch {
+          failed.push(accelerator);
+        }
+      }
+      done = true;
+      if (cancelled) {
+        await unregisterGlobalShortcut(registered).catch(() => undefined);
+        return;
+      }
+      setShortcutError(
+        failed.length
+          ? "Could not register " + failed.join(", ") + " (already used by another app or invalid)."
+          : null,
+      );
+    })();
+    return () => {
+      cancelled = true;
+      if (done) void unregisterGlobalShortcut(registered).catch(() => undefined);
+    };
+  }, [keymap.global, keymap.globalEnabled]);
 
   useEffect(
     () => () => {
@@ -770,7 +1075,7 @@ export default function App() {
       className={[
         "workbench",
         sidebarVisible ? "" : "sidebar-hidden",
-        inspectorVisible ? "" : "inspector-hidden",
+        inspectorVisible && activeRail !== "settings" ? "" : "inspector-hidden",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -818,7 +1123,24 @@ export default function App() {
           <>
             <div className="source-group">
               <p className="section-label">MEDIA</p>
-              {items.map((item) => (
+              <div className="library-tools">
+                <input
+                  type="search"
+                  placeholder="Search library"
+                  value={libraryQuery}
+                  onChange={(event) => setLibraryQuery(event.target.value)}
+                />
+                <select
+                  value={librarySort}
+                  title="Sort library"
+                  onChange={(event) => setLibrarySort(event.target.value as typeof librarySort)}
+                >
+                  <option value="added">Newest</option>
+                  <option value="title">Title</option>
+                  <option value="duration">Duration</option>
+                </select>
+              </div>
+              {visibleItems.map((item) => (
                 <button
                   key={item.id}
                   className={`media-row ${current?.id === item.id ? "selected" : ""}`}
@@ -845,17 +1167,37 @@ export default function App() {
             </div>
             <div className="source-group">
               <p className="section-label">SOURCES</p>
-              <div className="source-row"><span>◉</span><span>Japanese ASMR</span></div>
-              <div className="source-row muted"><span>○</span><span>ASMR.one</span></div>
-              <div className="source-row muted"><span>⌁</span><span>Local folders</span></div>
+              {sourceList.map((source) => (
+                <div key={source.id} className="source-row">
+                  <span>◉</span>
+                  <span>{source.label}</span>
+                </div>
+              ))}
+              <button className="source-row" onClick={() => void importFolder()}>
+                <span>⌁</span>
+                <span>Import folder…</span>
+              </button>
             </div>
           </>
         ) : (
-          <div className="source-group shell-placeholder">
-            <p className="section-label">SECTION</p>
-            <strong>{activeRail}</strong>
-            <small>Not in this beta yet. Your library and playback stay available.</small>
-          </div>
+          <>
+            {activeRail === "settings" ? (
+              <nav className="source-group settings-nav" aria-label="Settings sections">
+                {SETTINGS_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={"settings-nav-row" + (settingsTab === tab.id ? " active" : "")}
+                    aria-current={settingsTab === tab.id ? "page" : undefined}
+                    onClick={() => setSettingsTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </nav>
+            ) : (
+              <div className="source-group shell-placeholder"> <p className="section-label">SECTION</p> <strong>{activeRail}</strong> <small>Not in this beta yet. Your library and playback stay available.</small> </div>
+            )}
+          </>
         )}
       </aside>
 
@@ -888,7 +1230,7 @@ export default function App() {
                 </span>
               </button>
             ))}
-            {!openTabs.length && <div className="tab active">Library</div>}
+            {!openTabs.length && activeRail !== "settings" && <div className="tab active">Library</div>}
           </div>
           <button className="tab-add" title="Import media" onClick={() => void importFiles()}>
             ＋
@@ -903,7 +1245,15 @@ export default function App() {
         </header>
 
         {activeRail === "settings" ? (
-          <ProviderSettings />
+          <div className="content settings-stack" style={{ overflowY: "auto", minHeight: 0 }}>
+            {settingsTab === "providers" && <ProviderSettings />}
+            {settingsTab === "voices" && <VoiceProfileSettings />}
+            {settingsTab === "shortcuts" && (
+              <ShortcutSettings keymap={keymap} onChange={setKeymap} error={shortcutError} />
+            )}
+            {settingsTab === "dictionary" && <DictionaryPanel />}
+            {settingsTab === "updates" && <DesktopUpdater visible />}
+          </div>
         ) : mediaWorkspaceVisible ? (
           <section className="content media-workspace">
             <div className={`hero ${current?.media_type === "video" ? "video-hero" : ""}`}>
@@ -1013,6 +1363,35 @@ export default function App() {
                     {(loopA !== null || loopB !== null || sentenceLoop) && (
                       <button onClick={clearLoop}>Clear</button>
                     )}
+                    <button
+                      className={autoPause ? "active" : ""}
+                      title="Pause at the end of every sentence · P"
+                      onClick={() => setAutoPause((value) => !value)}
+                    >
+                      Auto-pause
+                    </button>
+                    <button
+                      className={blindMode ? "active" : ""}
+                      title="Blind listening: hide translations, hold H to peek · Shift+H"
+                      onClick={() => setBlindMode((value) => !value)}
+                    >
+                      Blind
+                    </button>
+                    <button
+                      className={continueMode !== "off" ? "active" : ""}
+                      title="When a track ends: stop, play the next one, or loop the list · N"
+                      onClick={() =>
+                        setContinueMode((value) =>
+                          value === "off" ? "next" : value === "next" ? "loop-list" : "off",
+                        )
+                      }
+                    >
+                      {continueMode === "off"
+                        ? "Stop at end"
+                        : continueMode === "next"
+                          ? "Play next"
+                          : "Loop list"}
+                    </button>
                   </div>
                 </div>
 
@@ -1031,7 +1410,16 @@ export default function App() {
                   onTimingCommit={commitSegmentTiming}
                 />
 
-                <div className="segments">
+                {dictPopup && (
+                  <div className="dict-popup" style={{ position: "fixed", left: dictPopup.x + 8, top: dictPopup.y + 8, zIndex: 50 }}>
+                    <div className="dict-popup-head">
+                      <strong>{dictPopup.query}</strong>
+                      <button type="button" aria-label="Close dictionary" onClick={() => setDictPopup(null)}>×</button>
+                    </div>
+                    <DictResults result={dictPopup.result} />
+                  </div>
+                )}
+                <div className="segments" title="Select a word to look it up" onMouseUp={(event) => void lookupSelection(event)}>
                   {segments.map((segment) => (
                     <button
                       key={segment.id}
@@ -1047,7 +1435,13 @@ export default function App() {
                       <span className="time">{formatTime(segment.start_ms / 1000)}</span>
                       <span className="segment-copy">
                         <strong>{segment.source_text || "Untitled segment"}</strong>
-                        <small>{segment.translated_text || "No translation yet"}</small>
+                        <small>
+                          {!segment.translated_text
+                            ? "No translation yet"
+                            : translationHidden
+                              ? "Hold H to show translation"
+                              : segment.translated_text}
+                        </small>
                         {segment.dub_pushed_ms > 0 && (
                           <span
                             className="state-badge pushed-badge"
@@ -1121,23 +1515,7 @@ export default function App() {
           className="resize-handle resize-handle-left"
           onPointerDown={(event) => beginResize("inspector", event)}
         />
-        {activeRail === "settings" ? (
-          <>
-            <p className="eyebrow">PROVIDER REGISTRY</p>
-            <h3>Capability-first</h3>
-            <p className="inspector-help">
-              Providers own authentication and model discovery. Features request
-              capabilities such as speech.asr or text.translate, never a vendor or
-              model name.
-            </p>
-            <div className="track-facts">
-              <div><span>Secrets</span><strong>OS credential store</strong></div>
-              <div><span>SQLite</span><strong>secret_ref only</strong></div>
-              <div><span>Discovery</span><strong>Provider-defined URL</strong></div>
-              <div><span>Unknown model</span><strong>Manual override</strong></div>
-            </div>
-          </>
-        ) : selected ? (
+        {selected ? (
           <SegmentInspector
             segment={selected}
             onUpdated={handleSegmentUpdated}
@@ -1162,7 +1540,6 @@ export default function App() {
             )}
           </>
         )}
-        <DesktopUpdater visible={activeRail === "settings"} />
       </aside>
 
       <footer className="playerbar">
@@ -1221,6 +1598,18 @@ export default function App() {
               onChange={onVolume}
             />
           </label>
+          <button
+            className={miniOpen ? "active" : ""}
+            title="Floating subtitle window (always on top)"
+            onClick={() => void toggleMini()}
+          >
+            {miniOpen ? "Close subtitles" : "Float subtitles"}
+          </button>
+          {miniOpen && miniLocked && (
+            <button title="The floating subtitles are click-through; unlock to move them" onClick={unlockMini}>
+              Unlock
+            </button>
+          )}
         </div>
       </footer>
     </div>

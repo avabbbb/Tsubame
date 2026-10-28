@@ -15,7 +15,7 @@ import {
 } from "./jobs";
 import { userMessage } from "./errors";
 
-export type PackKind = "runtime" | "model";
+export type PackKind = "runtime" | "model" | "library";
 
 export interface PlanItem {
   id: string;
@@ -148,7 +148,20 @@ export default function RuntimePacksCard({ providerId, models, onInstalled }: Pr
   return (
     <div className="provider-health-card runtime-packs-card">
       <div>
-        <p className="section-label">RUNTIME &amp; MODEL PACKS</p>
+        <div className="settings-summary-copy">
+          <strong>
+            {!plan
+              ? "Checking runtime…"
+              : plan.ready
+                ? "Runtime ready"
+                : "Runtime not installed"}
+          </strong>
+          {plan && (
+            <small>
+              {plan.items.filter((item) => item.installed).length} of {plan.items.length} packs installed
+            </small>
+          )}
+        </div>
         {models.length > 1 && (
           <label className="runtime-model-select">
             Model
@@ -165,7 +178,9 @@ export default function RuntimePacksCard({ providerId, models, onInstalled }: Pr
             </select>
           </label>
         )}
-        {plan && (
+        {plan && plan.items.length > 0 && (
+          <details className="settings-summary-more">
+            <summary>Pack details</summary>
           <ul className="runtime-pack-list">
             {plan.items.map((item) => {
               const status = doctor.find((row) => row.id === item.id);
@@ -175,7 +190,15 @@ export default function RuntimePacksCard({ providerId, models, onInstalled }: Pr
                   <strong>{item.id}</strong>
                   <small>
                     {item.kind} · v{item.version} · {item.license} · {formatBytes(item.size)}
-                    {item.hardware && <> · {item.hardware}</>}
+                    {item.hardware && (
+                      <>
+                        {" "}
+                        · optional:{" "}
+                        {item.hardware === "nvidia-cuda"
+                          ? "NVIDIA GPU acceleration (CPU works without it)"
+                          : item.hardware}
+                      </>
+                    )}
                   </small>
                   <small>
                     {state}
@@ -197,6 +220,7 @@ export default function RuntimePacksCard({ providerId, models, onInstalled }: Pr
               );
             })}
           </ul>
+          </details>
         )}
         {plan && !plan.ready && (
           <small className="runtime-plan-summary">

@@ -95,28 +95,31 @@ export default function DesktopUpdater({ visible }: Props) {
   if (!visible) return null;
 
   return (
-    <section
-      aria-label="YUZUKI updates"
-      style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 12 }}
-    >
-      <p className="eyebrow">DESKTOP UPDATES</p>
-      <h3 style={{ margin: "7px 0" }}>YUZUKI Updates</h3>
-      <p className="inspector-help" aria-live="polite">{status}</p>
-      {percent !== null && <progress value={percent} max={100} style={{ width: "100%" }} />}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        <button className="secondary" disabled={!UPDATES_ENABLED || isBusy} onClick={() => void checkNow()}>
-          Check now
-        </button>
-        {version && (
-          <button className="primary" disabled={isBusy} onClick={() => void installUpdate()}>
-            Install {version}
+    <section className="settings-summary-card" aria-label="YUZUKI updates">
+      <div className="settings-summary-row">
+        <div className="settings-summary-copy">
+          <strong>Updates</strong>
+          <small aria-live="polite">{status}</small>
+        </div>
+        <div className="settings-summary-actions">
+          {version && (
+            <button className="primary" disabled={isBusy} onClick={() => void installUpdate()}>
+              Install {version}
+            </button>
+          )}
+          <button className="secondary" disabled={!UPDATES_ENABLED || isBusy} onClick={() => void checkNow()}>
+            Check now
           </button>
-        )}
+        </div>
       </div>
-      <p className="inspector-help">
-        Only published releases are offered. Updates are signed and verified before installation.
-        No installation starts without your confirmation.
-      </p>
+      {percent !== null && <progress value={percent} max={100} className="settings-summary-progress" />}
+      <details className="settings-summary-more">
+        <summary>How updates work</summary>
+        <p>
+          Only published releases are offered. Updates are signed and verified before installation.
+          No installation starts without your confirmation.
+        </p>
+      </details>
     </section>
   );
 }

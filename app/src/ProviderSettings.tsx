@@ -7,7 +7,6 @@ import type {
   ProviderPreset,
   ProviderTestResult,
 } from "./types";
-import VoiceProfileSettings from "./VoiceProfileSettings";
 import RuntimePacksCard from "./RuntimePacksCard";
 import { userMessage } from "./errors";
 
@@ -22,6 +21,15 @@ const EMPTY_DRAFT: ProviderInput = {
   api_key: null,
   enabled: true,
 };
+
+function providerState(provider: ProviderConfig): "ok" | "warn" | "off" {
+  if (!provider.enabled) return "off";
+  if (provider.system_managed) {
+    if (provider.availability === "ready") return "ok";
+    return provider.availability === "unsupported-platform" ? "off" : "warn";
+  }
+  return provider.secret_ref || provider.auth_mode === "none" ? "ok" : "warn";
+}
 
 export default function ProviderSettings() {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
@@ -267,14 +275,7 @@ export default function ProviderSettings() {
   return (
     <section className="provider-settings">
       <header className="provider-settings-head">
-        <div>
-          <p className="eyebrow">MODEL & PROVIDER REGISTRY</p>
-          <h2>Local and remote, one registry.</h2>
-          <p>
-            YUZUKI resolves capabilities across local runtimes, native OS models,
-            localhost servers and BYOK APIs. Remote credentials stay outside SQLite.
-          </p>
-        </div>
+        <h2>Providers</h2>
         <select
           className="provider-preset-select"
           value=""
@@ -283,7 +284,7 @@ export default function ProviderSettings() {
             if (preset) startPreset(preset);
           }}
         >
-          <option value="">＋ Add provider…</option>
+          <option value="">＋ Add</option>
           {presets.map((preset) => (
             <option key={preset.id} value={preset.id}>
               {preset.name}
@@ -294,24 +295,22 @@ export default function ProviderSettings() {
 
       <div className="provider-layout">
         <aside className="provider-list">
-          <p className="section-label">PROVIDERS</p>
           {providers.map((provider) => (
             <button
               key={provider.id}
               className={`provider-list-row ${selectedId === provider.id ? "active" : ""}`}
               onClick={() => setSelectedId(provider.id)}
+              title={provider.execution.replace("_", " ") + " · " + provider.availability}
             >
-              <span className="provider-status-dot" data-enabled={provider.enabled} />
+              <span className="provider-status-dot" data-state={providerState(provider)} />
               <span>
                 <strong>{provider.name}</strong>
-                <small>
+                <small hidden={provider.system_managed && provider.availability === "ready"}>
                   {provider.system_managed
-                    ? `${provider.execution.replace("_", " ")} · ${provider.availability}`
-                    : provider.secret_ref
-                      ? `${provider.execution.replace("_", " ")} · Key secured`
-                      : provider.auth_mode === "none"
-                        ? `${provider.execution.replace("_", " ")} · No auth`
-                        : `${provider.execution.replace("_", " ")} · Key missing`}
+                    ? provider.availability.replace(/-/g, " ")
+                    : provider.secret_ref || provider.auth_mode === "none"
+                      ? "Configured"
+                      : "Key missing"}
                 </small>
               </span>
             </button>
@@ -324,6 +323,7 @@ export default function ProviderSettings() {
         </aside>
 
         <div className="provider-editor">
+          {!selectedProvider?.system_managed && (
           <div className="provider-form-card">
             <div className="provider-form-title">
               <div>
@@ -336,76 +336,15 @@ export default function ProviderSettings() {
             </div>
 
             <div className="provider-form-grid">
-              <label>
+              <label className="provider-span-two">
                 Name
                 <input
                   value={draft.name}
-                  disabled={selectedProvider?.system_managed}
                   onChange={(event) => updateDraft("name", event.target.value)}
                   placeholder="My provider"
                 />
               </label>
-              <label>
-                Execution
-                <select
-                  value={draft.execution}
-                  disabled={selectedProvider?.system_managed}
-                  onChange={(event) =>
-                    updateDraft(
-                      "execution",
-                      event.target.value as ProviderInput["execution"],
-                    )
-                  }
-                >
-                  <option value="remote_api">Remote API</option>
-                  <option value="local_server">Local server</option>
-                  {selectedProvider?.system_managed && (
-                    <>
-                      <option value="local_runtime">Local runtime</option>
-                      <option value="native_os">Native OS</option>
-                    </>
-                  )}
-                </select>
-              </label>
-              <label>
-                Auth
-                <select
-                  disabled={selectedProvider?.system_managed}
-                  value={draft.auth_mode}
-                  onChange={(event) =>
-                    updateDraft(
-                      "auth_mode",
-                      event.target.value as ProviderInput["auth_mode"],
-                    )
-                  }
-                >
-                  <option value="bearer">Bearer API key</option>
-                  <option value="none">No authentication</option>
-                </select>
-              </label>
-              <label className="provider-span-two">
-                Inference base URL
-                <input
-                  value={draft.base_url}
-                  disabled={selectedProvider?.system_managed}
-                  onChange={(event) => updateDraft("base_url", event.target.value)}
-                  placeholder="https://api.example.com/v1"
-                  spellCheck={false}
-                />
-              </label>
-              <label className="provider-span-two">
-                Model discovery URL
-                <input
-                  value={draft.model_list_url}
-                  disabled={selectedProvider?.system_managed}
-                  onChange={(event) =>
-                    updateDraft("model_list_url", event.target.value)
-                  }
-                  placeholder="Leave empty to use {base_url}/models"
-                  spellCheck={false}
-                />
-              </label>
-              {draft.auth_mode === "bearer" && !selectedProvider?.system_managed && (
+              {draft.auth_mode === "bearer" && (
                 <label className="provider-span-two">
                   API key
                   <input
@@ -422,6 +361,58 @@ export default function ProviderSettings() {
                 </label>
               )}
             </div>
+
+            <details
+              className="provider-advanced"
+              key={draft.id ?? "new"}
+              open={!draft.base_url || undefined}
+            >
+              <summary>Advanced</summary>
+              <div className="provider-form-grid">
+                <label>
+                  Execution
+                  <select
+                    value={draft.execution}
+                    onChange={(event) =>
+                      updateDraft("execution", event.target.value as ProviderInput["execution"])
+                    }
+                  >
+                    <option value="remote_api">Remote API</option>
+                    <option value="local_server">Local server</option>
+                  </select>
+                </label>
+                <label>
+                  Auth
+                  <select
+                    value={draft.auth_mode}
+                    onChange={(event) =>
+                      updateDraft("auth_mode", event.target.value as ProviderInput["auth_mode"])
+                    }
+                  >
+                    <option value="bearer">Bearer API key</option>
+                    <option value="none">No authentication</option>
+                  </select>
+                </label>
+                <label className="provider-span-two">
+                  Inference base URL
+                  <input
+                    value={draft.base_url}
+                    onChange={(event) => updateDraft("base_url", event.target.value)}
+                    placeholder="OpenAI-compatible endpoint ending in /v1"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="provider-span-two">
+                  Model discovery URL
+                  <input
+                    value={draft.model_list_url}
+                    onChange={(event) => updateDraft("model_list_url", event.target.value)}
+                    placeholder="Leave empty to use {base_url}/models"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+            </details>
 
             <div className="provider-form-actions">
               <label className="provider-toggle">
@@ -457,17 +448,17 @@ export default function ProviderSettings() {
               </div>
             </div>
           </div>
+          )}
 
           {draft.id && (
             <div className="provider-health-card">
               <div>
-                <p className="section-label">CONNECTION & DISCOVERY</p>
                 <div className="provider-health-copy">
                   <strong>
                     {selectedProvider?.system_managed
                       ? selectedProvider.availability === "ready"
                         ? "Ready"
-                        : "Runtime status"
+                        : "Not available"
                       : selectedProvider?.last_error
                         ? "Needs attention"
                         : selectedProvider?.last_refresh_at
@@ -485,11 +476,7 @@ export default function ProviderSettings() {
                 </div>
               </div>
               <div className="provider-health-actions">
-                {selectedProvider?.system_managed ? (
-                  <span className="provider-id-chip">
-                    {selectedProvider.availability}
-                  </span>
-                ) : (
+                {selectedProvider?.system_managed ? null : (
                   <>
                     <button
                       className="secondary"
@@ -521,7 +508,7 @@ export default function ProviderSettings() {
 
           {selectedProvider?.system_managed &&
             selectedProvider.availability !== "unsupported-platform" &&
-            selectedProvider.id === "local.whisper-cpp" && (
+            selectedProvider.id === "local.faster-whisper" && (
               <RuntimePacksCard
                 providerId={selectedProvider.id}
                 models={models}
@@ -529,15 +516,12 @@ export default function ProviderSettings() {
               />
             )}
 
-          {draft.id && (
-            <div className="provider-model-card">
+          {draft.id && (models.length > 0 || !selectedProvider?.system_managed) && (
+            <details className="provider-model-card">
+              <summary>
+                Models · {models.filter((model) => model.available).length} available
+              </summary>
               <div className="provider-model-head">
-                <div>
-                  <p className="section-label">MODELS</p>
-                  <strong>
-                    {models.filter((model) => model.available).length} available
-                  </strong>
-                </div>
                 <input
                   value={modelFilter}
                   onChange={(event) => setModelFilter(event.target.value)}
@@ -619,14 +603,13 @@ export default function ProviderSettings() {
                   </div>
                 )}
               </div>
-            </div>
+            </details>
           )}
 
           {message && <div className="provider-message">{message}</div>}
         </div>
       </div>
 
-      <VoiceProfileSettings />
     </section>
   );
 }
