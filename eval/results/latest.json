@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-10-19T09:50:51.800Z",
-  "commit": "7215e32",
-  "mode": "full",
-  "overall": 4.26,
+  "generated_at": "2026-10-23T16:46:21.807Z",
+  "commit": "814c39a",
+  "mode": "fast",
+  "overall": 4.17,
   "beta_gate": 3.5,
   "verdict": "beta-ready",
   "open_p0": 0,
@@ -17,12 +17,6 @@
       "auto": 5,
       "audit": null,
       "weight": 2,
-      "score": 5
-    },
-    "Maintainability": {
-      "auto": 5,
-      "audit": null,
-      "weight": 1,
       "score": 5
     },
     "First-run UX": {
@@ -42,6 +36,12 @@
       "audit": 1.8,
       "weight": 1.5,
       "score": 2.9
+    },
+    "Maintainability": {
+      "auto": null,
+      "audit": null,
+      "weight": 1,
+      "score": null
     }
   },
   "checks": [
@@ -51,7 +51,7 @@
       "title": "Docs contract (scripts/check_docs.py)",
       "status": "pass",
       "detail": "",
-      "ms": 222,
+      "ms": 316,
       "metrics": {}
     },
     {
@@ -60,7 +60,7 @@
       "title": "Spatial worker tests (unittest)",
       "status": "pass",
       "detail": "31 tests",
-      "ms": 6209,
+      "ms": 12283,
       "metrics": {
         "tests": 31,
         "summary": "31 tests"
@@ -72,7 +72,7 @@
       "title": "Dubber protocol tests (unittest)",
       "status": "pass",
       "detail": "9 tests",
-      "ms": 754,
+      "ms": 1201,
       "metrics": {
         "tests": 9,
         "summary": "9 tests"
@@ -82,36 +82,22 @@
       "id": "frontend-build",
       "dimension": "Maintainability",
       "title": "Frontend typecheck + build",
-      "status": "pass",
-      "detail": "JS 396.66 kB (121.28 kB gzip)",
-      "ms": 4666,
-      "metrics": {
-        "js_kb": 396.66,
-        "js_gzip_kb": 121.28,
-        "summary": "JS 396.66 kB (121.28 kB gzip)"
-      }
+      "status": "skip",
+      "detail": "skipped in --fast"
     },
     {
       "id": "cargo-fmt",
       "dimension": "Maintainability",
       "title": "rustfmt",
-      "status": "pass",
-      "detail": "",
-      "ms": 623,
-      "metrics": {}
+      "status": "skip",
+      "detail": "skipped in --fast"
     },
     {
       "id": "cargo-test",
       "dimension": "Correctness",
       "title": "Rust test suite",
-      "status": "pass",
-      "detail": "213 passed, 0 failed",
-      "ms": 32912,
-      "metrics": {
-        "passed": 213,
-        "failed": 0,
-        "summary": "213 passed, 0 failed"
-      }
+      "status": "skip",
+      "detail": "skipped in --fast"
     },
     {
       "id": "ux-orphans",
@@ -156,7 +142,7 @@
       "dimension": "Security",
       "title": "No hard-coded secrets",
       "status": "pass",
-      "detail": "84 files scanned"
+      "detail": "89 files scanned"
     },
     {
       "id": "sec-csp",
@@ -178,6 +164,31 @@
       "title": "Eval workflow has a harness",
       "status": "pass",
       "detail": ""
+    },
+    {
+      "id": "quality-translate-judge",
+      "dimension": "处理质量 (Processing Quality)",
+      "title": "Translation judge agrees with human raters (quadratic kappa >= 0.6)",
+      "status": "skip",
+      "detail": "no fixtures/gold/translate-labels.jsonl (see fixtures/gold/README.md)"
+    },
+    {
+      "id": "quality-asr-cer",
+      "dimension": "处理质量 (Processing Quality)",
+      "title": "ASR CER on the gold set",
+      "status": "skip",
+      "detail": "no fixtures/gold/manifest.json (see fixtures/gold/README.md)",
+      "ms": 0,
+      "metrics": {}
+    },
+    {
+      "id": "quality-tts-roundtrip-cer",
+      "dimension": "处理质量 (Processing Quality)",
+      "title": "TTS round-trip CER (translation -> TTS -> ASR)",
+      "status": "skip",
+      "detail": "no fixtures/gold/manifest.json (see fixtures/gold/README.md)",
+      "ms": 1,
+      "metrics": {}
     }
   ],
   "findings": [

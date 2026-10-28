@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fixtures/gold/manifest.schema.json",
+  "title": "YUZUKI gold evaluation set manifest",
+  "description": "User-supplied Japanese clips with reference transcript and translation. Audio is never committed; see fixtures/gold/README.md and docs/09-security-rights.md.",
+  "type": "object",
+  "required": ["schema_version", "clips"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "translation_language": {
+      "description": "BCP 47 tag of every reference_translation (e.g. zh-Hans, en).",
+      "type": "string",
+      "minLength": 2
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/clip" }
+    }
+  },
+  "$defs": {
+    "clip": {
+      "type": "object",
+      "required": ["id", "audio", "language", "reference_transcript", "reference_translation", "rights"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "audio": {
+          "description": "Path relative to fixtures/gold/ (e.g. audio/clip01.wav). The audio/ folder is git-ignored.",
+          "type": "string",
+          "pattern": "^(?![/\\\\])(?!.*\\.\\.)[^:]+\\.(wav|flac|mp3|m4a|ogg|opus)$"
+        },
+        "language": { "const": "ja" },
+        "reference_transcript": {
+          "description": "Verbatim human transcript. One string per clip; sentences may be separated by newlines (used as translation-judge units).",
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_translation": {
+          "description": "Human reference translation, sentence-aligned line by line with reference_transcript.",
+          "type": "string",
+          "minLength": 1
+        },
+        "rights": { "$ref": "#/$defs/rights" },
+        "notes": { "type": "string" }
+      }
+    },
+    "rights": {
+      "description": "Mandatory per docs/09-security-rights.md: only owned or clearly licensed audio; no real-person voice without the permission appropriate to evaluation use.",
+      "type": "object",
+      "required": ["license", "source", "evaluation_permitted", "real_person_voice"],
+      "additionalProperties": false,
+      "properties": {
+        "license": {
+          "description": "user-owned = recorded/created by the user; otherwise an SPDX id of an open license, or 'permission' with consent_reference.",
+          "enum": ["user-owned", "CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0", "permission"]
+        },
+        "source": { "description": "Where the audio came from (URL, recording session, dataset name and version).", "type": "string", "minLength": 1 },
+        "attribution": { "description": "Required text for CC-BY / CC-BY-SA.", "type": "string" },
+        "evaluation_permitted": { "description": "Must be true: the rights holder allows use for local quality evaluation.", "const": true },
+        "real_person_voice": {
+          "description": "none = synthetic or the user's own voice; consented = an identifiable real person who granted permission for this use.",
+          "enum": ["none", "self", "consented"]
+        },
+        "consent_reference": { "description": "Where the written permission is kept (not the permission itself).", "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        { "if": { "properties": { "license": { "const": "permission" } } }, "then": { "required": ["consent_reference"] } },
+        { "if": { "properties": { "real_person_voice": { "const": "consented" } } }, "then": { "required": ["consent_reference"] } },
+        { "if": { "properties": { "license": { "enum": ["CC-BY-4.0", "CC-BY-SA-4.0"] } } }, "then": { "required": ["attribution"] } }
+      ]
+    }
+  }
+}

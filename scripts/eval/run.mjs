@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // YUZUKI eval harness: automated checks + audit scorecard -> eval/results/latest.json + eval/report/index.html
-// Usage: node scripts/eval/run.mjs [--fast]   (--fast skips frontend build and Rust; CI eval job has no Tauri deps)
+// Usage: node scripts/eval/run.mjs [--fast] [--quality]   (--fast skips frontend build and Rust; CI eval job has no Tauri deps;
+//   --quality runs the provider-backed quality checks in --fast too)
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { asrCerCheck, ttsRoundtripCheck } from "./asr_quality.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FAST = process.argv.includes("--fast");
+const QUALITY = process.argv.includes("--quality");
 const PY = process.platform === "win32" ? "python" : "python3";
 const results = [];
 
@@ -164,6 +167,68 @@ if (FAST) {
     /signtool|WINDOWS_CERTIFICATE|azure\/trusted-signing|certificateThumbprint/i.test(all) ? "pass" : "warn",
     "unsigned installers trigger SmartScreen on first run");
   record("rel-eval-ci", "Release", "Eval workflow has a harness", existsSync(join(ROOT, "scripts", "eval", "run.mjs")) ? "pass" : "fail", "");
+}
+
+// ---------- Processing Quality: translation judge (T11) ----------
+// LLM judge (scripts/eval/judge.mjs) vs human labels (eval/rubrics/translate.md).
+// Calls a paid or local provider, so it runs in full mode or with --quality, and
+// records skip (never a made-up score) until labels and a judge are configured.
+{
+  const id = "quality-translate-judge";
+  const dim = "处理质量 (Processing Quality)";
+  const title = "Translation judge agrees with human raters (quadratic kappa >= 0.6)";
+  const labels = join(ROOT, "fixtures", "gold", "translate-labels.jsonl");
+  const missing = ["YUZUKI_JUDGE_BASE_URL", "YUZUKI_JUDGE_MODEL"].filter((k) => !process.env[k]);
+  if (FAST && !QUALITY) record(id, dim, title, "skip", "skipped in --fast (add --quality to run it)");
+  else if (!existsSync(labels)) record(id, dim, title, "skip", "no fixtures/gold/translate-labels.jsonl (see fixtures/gold/README.md)");
+  else if (missing.length) record(id, dim, title, "skip", "judge not configured: set " + missing.join(", "));
+  else {
+    const judged = join(ROOT, "eval", "results", "translate-judged.jsonl");
+    mkdirSync(dirname(judged), { recursive: true });
+    const j = sh("node scripts/eval/judge.mjs \"" + labels + "\" --out \"" + judged + "\"");
+    if (j.code === 2) {
+      record(id, dim, title, "fail", "judge: " + tail(j.out), { ms: j.ms });
+    } else {
+      const k = sh("node scripts/eval/kappa.mjs \"" + labels + "\" \"" + judged + "\"");
+      let metrics = {};
+      try {
+        metrics = JSON.parse(k.out.slice(k.out.indexOf("{"), k.out.lastIndexOf("}") + 1));
+      } catch {
+        metrics = {};
+      }
+      const judgeNote = j.code === 0 ? "" : "\njudge left rows unscored:\n" + tail(j.out, 10);
+      const status = k.code !== 0 ? "fail" : j.code === 0 ? "pass" : "warn";
+      const detail =
+        k.code === 0
+          ? "kappa_quadratic " + metrics.kappa_quadratic.toFixed(3) + " on " + metrics.compared + " rows" + judgeNote
+          : tail(k.out) + judgeNote;
+      record(id, dim, title, status, detail, { ms: j.ms + k.ms, metrics });
+    }
+  }
+}
+
+// ---------- Processing Quality: ASR CER + TTS round-trip CER (T10) ----------
+// Deterministic metrics over fixtures/gold (scripts/eval/asr_quality.mjs). They run
+// local models, so they run in full mode or with --quality, and record skip with a
+// reason (never a made-up number) until the gold set and runtimes exist.
+{
+  const dim = "处理质量 (Processing Quality)";
+  const goldDir = join(ROOT, "fixtures", "gold");
+  const worker = join(ROOT, "workers", "asr", "faster_whisper_worker.py");
+  const outDir = join(ROOT, "eval", "results", "tts-roundtrip");
+  const checks = [
+    ["quality-asr-cer", "ASR CER on the gold set", () => asrCerCheck({ goldDir, worker })],
+    ["quality-tts-roundtrip-cer", "TTS round-trip CER (translation -> TTS -> ASR)", () => ttsRoundtripCheck({ goldDir, worker, outDir })],
+  ];
+  for (const [id, title, run] of checks) {
+    if (FAST && !QUALITY) {
+      record(id, dim, title, "skip", "skipped in --fast (add --quality to run it)");
+      continue;
+    }
+    const t0 = Date.now();
+    const r = run();
+    record(id, dim, title, r.status, r.detail, { ms: Date.now() - t0, metrics: r.metrics ?? {} });
+  }
 }
 
 // ---------- Scoring ----------
