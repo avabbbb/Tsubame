@@ -129,7 +129,22 @@ fn registry_names_are_unique_and_metadata_matches_the_contract() {
             "runtime.install",
             "media.list",
             "media.import_folder",
-            "asr.run"
+            "asr.run",
+            "translate.run",
+            "tts.synthesize",
+            "spatial.analyze",
+            "spatial.render",
+            "mix.export",
+            "source.list",
+            "source.search",
+            "source.get_work",
+            "dlsite.session_status",
+            "dlsite.logout",
+            "dlsite.library",
+            "download.enqueue",
+            "download.list",
+            "download.cancel",
+            "download.retry"
         ]
     );
     let meta = |name: &str| {
@@ -146,6 +161,7 @@ fn registry_names_are_unique_and_metadata_matches_the_contract() {
         "provider.list",
         "runtime.plan",
         "media.list",
+        "download.list",
     ] {
         assert!(!meta(name).mutates, "{name} must be read-only");
         assert!(
@@ -160,6 +176,14 @@ fn registry_names_are_unique_and_metadata_matches_the_contract() {
         "runtime.install",
         "media.import_folder",
         "asr.run",
+        "translate.run",
+        "tts.synthesize",
+        "spatial.analyze",
+        "spatial.render",
+        "mix.export",
+        "download.enqueue",
+        "download.cancel",
+        "download.retry",
     ] {
         assert!(meta(name).mutates, "{name} mutates");
     }
@@ -172,6 +196,38 @@ fn registry_names_are_unique_and_metadata_matches_the_contract() {
     assert_eq!(meta("asr.run").cancellation, Cancellation::Job);
     assert!(!meta("asr.run").expected_revision);
     assert_eq!(meta("media.import_folder").cancellation, Cancellation::None);
+    for name in [
+        "translate.run",
+        "tts.synthesize",
+        "spatial.analyze",
+        "spatial.render",
+        "mix.export",
+    ] {
+        assert_eq!(
+            meta(name).cancellation,
+            Cancellation::Job,
+            "{name} runs as a job"
+        );
+        assert!(
+            meta(name).side_effects.contains(&SideEffect::JobWrite),
+            "{name} writes a job"
+        );
+    }
+    assert!(meta("tts.synthesize").expected_revision);
+    for name in [
+        "translate.run",
+        "spatial.analyze",
+        "spatial.render",
+        "mix.export",
+    ] {
+        assert!(!meta(name).expected_revision, "{name} takes no revision");
+    }
+    assert!(meta("translate.run")
+        .side_effects
+        .contains(&SideEffect::Network));
+    assert!(!meta("mix.export")
+        .side_effects
+        .contains(&SideEffect::Network));
 }
 
 #[test]
@@ -409,10 +465,8 @@ fn media_import_folder_rejects_relative_and_missing_paths() {
     let relative = by_name::<MediaImportFolder>(&fx.ctx(), &json!({ "path": "test-media" }));
     assert_eq!(code(&relative), "invalid_input");
     let missing = temp_media_dir("missing").join("nope");
-    let missing = by_name::<MediaImportFolder>(
-        &fx.ctx(),
-        &json!({ "path": missing.to_str().unwrap() }),
-    );
+    let missing =
+        by_name::<MediaImportFolder>(&fx.ctx(), &json!({ "path": missing.to_str().unwrap() }));
     assert_eq!(code(&missing), "not_found");
 }
 
@@ -436,4 +490,173 @@ fn asr_run_queues_a_job_for_known_media_only() {
     .unwrap();
     assert_eq!(job["kind"], json!("asr"), "{job}");
     assert_eq!(job["media_id"], json!(fx.media_id), "{job}");
+}
+
+fn noop_runner(fx: &Fixture, kind: &str) {
+    fx.jobs
+        .register_runner(kind, Arc::new(|_: &crate::jobs::JobHandle| Ok(json!({}))));
+}
+
+#[test]
+fn dub_ops_queue_jobs_on_the_desktop_runners() {
+    let fx = Fixture::new();
+    // The Desktop registers the real runners in setup; the operations only queue.
+    for kind in [
+        crate::TRANSLATE_JOB,
+        crate::tts::TTS_JOB,
+        crate::spatial::SPATIAL_JOB,
+        crate::MIX_JOB,
+    ] {
+        noop_runner(&fx, kind);
+    }
+    let job = by_name::<TranslateRun>(
+        &fx.ctx(),
+        &json!({ "media_id": fx.media_id, "provider_id": "p", "model_id": "m", "target_language": "zh-CN" }),
+    )
+    .unwrap();
+    assert_eq!(job["kind"], json!("translate"), "{job}");
+    assert_eq!(job["media_id"], json!(fx.media_id), "{job}");
+
+    let job = by_name::<TtsSynthesize>(
+        &fx.ctx(),
+        &json!({
+            "segment_id": fx.segment.id,
+            "expected_revision": fx.segment.revision,
+            "voice_profile_id": "voice-1"
+        }),
+    )
+    .unwrap();
+    assert_eq!(job["kind"], json!("tts"), "{job}");
+    assert_eq!(job["media_id"], json!(fx.media_id), "{job}");
+
+    let job = by_name::<SpatialAnalyze>(&fx.ctx(), &json!({ "media_id": fx.media_id })).unwrap();
+    assert_eq!(job["kind"], json!("spatial"), "{job}");
+
+    let job = by_name::<SpatialRender>(
+        &fx.ctx(),
+        &json!({ "segment_id": fx.segment.id, "mode": "concurrent" }),
+    )
+    .unwrap();
+    assert_eq!(job["kind"], json!("spatial"), "{job}");
+    assert_eq!(job["media_id"], json!(fx.media_id), "{job}");
+
+    let dir = temp_media_dir("mix-export");
+    let out = dir.join("dub.wav");
+    let job = by_name::<MixExport>(
+        &fx.ctx(),
+        &json!({
+            "media_id": fx.media_id,
+            "output_path": out.to_str().unwrap(),
+            "options": { "kind": "dub_stem" }
+        }),
+    )
+    .unwrap();
+    assert_eq!(job["kind"], json!("mix"), "{job}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dub_ops_reject_unknown_targets_and_bad_input_before_queueing() {
+    let fx = Fixture::new();
+    let translate = by_name::<TranslateRun>(
+        &fx.ctx(),
+        &json!({ "media_id": fx.media_id + 999, "provider_id": "p", "model_id": "m", "target_language": "zh-CN" }),
+    );
+    assert_eq!(code(&translate), "not_found");
+    let tts = by_name::<TtsSynthesize>(
+        &fx.ctx(),
+        &json!({ "segment_id": 9_999, "expected_revision": 0, "voice_profile_id": "voice-1" }),
+    );
+    assert_eq!(code(&tts), "not_found");
+    let render = by_name::<SpatialRender>(&fx.ctx(), &json!({ "segment_id": 9_999 }));
+    assert_eq!(code(&render), "not_found");
+    let analyze = by_name::<SpatialAnalyze>(&fx.ctx(), &json!({ "media_id": fx.media_id + 999 }));
+    assert_eq!(code(&analyze), "not_found");
+
+    let relative = by_name::<MixExport>(
+        &fx.ctx(),
+        &json!({ "media_id": fx.media_id, "output_path": "dub.wav" }),
+    );
+    assert_eq!(code(&relative), "invalid_input");
+    let dir = temp_media_dir("mix-reject");
+    let missing = dir.join("nope").join("dub.wav");
+    let missing = by_name::<MixExport>(
+        &fx.ctx(),
+        &json!({ "media_id": fx.media_id, "output_path": missing.to_str().unwrap() }),
+    );
+    assert_eq!(code(&missing), "not_found");
+    let out = dir.join("dub.wav");
+    let bad_options = by_name::<MixExport>(
+        &fx.ctx(),
+        &json!({
+            "media_id": fx.media_id,
+            "output_path": out.to_str().unwrap(),
+            "options": { "limiter_ceiling_dbfs": 5.0 }
+        }),
+    );
+    assert_eq!(code(&bad_options), "invalid_input");
+    assert!(
+        fx.jobs.list(&JobFilter::default()).unwrap().is_empty(),
+        "nothing was queued"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn download_ops_queue_local_assets_list_and_cancel() {
+    let fx = Fixture::new();
+    // The real runner drains over the network; this test only checks queueing.
+    fx.jobs.register_runner(
+        crate::sources::download::DOWNLOAD_JOB,
+        Arc::new(|_job: &crate::jobs::JobHandle| Ok(json!({}))),
+    );
+    let src = temp_media_dir("download-src");
+    std::fs::write(src.join("track.wav"), b"RIFF").unwrap();
+    let dest = temp_media_dir("download-dest");
+    let input = |dest_dir: &str, asset_ids: Option<Value>| {
+        let mut input = json!({
+            "source_id": "local",
+            "remote_id": src.to_str().unwrap(),
+            "dest_dir": dest_dir,
+        });
+        if let Some(ids) = asset_ids {
+            input["asset_ids"] = ids;
+        }
+        input
+    };
+
+    let relative = by_name::<DownloadEnqueue>(&fx.ctx(), &input("out", None));
+    assert_eq!(code(&relative), "invalid_input");
+    let unknown_asset = by_name::<DownloadEnqueue>(
+        &fx.ctx(),
+        &input(dest.to_str().unwrap(), Some(json!(["nope"]))),
+    );
+    assert_eq!(code(&unknown_asset), "not_found");
+    let unknown_source = by_name::<DownloadEnqueue>(
+        &fx.ctx(),
+        &json!({ "source_id": "nope", "remote_id": "x", "dest_dir": dest.to_str().unwrap() }),
+    );
+    assert!(unknown_source.is_err());
+
+    let queued =
+        by_name::<DownloadEnqueue>(&fx.ctx(), &input(dest.to_str().unwrap(), None)).unwrap();
+    let rows = queued["downloads"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"], "queued");
+    assert!(rows[0]["dest"].as_str().unwrap().ends_with("track.wav"));
+    assert!(
+        queued["job"]["id"].is_string(),
+        "a download job drains the queue"
+    );
+
+    let listed = same_read::<DownloadList>(&fx, json!({ "status": "queued" })).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    let id = rows[0]["id"].as_str().unwrap();
+    let cancelled = by_name::<DownloadCancel>(&fx.ctx(), &json!({ "id": id })).unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    let missing = by_name::<DownloadCancel>(&fx.ctx(), &json!({ "id": "nope" }));
+    assert_eq!(code(&missing), "not_found");
+
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&dest);
 }

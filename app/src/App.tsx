@@ -54,6 +54,9 @@ import SubtitleActions from "./SubtitleActions";
 import WaveformEditor from "./WaveformEditor";
 import GetStarted, { type GetStartedProgress } from "./GetStarted";
 import JobsView from "./JobsView";
+import LibraryBrowser from "./LibraryBrowser";
+import DownloadsView from "./DownloadsView";
+import DlsiteAccount from "./DlsiteAccount";
 import type {
   DubPlan,
   MediaItem,
@@ -1479,6 +1482,13 @@ export default function App() {
           </section>
         ) : activeRail === "jobs" ? (
           <JobsView media={items} />
+        ) : activeRail === "discover" ? (
+          <div style={{ overflowY: "auto", minHeight: 0 }}>
+            <DlsiteAccount />
+            <LibraryBrowser onQueued={() => setActiveRail("downloads")} />
+          </div>
+        ) : activeRail === "downloads" ? (
+          <DownloadsView onImported={() => void refreshLibrary()} />
         ) : (
           <section className="content section-placeholder">
             {activeRail === "home" && (
@@ -1493,9 +1503,7 @@ export default function App() {
             )}
             <p className="eyebrow">{activeRail.toUpperCase()}</p>
             <h2>
-              {activeRail === "home"
-                ? "Continue where you left off."
-                : `${activeRail[0].toUpperCase()}${activeRail.slice(1)} isn't available in this beta yet.`}
+              Continue where you left off.
             </h2>
             <p>
               The global player stays alive while product surfaces change. This is the

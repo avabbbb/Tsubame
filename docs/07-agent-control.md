@@ -91,11 +91,13 @@ It must not contain provider-specific business logic duplicated from the app.
 
 Implemented in crates/yuzuki-cli (binary yuzuki) on top of crates/yuzuki-client. Both are clients of the local control endpoint only: each command maps its flags onto one Operation Registry input and prints the result. Validation, revisions and every other rule stay in the Desktop.
 
-Discovery: --control-file, else YUZUKI_CONTROL_FILE, else <app data dir>/com.avabbbb.tsubame/control.json (%APPDATA% on Windows, ~/Library/Application Support on macOS, $XDG_DATA_HOME or ~/.local/share on Linux). The client checks GET /v1/health; a missing file, or one nobody answers, is desktop_not_running. With --launch it starts the Desktop (YUZUKI_DESKTOP, else YUZUKI/yuzuki/tsubame next to the yuzuki binary) and polls for up to 30 s; without --launch it never starts anything. app status never launches. The launch path has not yet been exercised against an installed Desktop.
+Discovery: --control-file, else YUZUKI_CONTROL_FILE, else <app data dir>/com.avabbbb.tsubame/control.json (%APPDATA% on Windows, ~/Library/Application Support on macOS, $XDG_DATA_HOME or ~/.local/share on Linux). The client checks GET /v1/health; a missing file, or one nobody answers, is desktop_not_running. With --launch it starts the Desktop (YUZUKI_DESKTOP, else tsubame next to the yuzuki binary, the Tauri main binary name; a candidate that is the CLI itself is skipped, since YUZUKI.exe and yuzuki.exe are the same file on Windows) and polls for up to 30 s; without --launch it never starts anything. app status never launches.
 
 ~~~bash
 yuzuki doctor --json                                   # runtime.doctor
 yuzuki app status --json                               # health, pid, addr
+yuzuki app ensure --json                               # starts the Desktop only when nothing answers; reports launched
+yuzuki init --json                                     # cli/mcp paths + MCP config, desktop state, runtime.doctor, op count
 yuzuki ops list --json                                 # GET /v1/ops with input schemas
 yuzuki segment list --media-id <id> --json
 yuzuki segment update --id <id> --expected-revision <n> [--source-text ..] [--translated-text ..] [--start-ms n] [--end-ms n] --json
@@ -104,6 +106,17 @@ yuzuki job list [--media-id n] [--segment-id n] [--kind ..] [--status ..] [--lim
 yuzuki job cancel --id <job-id> --json
 yuzuki runtime plan --provider-id <id> [--model-id <id>] --json
 yuzuki runtime install --provider-id <id> [--model-id <id>] --json
+yuzuki source list --json                              # source.list
+yuzuki source search --source-id <id> --query <q> [--limit n] --json
+yuzuki source get-work --source-id <id> --remote-id <id> [--refresh] --json
+yuzuki download enqueue --source-id <id> --remote-id <id> [--asset-id <id>]... --dest-dir <dir> [--no-import] --json
+yuzuki download list [--status ..] --json
+yuzuki download cancel --id <id> --json
+yuzuki download retry --id <id> --json
+yuzuki dlsite status --json                            # dlsite.session_status; sign-in happens in the Desktop (Discover)
+yuzuki dlsite library --json                           # dlsite.library: purchased RJ codes
+yuzuki dlsite logout --json                            # dlsite.logout
+yuzuki download enqueue --source-id dlsite --remote-id RJ... --asset-id dlsite-owned-archive --dest-dir <dir> --json  # purchased works only
 yuzuki call <operation> --input '<json>' --json         # any registered operation
 ~~~
 
@@ -125,9 +138,11 @@ Tests: crates/yuzuki-client/src/tests.rs (discovery, stale file, protocol, envel
 
 Known issue: on Windows a child process spawned while the endpoint accepts a connection can inherit the accepted socket, and the client then sees os error 10054. The tests keep process spawning in a separate test binary. The Desktop also spawns workers in-process, so the same rare reset can occur there; this is not fixed yet.
 
-Not yet bundled: the yuzuki binary is not configured as a Tauri sidecar (bundle.externalBin), so installers do not ship it yet.
+Bundled: scripts/build-sidecars.mjs builds yuzuki and yuzuki-mcp for the target triple into app/src-tauri/binaries/ (ignored), and the generated preview and release overlays list them in bundle.externalBin, so installers from build-installers and release-desktop ship both next to the Desktop executable, where --launch and app ensure look for it. Plain tauri.conf.json has no externalBin, so cargo test and tauri dev need no prebuilt sidecars.
 
-Planned, not implemented: app ensure, init, provider list/models on the CLI (the provider.list operation is reachable through yuzuki call provider.list), profile list/resolve, profile-keyed runtime plan/install, the source commands, library list, work/track show, segment show, the process commands, job show/retry.
+init never launches without --launch: when nothing answers it still exits 0 with desktop.running false, doctor null and a next step. app ensure connects first and launches only on desktop_not_running; any other error (protocol_mismatch, unauthorized) is returned as is.
+
+Planned, not implemented: provider list/models on the CLI (the provider.list operation is reachable through yuzuki call provider.list), profile list/resolve, profile-keyed runtime plan/install, library list, work/track show, segment show, the process commands, job show/retry.
 
 ## Agent end-to-end test
 
@@ -143,12 +158,12 @@ The fixture registers a test-only regenerate runner that synthesizes with MockTt
 | 4 generate sentence subtitles | asr.run (+ job.list) | yes (queues the asr job; needs an installed ASR runtime) | operations.rs: AsrRun |
 | 5 edit one sentence | segment.update | yes | operations.rs: SegmentUpdate |
 | 6 BYOK translation provider | none | no | operations.rs registry: no provider or secret write op |
-| 7 translate | none | no | operations.rs registry: no translate op |
+| 7 translate | translate.run (+ job.list) | yes (queues the translate job; needs a configured translation provider) | operations.rs: TranslateRun |
 | 8 configure TTS runtime/voice | none (fixture seeds the voice profile) | no | voice.rs: save is not registered |
 | 9 regenerate only that sentence | segment.regenerate | yes, with the test-support mock runner | operations.rs: SegmentRegenerate; test_support.rs: mock_regenerate_runner |
 | 10 continue playback with the generated variant | none (the active take is checked in SQLite) | no | operations.rs registry: no playback op |
 
-Each unreachable step is a named #[ignore = "gap: ..."] test in agent_e2e.rs. A full 10-step run needs registry ops for import, ASR, provider/secret configuration, translate, TTS/voice profile configuration and playback, plus a runtime.install fixture that does not download.
+Each unreachable step is a named #[ignore = "gap: ..."] test in agent_e2e.rs. tts.synthesize, spatial.analyze, spatial.render and mix.export are registered too (they queue the existing tts, spatial and mix jobs), so a dub can be produced through the Registry once a provider and voice profile exist. A full 10-step run still needs registry ops for install bootstrap, provider/secret configuration, voice profile configuration and playback, plus a runtime.install fixture that does not download.
 
 ## MCP
 
@@ -164,7 +179,7 @@ yuzuki-mcp [--control-file <path>] [--launch]
 - JSON-RPC errors: -32700 invalid JSON, -32600 not a single request object, -32601 unknown method, -32602 unknown tool or bad arguments, -32000 the Desktop could not be reached (error.data.code is the yuzuki-client code: desktop_not_running, launch_failed, transport, protocol_mismatch, bad_response). initialize and ping never need the Desktop.
 - stdout carries only JSON-RPC; diagnostics go to stderr.
 
-Tests: crates/yuzuki-mcp/tests/server.rs against the real control endpoint over the in-memory fixture Desktop (feature test-support). Not yet bundled as a Tauri sidecar, like the yuzuki binary.
+Tests: crates/yuzuki-mcp/tests/server.rs against the real control endpoint over the in-memory fixture Desktop (feature test-support). Shipped in the installers beside the yuzuki binary; yuzuki init --json prints its path and an mcpServers config.
 
 ## Mutation policy
 

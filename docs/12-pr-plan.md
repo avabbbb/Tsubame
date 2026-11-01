@@ -186,7 +186,7 @@ select Segment
 
 ## PR #12 — Runtime and model bootstrap
 
-Status: in progress on feat/runtime-bootstrap. Install engine, the faster-whisper BASE runtime pack plus the optional NVIDIA GPU pack (archives built; release assets NOT YET PUBLISHED), non-WAV media decode, doctor and the Settings/ASR install UI are implemented. Publishing the pack assets and a TTS pack remain before internal testing. Contract: Runtime bootstrap.
+Status: in progress on feat/runtime-bootstrap. Install engine, the faster-whisper BASE runtime pack plus the optional NVIDIA GPU pack and the FunASR pack (release assets published 2026-10-29 as GitHub pre-releases), non-WAV media decode, doctor and the Settings/ASR install UI are implemented. The opt-in cloud TTS pack runtime.edge-tts 7.3.1-1 (Edge TTS (online); sentence text goes to Microsoft) was published 2026-10-29 as a pre-release; a local TTS pack (IndexTTS) remains before internal testing. Contract: Runtime bootstrap.
 
 Goal: normal users configure no developer environment.
 
@@ -215,6 +215,8 @@ Scope:
 ---
 
 ## PR #14 — Source Registry and shared Download Manager
+
+Status: in progress. Source Registry (local + DLsite metadata adapters), the persisted download queue (retry/backoff, Range resume, proxy, sha256, staged finalization, crash recovery) and the source.* / download.* / dlsite.* operations with CLI commands, DLsite sign-in (DLsite's own page, session in the OS keyring), the purchased library and official downloads of purchased works are implemented; see [Source Adapters and Downloads](08-source-adapters.md#implementation-pr-14). Parallel workers remain.
 
 Scope:
 - SourceAdapter;

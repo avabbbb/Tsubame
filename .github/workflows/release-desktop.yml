@@ -101,6 +101,8 @@ jobs:
       - name: Generate platform icons
         run: npm run tauri -- icon src-tauri/icons/icon.png
         working-directory: app
+      - name: Build yuzuki CLI and MCP sidecars
+        run: node scripts/build-sidecars.mjs --target ${{ matrix.target }}
       # Tauri treats a defined APPLE_CERTIFICATE as a request to import it, even
       # when the secret is missing and the value is empty. So the Apple variables
       # are only present in the step that actually signs with Developer ID.

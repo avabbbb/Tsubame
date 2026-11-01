@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://img.dlsite.jp asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -54,7 +54,9 @@
     "resources": {
       "../../workers/asr/": "workers/asr/",
       "../../workers/dubber/spatial/": "workers/dubber/spatial/",
-      "../../workers/dubber/tsubame_worker/": "workers/dubber/tsubame_worker/"
+      "../../workers/dubber/tsubame_worker/": "workers/dubber/tsubame_worker/",
+      "../../workers/tts/edge_tts_worker.py": "workers/tts/edge_tts_worker.py",
+      "../../workers/tts/outbound_redact.py": "workers/tts/outbound_redact.py"
     }
   }
 }

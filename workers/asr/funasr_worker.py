@@ -12,10 +12,19 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sys
 
 VAD_MODEL = "fsmn-vad"
 SAMPLE_RATE = 16000
+# SenseVoice prefixes each span with <|lang|><|EMOTION|><|Event|><|itn|> tags.
+# rich_transcription_postprocess maps emotion/event tags to emoji, which then
+# leak into subtitles, translation and TTS, so the tags are dropped instead.
+SENSEVOICE_TAG = re.compile(r"<\|[^|<>]*\|>")
+
+
+def clean_text(text: str) -> str:
+    return SENSEVOICE_TAG.sub("", text).strip()
 
 
 def fail(message: str) -> None:
@@ -68,7 +77,6 @@ def main() -> None:
     with contextlib.redirect_stdout(sys.stderr):
         try:
             from funasr import AutoModel
-            from funasr.utils.postprocess_utils import rich_transcription_postprocess
         except Exception as exc:
             fail(f"FunASR runtime is unavailable: {exc}")
 
@@ -94,7 +102,7 @@ def main() -> None:
             first = out[0] if isinstance(out, list) and out else out
             if not isinstance(first, dict):
                 fail("FunASR returned an unsupported result shape")
-            text = rich_transcription_postprocess(str(first.get("text") or "")).strip()
+            text = clean_text(str(first.get("text") or ""))
             if text:
                 segments.append(
                     {"start_ms": start, "end_ms": end, "text": text, "confidence": None}

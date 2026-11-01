@@ -98,12 +98,14 @@ pub fn current_platform() -> String {
 }
 
 /// Release tag the faster-whisper pack archives are attached to.
-/// NOT YET PUBLISHED: the archives are built by
-/// scripts/runtime/lock_faster_whisper.py --build and must be uploaded to
-/// this release before a fresh install can download them.
+/// Published 2026-10-29 as a GitHub pre-release with the BASE and CUDA
+/// archives (built by scripts/runtime/lock_faster_whisper.py --build); the
+/// asset digests match the pins below.
 const FW_RELEASE_TAG: &str = "runtime-faster-whisper-1.2.1-1";
 /// GitHub release carrying runtime.funasr (one release per pack version).
 const FUNASR_RELEASE_TAG: &str = "runtime-funasr-1.4.16-1";
+/// GitHub release carrying runtime.edge-tts (cloud voice; opt-in only).
+const EDGE_TTS_RELEASE_TAG: &str = "runtime-edge-tts-7.3.1-1";
 
 /// Offline mirror tried before the release: a directory (or file:/http(s): URL
 /// base) holding the pack archives under their release file names, e.g. the
@@ -130,6 +132,10 @@ fn fw_release_sources(file: &str) -> Vec<String> {
 
 fn funasr_release_sources(file: &str) -> Vec<String> {
     release_sources(FUNASR_RELEASE_TAG, file)
+}
+
+fn edge_tts_release_sources(file: &str) -> Vec<String> {
+    release_sources(EDGE_TTS_RELEASE_TAG, file)
 }
 
 /// Mirror (when set) first, then the GitHub release that publishes the pack.
@@ -161,9 +167,9 @@ pub fn builtin_catalog() -> Vec<Pack> {
             platform: "windows-x86_64".into(),
             format: PackFormat::Zip,
             sources: fw_release_sources("runtime.faster-whisper-1.2.1-1-windows-x86_64.zip"),
-            size: 97_115_053,
-            sha256: "7663e0bf700d304221ca8936ac2f0e8e2af1cf0c0175db7d8d3e81d5847d513d".into(),
-            unpacked_size: 271_995_105,
+            size: 97_115_945,
+            sha256: "c2af2117d19988f55c4b331037cb650ebee294e9063890625da62c5ddc0e5d7b".into(),
+            unpacked_size: 271_996_257,
             entry: "python.exe".into(),
             license: "MIT (faster-whisper, CTranslate2); PSF-2.0 (CPython); deps under their own licenses".into(),
             requires: vec![],
@@ -206,6 +212,25 @@ pub fn builtin_catalog() -> Vec<Pack> {
             unpacked_size: 1_048_408_693,
             entry: "python.exe".into(),
             license: "MIT (FunASR); BSD-3-Clause (PyTorch); PSF-2.0 (CPython); deps under their own licenses".into(),
+            requires: vec![],
+            hardware: None,
+        },
+        // Edge TTS (CLOUD voice): embeddable CPython 3.12.0 + edge-tts 7.3.1
+        // and its deps (aiohttp, certifi). The pack installs locally, but the
+        // worker sends sentence text to Microsoft's online Edge speech
+        // service. Opt-in only: planned for the edge-tts provider alone.
+        Pack {
+            id: EDGE_TTS_RUNTIME.into(),
+            version: "7.3.1-1".into(),
+            kind: PackKind::Runtime,
+            platform: "windows-x86_64".into(),
+            format: PackFormat::Zip,
+            sources: edge_tts_release_sources("runtime.edge-tts-7.3.1-1-windows-x86_64.zip"),
+            size: 12_476_253,
+            sha256: "2aad11f88b8d7f2e25bfe640729dba0e6a9220e507c989c4b72836f57ba16349".into(),
+            unpacked_size: 26_443_738,
+            entry: "python.exe".into(),
+            license: "LGPL-3.0 (edge-tts); Apache-2.0 (aiohttp); MPL-2.0 (certifi); PSF-2.0 (CPython); deps under their own licenses".into(),
             requires: vec![],
             hardware: None,
         },
@@ -269,6 +294,8 @@ pub fn provider_pack_ids_for(
         "local.faster-whisper" => Some(vec![FASTER_WHISPER_RUNTIME]),
         // CPU PyTorch; SenseVoice Small runs well below real time on CPU.
         "local.sensevoice" => Some(vec![FUNASR_RUNTIME]),
+        // Cloud voice; only ever planned when the user picks Edge TTS.
+        crate::providers::EDGE_TTS_PROVIDER_ID => Some(vec![EDGE_TTS_RUNTIME]),
         _ => None,
     }
 }
@@ -644,6 +671,16 @@ impl Fetcher for HttpFetcher {
     }
 }
 
+/// Streams a response body as Read, for fetches that build their own request
+/// (sources::dlsite_auth::open_download).
+pub fn http_body(response: reqwest::Response) -> Box<dyn Read + Send> {
+    Box::new(HttpBody {
+        response,
+        pending: Vec::new(),
+        pos: 0,
+    })
+}
+
 struct HttpBody {
     response: reqwest::Response,
     pending: Vec<u8>,
@@ -885,11 +922,12 @@ pub fn default_probe(pack: &Pack, dir: &Path) -> Result<String, String> {
             &["-c", FASTER_WHISPER_IMPORT_PROBE],
             PYTHON_PROBE_TIMEOUT,
         ),
-        PackKind::Runtime if pack.id == FUNASR_RUNTIME => run_probe(
-            &entry,
-            &["-c", FUNASR_IMPORT_PROBE],
-            FUNASR_PROBE_TIMEOUT,
-        ),
+        PackKind::Runtime if pack.id == FUNASR_RUNTIME => {
+            run_probe(&entry, &["-c", FUNASR_IMPORT_PROBE], FUNASR_PROBE_TIMEOUT)
+        }
+        PackKind::Runtime if pack.id == EDGE_TTS_RUNTIME => {
+            run_probe(&entry, &["-c", EDGE_TTS_IMPORT_PROBE], PYTHON_PROBE_TIMEOUT)
+        }
         PackKind::Runtime => run_probe(&entry, &["--help"], PROBE_TIMEOUT),
     }
 }
@@ -903,6 +941,10 @@ const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 const FUNASR_IMPORT_PROBE: &str =
     "import torch, soundfile, funasr; from funasr.utils.postprocess_utils import rich_transcription_postprocess";
 const FUNASR_PROBE_TIMEOUT: Duration = Duration::from_secs(240);
+/// Imported by the runtime.edge-tts probe: the worker's own imports. The
+/// \x5f escapes spell the dunder attribute edge_tts.<dunder>version<dunder>.
+const EDGE_TTS_IMPORT_PROBE: &str =
+    "import edge_tts, aiohttp, certifi; print(edge_tts.\x5f\x5fversion\x5f\x5f)";
 
 fn run_probe(entry: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let shown = args.join(" ");
@@ -912,6 +954,8 @@ fn run_probe(entry: &Path, args: &[&str], timeout: Duration) -> Result<String, S
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // A pack interpreter must not pick up a developer's Python environment.
+    command.env_remove("PYTHONPATH").env_remove("PYTHONHOME");
     if let Some(dir) = entry.parent() {
         command.current_dir(dir);
     }
@@ -1302,6 +1346,28 @@ pub fn resolve_funasr_python() -> Result<PathBuf, String> {
     resolve_funasr_python_in(root(), &env_lookup)
 }
 
+/// Runtime pack holding embeddable CPython + hash-locked edge-tts wheels for
+/// workers/tts/edge_tts_worker.py (a cloud voice: text goes to Microsoft).
+pub const EDGE_TTS_RUNTIME: &str = "runtime.edge-tts";
+pub const ENV_EDGE_TTS_PYTHON: &str = "TSUBAME_EDGE_TTS_PYTHON";
+
+/// Python interpreter for edge_tts_worker.py: developer override first, then
+/// the active runtime pack entry. Never the system Python.
+pub fn resolve_edge_tts_python_in(
+    root: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<PathBuf, String> {
+    if let Some(value) = env(ENV_EDGE_TTS_PYTHON) {
+        return Ok(PathBuf::from(value));
+    }
+    root.and_then(|root| active_entry_path(root, EDGE_TTS_RUNTIME))
+        .ok_or_else(|| "Edge TTS runtime pack is not installed".to_string())
+}
+
+pub fn resolve_edge_tts_python() -> Result<PathBuf, String> {
+    resolve_edge_tts_python_in(root(), &env_lookup)
+}
+
 /// GPU pack: the NVIDIA cuBLAS/cuDNN/NVRTC DLLs that the BASE pack's
 /// ctranslate2 loads on CUDA. Requires runtime.faster-whisper.
 pub const FASTER_WHISPER_CUDA: &str = "runtime.faster-whisper.cuda";
@@ -1321,10 +1387,6 @@ pub fn active_faster_whisper_cuda_dir_in(root: Option<&Path>) -> Option<PathBuf>
         .version
         .clone();
     Some(pack_dir(root, FASTER_WHISPER_CUDA, &version))
-}
-
-pub fn active_faster_whisper_cuda_dir() -> Option<PathBuf> {
-    active_faster_whisper_cuda_dir_in(root())
 }
 
 /// GPU DLL directory for the worker: developer override (YUZUKI_FW_CUDA_DIR,
@@ -1403,6 +1465,7 @@ pub fn override_env_for(pack_id: &str) -> Option<&'static str> {
     match pack_id {
         FASTER_WHISPER_RUNTIME => Some(ENV_FASTER_WHISPER_PYTHON),
         FUNASR_RUNTIME => Some(ENV_FUNASR_PYTHON),
+        EDGE_TTS_RUNTIME => Some(ENV_EDGE_TTS_PYTHON),
         _ => None,
     }
 }

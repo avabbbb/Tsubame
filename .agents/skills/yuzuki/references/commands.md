@@ -1,6 +1,6 @@
 # YUZUKI CLI Reference
 
-The yuzuki binary (crates/yuzuki-cli) is a client of the running Desktop's local control endpoint. Each implemented command is one Operation Registry call; the Desktop does all validation. It is not yet bundled with the installers. Commands marked planned do not exist yet: do not invoke them, follow SKILL.md "Implementation status".
+The yuzuki binary (crates/yuzuki-cli) is a client of the running Desktop's local control endpoint. Each implemented command is one Operation Registry call; the Desktop does all validation. Installers ship yuzuki and yuzuki-mcp next to the Desktop executable. Commands marked planned do not exist yet: do not invoke them, follow SKILL.md "Implementation status".
 
 Global flags: --json (one envelope on stdout: {"ok":true,"data":...} or {"ok":false,"error":{"code":...,"message":...}}), --control-file <path> (else YUZUKI_CONTROL_FILE, else the Desktop's app data directory), --launch (start the Desktop when it is not running; never implied).
 
@@ -14,8 +14,8 @@ Exit codes: 0 success, 1 other, 2 usage, 3 desktop_not_running / launch_failed, 
 | yuzuki doctor --json | implemented | runtime.doctor (Runtime Packs only) |
 | yuzuki ops list --json | implemented | GET /v1/ops (metadata and input schemas) |
 | yuzuki call <operation> --input '<json>' --json | implemented | any registered operation |
-| yuzuki app ensure | planned | none |
-| yuzuki init --json | planned | none |
+| yuzuki app ensure --json | implemented | GET /v1/health; starts the Desktop only when nothing answers (data.launched) |
+| yuzuki init --json | implemented | GET /v1/health, GET /v1/ops, runtime.doctor; reports cli, mcp (path, mcpServers config), desktop; never launches without --launch |
 
 ## Providers and models
 
@@ -71,6 +71,11 @@ Exit codes: 0 success, 1 other, 2 usage, 3 desktop_not_running / launch_failed, 
 | Command | Status | Operation |
 |---|---|---|
 | yuzuki asr run --media-id <id> --provider-id <id> [--model-id ..] [--language ..] [--prompt ..] --json | implemented | asr.run (queues an asr job and returns it; follow with job list --media-id <id> --kind asr; success replaces that media's segments) |
+| yuzuki translate run --media-id <id> --provider-id <id> --model-id <id> --target-language <lang> [--source-language ..] [--segment-id n ...] [--overwrite-human-edits] --json | implemented | translate.run (queues a translate job; follow with job list --media-id <id> --kind translate; human-edited translations are kept unless --overwrite-human-edits) |
+| yuzuki tts synthesize --segment-id <id> --expected-revision <n> [--voice-profile-id ..] [--take n] --json | implemented | tts.synthesize (queues a tts job; default voice profile when omitted) |
+| yuzuki spatial analyze --media-id <id> --json | implemented | spatial.analyze (queues the media's spatial analysis) |
+| yuzuki spatial render --segment-id <id> [--mode source_trajectory\|concurrent] --json | implemented | spatial.render (queues one Segment's render) |
+| yuzuki mix export --media-id <id> --output <file.wav> [--options '<MixOptions json>'] --json | implemented | mix.export (queues the mix job; output's parent directory must exist; relative paths resolve against the current directory) |
 | yuzuki process track <track-id> --profile "<name>" --json | planned | none |
 | yuzuki process dirty <track-id> --json | planned | none |
 

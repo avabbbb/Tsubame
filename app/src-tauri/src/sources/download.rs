@@ -6,11 +6,11 @@
 //! checked before the staged file is renamed onto `dest`. A failing download
 //! only touches its own row and staging file, never `media_files`.
 //! Proxy: reqwest honours HTTP(S)_PROXY / NO_PROXY via runtime::HttpFetcher.
-//! Concurrency: one sequential worker (`run_queue`); parallel workers via the
-//! jobs runner are a follow-up.
-#![cfg_attr(not(test), allow(dead_code))] // commands wire this up in B4
+//! Concurrency: one sequential worker (run_queue) inside the download job
+//! (drain/runner below); parallel workers are a follow-up.
 
 use super::SourceError;
+use crate::jobs::{Job, JobError, JobHandle, JobRunner, JobStore, NewJob, ProgressSink};
 use crate::runtime::Fetcher;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -18,9 +18,16 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const COLUMNS: &str = "id, url, dest, staging_path, bytes_done, total, sha256, status, attempts, error";
+const COLUMNS: &str = "id, url, dest, staging_path, bytes_done, total, sha256, status, attempts, \
+     error, job_id, source_id, remote_id, asset_id, import";
+
+const STATUSES: &[&str] = &["queued", "running", "succeeded", "failed", "cancelled"];
+
+/// Job kind of the worker that drains the queue (download.enqueue/retry).
+pub const DOWNLOAD_JOB: &str = "download";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Download {
@@ -35,6 +42,14 @@ pub struct Download {
     pub status: String,
     pub attempts: u32,
     pub error: Option<String>,
+    /// The download job that drains this row.
+    pub job_id: Option<String>,
+    /// Provenance from download.enqueue; None for rows queued without a source.
+    pub source_id: Option<String>,
+    pub remote_id: Option<String>,
+    pub asset_id: Option<String>,
+    /// Import into the library (audio/video) once the file lands.
+    pub import: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +89,11 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Download> {
         status: r.get(7)?,
         attempts: r.get::<_, i64>(8)?.max(0) as u32,
         error: r.get(9)?,
+        job_id: r.get(10)?,
+        source_id: r.get(11)?,
+        remote_id: r.get(12)?,
+        asset_id: r.get(13)?,
+        import: r.get::<_, Option<i64>>(14)?.unwrap_or(0) != 0,
     })
 }
 
@@ -91,11 +111,26 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Download>, SourceError>
         .optional()?)
 }
 
-pub fn list(conn: &Connection) -> Result<Vec<Download>, SourceError> {
+fn require(conn: &Connection, id: &str) -> Result<Download, SourceError> {
+    get(conn, id)?.ok_or_else(|| SourceError::not_found(format!("download {id}")))
+}
+
+/// Every row in queue order, optionally only those with one status.
+pub fn list(conn: &Connection, status: Option<&str>) -> Result<Vec<Download>, SourceError> {
+    if let Some(status) = status {
+        if !STATUSES.contains(&status) {
+            return Err(SourceError::invalid_input(format!(
+                "unknown download status: {status} (expected one of {})",
+                STATUSES.join(", ")
+            )));
+        }
+    }
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM downloads ORDER BY created_at, id"
+        "SELECT {COLUMNS} FROM downloads WHERE ?1 IS NULL OR status = ?1 ORDER BY created_at, id"
     ))?;
-    let rows = stmt.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = stmt
+        .query_map(params![status], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -154,7 +189,14 @@ pub fn enqueue(
             conn.execute(
                 "INSERT INTO downloads (id, url, dest, staging_path, total, sha256)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, url, dest, format!("{dest}.part"), total.map(|t| t as i64), sha256],
+                params![
+                    id,
+                    url,
+                    dest,
+                    format!("{dest}.part"),
+                    total.map(|t| t as i64),
+                    sha256
+                ],
             )?;
             id
         }
@@ -171,6 +213,226 @@ pub fn recover(conn: &Connection) -> Result<usize, SourceError> {
          WHERE status = 'running'",
         [],
     )?)
+}
+
+/// Where a queued row came from and whether to import it (download.enqueue).
+pub struct Origin<'a> {
+    pub source_id: &'a str,
+    pub remote_id: &'a str,
+    pub asset_id: &'a str,
+    pub import: bool,
+}
+
+pub fn set_origin(
+    conn: &Connection,
+    id: &str,
+    origin: &Origin<'_>,
+) -> Result<Download, SourceError> {
+    conn.execute(
+        "UPDATE downloads SET source_id = ?2, remote_id = ?3, asset_id = ?4, import = ?5
+         WHERE id = ?1",
+        params![
+            id,
+            origin.source_id,
+            origin.remote_id,
+            origin.asset_id,
+            origin.import as i64
+        ],
+    )?;
+    require(conn, id)
+}
+
+fn invalid_state(d: &Download, action: &str) -> SourceError {
+    SourceError::new(
+        "invalid_state",
+        false,
+        format!("download {} is {}; cannot {action} it", d.id, d.status),
+    )
+}
+
+/// Cancels a queued row at once. A running row comes back unchanged: the
+/// caller stops it through its job, and run then records cancelled.
+pub fn cancel(conn: &Connection, id: &str) -> Result<Download, SourceError> {
+    let d = require(conn, id)?;
+    match d.status.as_str() {
+        "queued" => {
+            conn.execute(
+                "UPDATE downloads SET status = 'cancelled',
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE id = ?1 AND status = 'queued'",
+                params![id],
+            )?;
+            require(conn, id)
+        }
+        "running" => Ok(d),
+        _ => Err(invalid_state(&d, "cancel")),
+    }
+}
+
+/// Re-queues a failed or cancelled row with a fresh attempt budget; its
+/// .part is kept and resumed.
+pub fn retry(conn: &Connection, id: &str) -> Result<Download, SourceError> {
+    let d = require(conn, id)?;
+    if !matches!(d.status.as_str(), "failed" | "cancelled") {
+        return Err(invalid_state(&d, "retry"));
+    }
+    conn.execute(
+        "UPDATE downloads SET status = 'queued', attempts = 0, error = NULL,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?1",
+        params![id],
+    )?;
+    require(conn, id)
+}
+
+/// Whether any row waits for a worker.
+pub fn has_queued(conn: &Connection) -> Result<bool, SourceError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM downloads WHERE status = 'queued')",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+// ----- worker: the download job -----
+
+/// Running rows download.cancel asked to stop; the drain polls it.
+static STOP: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The download job currently draining the queue.
+static DRAIN: Mutex<Option<String>> = Mutex::new(None);
+
+/// Asks the drain to stop a running row; run then records it cancelled.
+pub fn request_stop(id: &str) {
+    if let Ok(mut stop) = STOP.lock() {
+        if !stop.iter().any(|s| s == id) {
+            stop.push(id.to_string());
+        }
+    }
+}
+
+fn stop_requested(id: &str) -> bool {
+    STOP.lock()
+        .map(|stop| stop.iter().any(|s| s == id))
+        .unwrap_or(false)
+}
+
+fn clear_stop(id: &str) {
+    if let Ok(mut stop) = STOP.lock() {
+        stop.retain(|s| s != id);
+    }
+}
+
+fn claim_queued(conn: &Connection, job_id: &str) -> Result<(), SourceError> {
+    conn.execute(
+        "UPDATE downloads SET job_id = ?1 WHERE status = 'queued'",
+        params![job_id],
+    )?;
+    Ok(())
+}
+
+/// The download job draining the queue, submitted when none is live. Holds
+/// the same lock as the drain's exit check, so a row queued while a drain
+/// finishes always gets a worker.
+pub fn ensure_drain(jobs: &Arc<JobStore>) -> Result<Job, String> {
+    let mut drain = DRAIN.lock().map_err(|e| e.to_string())?;
+    if let Some(id) = drain.as_deref() {
+        if let Some(job) = jobs.get(id)? {
+            if !job.status.is_terminal() {
+                return Ok(job);
+            }
+        }
+    }
+    // Downloads are not tied to a media item; media_id 0 by convention.
+    let job = jobs.submit(NewJob::new(DOWNLOAD_JOB, 0))?;
+    *drain = Some(job.id.clone());
+    Ok(job)
+}
+
+/// The download job body: drains until nothing is queued or the job is
+/// cancelled. landed runs for each audio/video row that succeeded with import.
+pub fn drain(
+    conn: &Connection,
+    fetcher: &dyn Fetcher,
+    policy: &RetryPolicy,
+    sink: &dyn ProgressSink,
+    job_id: &str,
+    landed: &dyn Fn(&Path),
+) -> Result<serde_json::Value, SourceError> {
+    let (mut succeeded, mut failed, mut stopped) = (0u64, 0u64, 0u64);
+    loop {
+        claim_queued(conn, job_id)?;
+        let results = run_queue(
+            conn,
+            fetcher,
+            policy,
+            &|| sink.is_cancelled(),
+            &stop_requested,
+            &mut |d, done| {
+                let name = Path::new(&d.dest)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(d.dest.as_str());
+                sink.progress(name, done, d.total.unwrap_or(0));
+            },
+        )?;
+        for (id, result) in results {
+            clear_stop(&id);
+            match result {
+                Ok(path) => {
+                    succeeded += 1;
+                    let import = get(conn, &id)?.is_some_and(|d| d.import);
+                    let media = matches!(
+                        super::local::classify(&path),
+                        Some(super::AssetKind::Audio | super::AssetKind::Video)
+                    );
+                    if import && media {
+                        landed(&path);
+                    }
+                }
+                Err(e) if e.code == "cancelled" => stopped += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        let mut drain = DRAIN
+            .lock()
+            .map_err(|e| SourceError::new("internal", false, e.to_string()))?;
+        if sink.is_cancelled() || !has_queued(conn)? {
+            if drain.as_deref() == Some(job_id) {
+                *drain = None;
+            }
+            break;
+        }
+    }
+    if sink.is_cancelled() {
+        return Err(cancelled());
+    }
+    Ok(serde_json::json!({
+        "succeeded": succeeded,
+        "failed": failed,
+        "cancelled": stopped,
+    }))
+}
+
+/// Runner for download jobs. Drains on its own connection to db_path so a
+/// long body never holds the product DB lock.
+pub fn runner(db_path: PathBuf, landed: Arc<dyn Fn(&Path) + Send + Sync>) -> JobRunner {
+    Arc::new(move |job: &JobHandle| {
+        let db = |e: rusqlite::Error| JobError::new("db", false, e.to_string());
+        let conn = Connection::open(&db_path).map_err(db)?;
+        conn.busy_timeout(Duration::from_secs(5)).map_err(db)?;
+        let fetcher =
+            crate::runtime::HttpFetcher::new().map_err(|e| JobError::new("network", true, e))?;
+        drain(
+            &conn,
+            &fetcher,
+            &RetryPolicy::default(),
+            job,
+            job.id(),
+            landed.as_ref(),
+        )
+        .map_err(|e| JobError::new(e.code, e.retryable, e.message))
+    })
 }
 
 fn update(
@@ -225,7 +487,11 @@ fn attempt(
     cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64),
 ) -> Result<(), SourceError> {
-    let mut have = if d.total.is_some() { file_len(staging) } else { 0 };
+    let mut have = if d.total.is_some() {
+        file_len(staging)
+    } else {
+        0
+    };
     if let Some(total) = d.total {
         if have > total {
             have = 0;
@@ -234,9 +500,20 @@ fn attempt(
             return Ok(());
         }
     }
-    let mut opened = fetcher
-        .open(&d.url, have)
-        .map_err(|e| SourceError::network(format!("{}: {e}", d.url)))?;
+    // DLsite rows carry no credentials: the session joins only this request.
+    let dlsite =
+        d.source_id.as_deref() == Some("dlsite") && super::dlsite_auth::needs_session(&d.url);
+    let opened = if dlsite {
+        Some(super::dlsite_auth::open_download(&d.url, have)?)
+    } else {
+        None
+    };
+    let mut opened = match opened {
+        Some(opened) => opened,
+        None => fetcher
+            .open(&d.url, have)
+            .map_err(|e| SourceError::network(format!("{}: {e}", d.url)))?,
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -319,7 +596,14 @@ fn drive(
         match attempt(d, staging, fetcher, cancel, progress) {
             Ok(()) => break,
             Err(e) if e.retryable && e.code != "cancelled" && *attempts < policy.max_attempts => {
-                update(conn, &d.id, "running", file_len(staging), *attempts, Some(&e.to_string()))?;
+                update(
+                    conn,
+                    &d.id,
+                    "running",
+                    file_len(staging),
+                    *attempts,
+                    Some(&e.to_string()),
+                )?;
                 if !sleep_unless_cancelled(policy.delay(*attempts), cancel) {
                     return Err(cancelled());
                 }
@@ -362,24 +646,49 @@ pub fn run(
     }
     let staging = PathBuf::from(&d.staging_path);
     let mut attempts = d.attempts;
-    let result = drive(conn, &d, &staging, &dest, &mut attempts, fetcher, policy, cancel, progress);
+    let result = drive(
+        conn,
+        &d,
+        &staging,
+        &dest,
+        &mut attempts,
+        fetcher,
+        policy,
+        cancel,
+        progress,
+    );
     match &result {
         Ok(path) => update(conn, id, "succeeded", file_len(path), attempts, None)?,
         Err(e) if e.code == "cancelled" => {
             update(conn, id, "cancelled", file_len(&staging), attempts, None)?
         }
-        Err(e) => update(conn, id, "failed", file_len(&staging), attempts, Some(&e.to_string()))?,
+        Err(e) => update(
+            conn,
+            id,
+            "failed",
+            file_len(&staging),
+            attempts,
+            Some(&e.to_string()),
+        )?,
     }
     result
 }
 
-/// Drains the queue in order. One failure never stops the others.
+/// One drained row: its id and how it ended.
+pub type RowOutcome = (String, Result<PathBuf, SourceError>);
+
+/// Drains the queue in order. One failure never stops the others. cancel
+/// stops the whole drain; cancel_row stops only the row it names, which is
+/// recorded cancelled while the drain moves on. progress reports each row
+/// with its bytes so far.
 pub fn run_queue(
     conn: &Connection,
     fetcher: &dyn Fetcher,
     policy: &RetryPolicy,
     cancel: &dyn Fn() -> bool,
-) -> Result<Vec<(String, Result<PathBuf, SourceError>)>, SourceError> {
+    cancel_row: &dyn Fn(&str) -> bool,
+    progress: &mut dyn FnMut(&Download, u64),
+) -> Result<Vec<RowOutcome>, SourceError> {
     let mut results = Vec::new();
     while !cancel() {
         let next: Option<String> = conn
@@ -390,7 +699,15 @@ pub fn run_queue(
             )
             .optional()?;
         let Some(id) = next else { break };
-        let result = run(conn, &id, fetcher, policy, cancel, &mut |_| {});
+        let d = require(conn, &id)?;
+        if d.status != "queued" {
+            // Cancelled between the select and now.
+            continue;
+        }
+        let stop = || cancel() || cancel_row(&id);
+        let result = run(conn, &id, fetcher, policy, &stop, &mut |done| {
+            progress(&d, done)
+        });
         results.push((id, result));
     }
     Ok(results)
@@ -485,17 +802,30 @@ mod tests {
     fn resumes_after_cut_and_retries_then_verifies() {
         let (conn, tmp, body) = (db(), TempDir::new(), body());
         let dest = tmp.0.join("out/01.mp3");
-        let d = enqueue(&conn, "https://x/01.mp3", &dest, Some(body.len() as u64), Some(&hex(&body))).unwrap();
+        let d = enqueue(
+            &conn,
+            "https://x/01.mp3",
+            &dest,
+            Some(body.len() as u64),
+            Some(&hex(&body)),
+        )
+        .unwrap();
         let fake = Fake::new(body.clone(), vec![Step::Cut(70_000), Step::Fail]);
         let mut last = 0;
-        let path = run(&conn, &d.id, &fake, &FAST, &|| false, &mut |done| last = done).unwrap();
+        let path = run(&conn, &d.id, &fake, &FAST, &|| false, &mut |done| {
+            last = done
+        })
+        .unwrap();
         assert_eq!(path, dest);
         assert_eq!(fs::read(&dest).unwrap(), body);
         assert!(!Path::new(&d.staging_path).exists());
         assert_eq!(*fake.calls.lock().unwrap(), [0, 70_000, 70_000]);
         assert_eq!(last, body.len() as u64);
         let row = get(&conn, &d.id).unwrap().unwrap();
-        assert_eq!((row.status.as_str(), row.attempts, row.bytes_done), ("succeeded", 3, body.len() as u64));
+        assert_eq!(
+            (row.status.as_str(), row.attempts, row.bytes_done),
+            ("succeeded", 3, body.len() as u64)
+        );
         assert_eq!(row.error, None);
     }
 
@@ -503,7 +833,14 @@ mod tests {
     fn integrity_mismatch_fails_once_and_drops_staging() {
         let (conn, tmp, body) = (db(), TempDir::new(), body());
         let dest = tmp.0.join("01.mp3");
-        let d = enqueue(&conn, "https://x/01.mp3", &dest, None, Some(&"0".repeat(64))).unwrap();
+        let d = enqueue(
+            &conn,
+            "https://x/01.mp3",
+            &dest,
+            None,
+            Some(&"0".repeat(64)),
+        )
+        .unwrap();
         let fake = Fake::new(body, vec![]);
         let error = run(&conn, &d.id, &fake, &FAST, &|| false, &mut |_| {}).unwrap_err();
         assert_eq!(error.code, "integrity");
@@ -516,17 +853,33 @@ mod tests {
     fn gives_up_after_max_attempts_keeping_partial() {
         let (conn, tmp, body) = (db(), TempDir::new(), body());
         let dest = tmp.0.join("01.mp3");
-        let d = enqueue(&conn, "https://x/01.mp3", &dest, Some(body.len() as u64), None).unwrap();
+        let d = enqueue(
+            &conn,
+            "https://x/01.mp3",
+            &dest,
+            Some(body.len() as u64),
+            None,
+        )
+        .unwrap();
         let fake = Fake::new(body, vec![Step::Cut(1_000), Step::Fail, Step::Fail]);
-        let policy = RetryPolicy { max_attempts: 3, ..FAST };
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            ..FAST
+        };
         let error = run(&conn, &d.id, &fake, &policy, &|| false, &mut |_| {}).unwrap_err();
         assert_eq!(error.code, "network");
         let row = get(&conn, &d.id).unwrap().unwrap();
-        assert_eq!((row.status.as_str(), row.attempts, row.bytes_done), ("failed", 3, 1_000));
+        assert_eq!(
+            (row.status.as_str(), row.attempts, row.bytes_done),
+            ("failed", 3, 1_000)
+        );
         assert!(row.error.unwrap().contains("boom"));
         // Re-queue keeps the .part and resumes from it.
         let again = enqueue(&conn, "https://x/01.mp3", &dest, None, None).unwrap();
-        assert_eq!((again.id.as_str(), again.status.as_str(), again.attempts), (d.id.as_str(), "queued", 0));
+        assert_eq!(
+            (again.id.as_str(), again.status.as_str(), again.attempts),
+            (d.id.as_str(), "queued", 0)
+        );
         run(&conn, &d.id, &fake, &policy, &|| false, &mut |_| {}).unwrap();
         assert_eq!(fake.calls.lock().unwrap().last(), Some(&1_000));
     }
@@ -535,7 +888,15 @@ mod tests {
     fn cancel_stops_with_cancelled_status() {
         let (conn, tmp) = (db(), TempDir::new());
         let d = enqueue(&conn, "https://x/01.mp3", &tmp.0.join("01.mp3"), None, None).unwrap();
-        let error = run(&conn, &d.id, &Fake::new(body(), vec![]), &FAST, &|| true, &mut |_| {}).unwrap_err();
+        let error = run(
+            &conn,
+            &d.id,
+            &Fake::new(body(), vec![]),
+            &FAST,
+            &|| true,
+            &mut |_| {},
+        )
+        .unwrap_err();
         assert_eq!(error.code, "cancelled");
         assert_eq!(get(&conn, &d.id).unwrap().unwrap().status, "cancelled");
     }
@@ -545,9 +906,22 @@ mod tests {
         let (conn, tmp, body) = (db(), TempDir::new(), body());
         let bad = enqueue(&conn, "https://bad/a", &tmp.0.join("a"), None, None).unwrap();
         let good = enqueue(&conn, "https://ok/b", &tmp.0.join("b"), None, None).unwrap();
-        assert_eq!(enqueue(&conn, "https://ok/b", &tmp.0.join("b"), None, None).unwrap().id, good.id);
-        assert_eq!(list(&conn).unwrap().len(), 2);
-        let results = run_queue(&conn, &Fake::new(body.clone(), vec![]), &FAST, &|| false).unwrap();
+        assert_eq!(
+            enqueue(&conn, "https://ok/b", &tmp.0.join("b"), None, None)
+                .unwrap()
+                .id,
+            good.id
+        );
+        assert_eq!(list(&conn, None).unwrap().len(), 2);
+        let results = run_queue(
+            &conn,
+            &Fake::new(body.clone(), vec![]),
+            &FAST,
+            &|| false,
+            &|_| false,
+            &mut |_, _| {},
+        )
+        .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(get(&conn, &bad.id).unwrap().unwrap().status, "failed");
         assert_eq!(get(&conn, &good.id).unwrap().unwrap().status, "succeeded");
@@ -573,9 +947,24 @@ mod tests {
         assert_eq!(recover(&conn).unwrap(), 1);
         assert_eq!(get(&conn, &d.id).unwrap().unwrap().status, "queued");
         let abs = tmp.0.join("x");
-        assert_eq!(enqueue(&conn, "ftp://x", &abs, None, None).unwrap_err().code, "invalid_input");
-        assert_eq!(enqueue(&conn, "https://x", Path::new("rel/x"), None, None).unwrap_err().code, "invalid_input");
-        assert_eq!(enqueue(&conn, "https://x", &abs, None, Some("abc")).unwrap_err().code, "invalid_input");
+        assert_eq!(
+            enqueue(&conn, "ftp://x", &abs, None, None)
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(
+            enqueue(&conn, "https://x", Path::new("rel/x"), None, None)
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(
+            enqueue(&conn, "https://x", &abs, None, Some("abc"))
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
     }
 }
 
@@ -584,16 +973,16 @@ mod http_tests {
     //! C2: the real HttpFetcher (reqwest + Range) against a local server whose
     //! first response is cut mid-body; the retry must resume from the .part.
     use super::{enqueue, get, run, RetryPolicy};
+    use crate::runtime::HttpFetcher;
     use rusqlite::Connection;
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::Write;
-    use std::path::Path;
-    use std::time::Duration;
-    use crate::runtime::HttpFetcher;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     type Seen = Arc<Mutex<Vec<Option<u64>>>>;
 

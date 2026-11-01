@@ -1,7 +1,7 @@
-mod data_root; // project-local data root: DB, runtime packs, models, caches
 mod alignment;
 mod asr;
 mod control;
+mod data_root; // project-local data root: DB, runtime packs, models, caches
 mod db;
 mod dictionary; // P7: user-imported offline dictionaries (JMdict JSON, ECDICT CSV)
 #[allow(dead_code)] // M3a: GPU discovery + ASR tier policy; M3c wires it into provider defaults
@@ -140,18 +140,106 @@ fn list_sources() -> Vec<sources::SourceInfo> {
     sources::list()
 }
 
+// Library browser (PR #14): same Operation Registry path as CLI and MCP.
+#[tauri::command]
+fn source_get_work(
+    input: operations::SourceGetWorkInput,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<sources::Work, String> {
+    operations::invoke::<operations::SourceGetWork>(&op_ctx(&state, &jobs), input)
+        .map_err(|e| e.message)
+}
+
+// DLsite account (sign-in itself: sources::dlsite_auth::dlsite_login_open/finish).
+#[tauri::command]
+fn dlsite_session_status(
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<sources::dlsite_auth::SessionStatus, String> {
+    operations::invoke::<operations::DlsiteSessionStatus>(
+        &op_ctx(&state, &jobs),
+        operations::NoInput {},
+    )
+    .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn dlsite_logout(
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<sources::dlsite_auth::SessionStatus, String> {
+    operations::invoke::<operations::DlsiteLogout>(&op_ctx(&state, &jobs), operations::NoInput {})
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn dlsite_library(
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<Vec<sources::dlsite_auth::OwnedWork>, String> {
+    operations::invoke::<operations::DlsiteLibrary>(&op_ctx(&state, &jobs), operations::NoInput {})
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn download_enqueue(
+    input: operations::DownloadEnqueueInput,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<operations::DownloadQueued, String> {
+    operations::invoke::<operations::DownloadEnqueue>(&op_ctx(&state, &jobs), input)
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn download_list(
+    input: operations::DownloadListInput,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<Vec<sources::download::Download>, String> {
+    operations::invoke::<operations::DownloadList>(&op_ctx(&state, &jobs), input)
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn download_cancel(
+    input: operations::DownloadIdInput,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<sources::download::Download, String> {
+    operations::invoke::<operations::DownloadCancel>(&op_ctx(&state, &jobs), input)
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+fn download_retry(
+    input: operations::DownloadIdInput,
+    state: State<AppState>,
+    jobs: State<JobsState>,
+) -> Result<operations::DownloadQueued, String> {
+    operations::invoke::<operations::DownloadRetry>(&op_ctx(&state, &jobs), input)
+        .map_err(|e| e.message)
+}
+
 #[tauri::command]
 fn import_media(path: String, app: AppHandle, state: State<AppState>) -> Result<MediaItem, String> {
     let validated = validate_ipc_path(&path, MEDIA_EXTENSIONS, "media")?;
     if !validated.is_file() {
         return Err(format!("media file does not exist: {path}"));
     }
-    let item = state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())?
-        .import_media(&path)
-        .map_err(|e| e.to_string())?;
+    // Probe before taking the lock so a slow drive never stalls the library.
+    let probed = media_decode::probe_duration_ms(&validated);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut item = db.import_media(&path).map_err(|e| e.to_string())?;
+    if item.duration_ms <= 0 {
+        if let Some(ms) = probed {
+            db.update_media_duration(item.id, ms)
+                .map_err(|e| e.to_string())?;
+            item.duration_ms = ms;
+        }
+    }
+    drop(db);
     app.asset_protocol_scope()
         .allow_file(&item.path)
         .map_err(|e| format!("failed to allow playback of {}: {e}", item.path))?;
@@ -198,18 +286,32 @@ fn collect_media_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// Same-directory subtitle sidecars (01.vtt, 01.mp3.lrc, 01.srt) seed
 /// the transcript of a freshly imported file, but never overwrite one the
 /// library already has (re-import keeps edits). Returns whether it seeded.
-fn seed_sidecar_subtitles(db: &mut db::MediaDb, media_id: i64, file: &Path) -> Result<bool, String> {
+fn seed_sidecar_subtitles(
+    db: &mut db::MediaDb,
+    media_id: i64,
+    file: &Path,
+) -> Result<bool, String> {
     let existing: i64 = db
         .connection()
-        .query_row("SELECT COUNT(1) FROM segments WHERE media_id = ?1", [media_id], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(1) FROM segments WHERE media_id = ?1",
+            [media_id],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     if existing != 0 {
         return Ok(false);
     }
     for sidecar in sources::local::sidecars(file).unwrap_or_default() {
-        let Ok(format) = SubtitleFormat::from_path(&sidecar) else { continue };
-        let Ok(content) = fs::read_to_string(&sidecar) else { continue };
-        let Ok(cues) = subtitle::parse(&content, format) else { continue };
+        let Ok(format) = SubtitleFormat::from_path(&sidecar) else {
+            continue;
+        };
+        let Ok(content) = fs::read_to_string(&sidecar) else {
+            continue;
+        };
+        let Ok(cues) = subtitle::parse(&content, format) else {
+            continue;
+        };
         db.replace_segments(media_id, &cues, &format!("import:{}", format.label()))
             .map_err(|e| e.to_string())?;
         return Ok(true);
@@ -399,12 +501,22 @@ async fn run_transcription(
             .ok_or_else(|| "media not found".to_string())?
     };
 
-    if media.media_type != "audio" {
-        return Err(
-            "ASR currently expects an audio asset; video audio extraction lands in Runtime Bootstrap"
-                .into(),
-        );
-    }
+    // Video (and any non-WAV audio) goes through the shared decode cache once,
+    // so every adapter, local or remote, reads 16 kHz mono PCM instead of the
+    // raw container. A compatible WAV is used in place.
+    let source_path: String = if media.media_type == "audio" {
+        media.path.clone()
+    } else {
+        media_decode::ensure_wav(
+            std::path::Path::new(&media.path),
+            media_decode::DecodeTarget::ASR_16K_MONO,
+            sink,
+        )
+        .map_err(|e| e.to_string())?
+        .path
+        .to_string_lossy()
+        .into_owned()
+    };
 
     let migration = asr::migrate_retired_target(&mut input);
     let provider_id = input.provider_id.trim().to_string();
@@ -440,7 +552,7 @@ async fn run_transcription(
 
         match provider.kind.as_str() {
             "faster-whisper" => asr::run_faster_whisper(
-                &media.path,
+                &source_path,
                 media.duration_ms,
                 &resolved_model,
                 input.language.clone(),
@@ -448,16 +560,19 @@ async fn run_transcription(
                 sink,
             )?,
             "funasr-sensevoice" => asr::run_funasr(
-                &media.path,
+                &source_path,
                 media.duration_ms,
                 &resolved_model,
                 input.language.clone(),
                 input.prompt.clone(),
                 sink,
             )?,
-            "apple-speech" => {
-                asr::run_apple_speech(&media.path, media.duration_ms, input.language.clone(), sink)?
-            }
+            "apple-speech" => asr::run_apple_speech(
+                &source_path,
+                media.duration_ms,
+                input.language.clone(),
+                sink,
+            )?,
             other => return Err(format!("unsupported local provider adapter: {other}")),
         }
     } else {
@@ -506,7 +621,7 @@ async fn run_transcription(
         asr::run_remote_openai_compatible(
             &provider,
             secret.as_deref(),
-            &media.path,
+            &source_path,
             media.duration_ms,
             model_id,
             input.language.clone(),
@@ -1681,6 +1796,8 @@ pub fn run() {
             }
             media_decode::init_cache_root(dir.join("cache").join("decoded"));
             let db = MediaDb::open(&dir.join("tsubame.db"))?;
+            // Rows a crash left running go back to the queue (.part kept).
+            sources::download::recover(db.connection()).map_err(|e| e.to_string())?;
             // tauri.conf.json scopes the asset protocol to app data only;
             // re-allow every library file the user imported earlier.
             let scope = app.asset_protocol_scope();
@@ -1712,6 +1829,28 @@ pub fn run() {
             store.register_runner(
                 regenerate::REGENERATE_JOB,
                 regenerate::regenerate_runner(handle.clone()),
+            );
+            // PR #14: the download job drains the persisted queue on its own
+            // connection; landed audio/video goes through media import.
+            let landed_app = handle.clone();
+            store.register_runner(
+                sources::download::DOWNLOAD_JOB,
+                sources::download::runner(
+                    dir.join("tsubame.db"),
+                    Arc::new(move |path: &Path| {
+                        let state = landed_app.state::<AppState>();
+                        let jobs = landed_app.state::<JobsState>();
+                        let files = [path.to_path_buf()];
+                        if let Err(error) = operations::import_paths(&op_ctx(&state, &jobs), &files)
+                        {
+                            eprintln!(
+                                "download: import of {} failed: {}",
+                                path.display(),
+                                error.message
+                            );
+                        }
+                    }),
+                ),
             );
             store.register_runner(runtime::INSTALL_JOB, runtime::install_runner());
             store.register_runner(spatial::SPATIAL_JOB, spatial::spatial_runner(handle));
@@ -1765,6 +1904,16 @@ pub fn run() {
             import_media,
             import_folder,
             list_sources,
+            source_get_work,
+            download_enqueue,
+            download_list,
+            download_cancel,
+            download_retry,
+            sources::dlsite_auth::dlsite_login_open,
+            sources::dlsite_auth::dlsite_login_finish,
+            dlsite_session_status,
+            dlsite_logout,
+            dlsite_library,
             dict_import,
             dict_lookup,
             dict_sources,
@@ -1832,17 +1981,26 @@ mod sidecar_import_tests {
     fn real_folder_import_seeds_lrc_srt_vtt_sidecars_once() {
         let tmp = std::env::temp_dir();
         let root = tmp.join(format!("yuzuki-sidecar-import-{}", std::process::id()));
-        let db_path = tmp.join(format!("yuzuki-sidecar-import-{}.sqlite", std::process::id()));
+        let db_path = tmp.join(format!(
+            "yuzuki-sidecar-import-{}.sqlite",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&db_path);
         std::fs::create_dir_all(&root).unwrap();
         let files = [
             ("01.mp3", ""),
-            ("01.mp3.lrc", "[ar:CV]\n[00:01.00]一行目\n[00:02.50]二行目\n[00:04.00]\n"),
+            (
+                "01.mp3.lrc",
+                "[ar:CV]\n[00:01.00]一行目\n[00:02.50]二行目\n[00:04.00]\n",
+            ),
             ("02.mp3", ""),
             ("02.srt", "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n"),
             ("03.mp3", ""),
-            ("03.vtt", "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA\n\n00:00:03.000 --> 00:00:04.000\nB\n"),
+            (
+                "03.vtt",
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA\n\n00:00:03.000 --> 00:00:04.000\nB\n",
+            ),
             ("04.mp3", ""),
             ("台本.txt", "script"),
         ];
@@ -1852,7 +2010,11 @@ mod sidecar_import_tests {
         let mut db = MediaDb::open(&db_path).unwrap();
         let count = |db: &MediaDb, id: i64| -> i64 {
             db.connection()
-                .query_row("SELECT COUNT(1) FROM segments WHERE media_id = ?1", [id], |r| r.get(0))
+                .query_row(
+                    "SELECT COUNT(1) FROM segments WHERE media_id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
                 .unwrap()
         };
         let mut seen = Vec::new();

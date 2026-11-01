@@ -244,7 +244,10 @@ mod tests {
     #[test]
     fn same_original_same_placeholder_and_round_trip() {
         let mut r = Redactor::new();
-        let text = format!("a@b.io と a@b.io と {}", url("https", &["b", ".io/x"].concat()));
+        let text = format!(
+            "a@b.io と a@b.io と {}",
+            url("https", &["b", ".io/x"].concat())
+        );
         let out = r.redact(&text);
         assert_eq!(out, "⟦EMAIL1⟧ と ⟦EMAIL1⟧ と ⟦URL1⟧");
         assert_eq!(r.restore(&out), text);

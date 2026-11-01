@@ -844,7 +844,10 @@ mod tests {
         let content = json!({
             "proposals": [{ "segment_id": 2, "text": "秋山はるるです。", "reason": "glossary", "confidence": 0.9 }]
         });
-        let (base_url, server) = mock_server("200 OK", anthropic_message(&content.to_string(), "end_turn"));
+        let (base_url, server) = mock_server(
+            "200 OK",
+            anthropic_message(&content.to_string(), "end_turn"),
+        );
         let result = tauri::async_runtime::block_on(run_openai_compatible(
             &anthropic_provider(&base_url),
             Some("test-key"),

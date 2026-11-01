@@ -152,6 +152,11 @@ fn ops_list_names_every_registered_operation() {
         "media.list",
         "media.import_folder",
         "asr.run",
+        "translate.run",
+        "tts.synthesize",
+        "spatial.analyze",
+        "spatial.render",
+        "mix.export",
     ] {
         assert!(names.contains(&name), "{name} missing from {names:?}");
     }
@@ -192,4 +197,52 @@ fn a_missing_desktop_exits_3() {
 fn usage_errors_exit_2_with_an_envelope() {
     let out = yuzuki("unused", &["segment", "list"]);
     assert_eq!((out.code, error_code(&out).as_str()), (2, "usage"));
+}
+
+#[test]
+fn app_ensure_on_a_running_desktop_does_not_launch() {
+    let d = start_fixture_desktop();
+    let out = on(&d, &["app", "ensure"]);
+    assert_eq!(out.code, 0, "{}", out.stdout);
+    let data = &envelope(&out)["data"];
+    assert_eq!(data["running"], true, "{data}");
+    assert_eq!(data["launched"], false, "{data}");
+    assert_eq!(data["control_file"], d.control_file.display().to_string());
+}
+
+#[test]
+fn init_reports_the_running_desktop_and_doctor() {
+    let d = start_fixture_desktop();
+    let out = on(&d, &["init"]);
+    assert_eq!(out.code, 0, "{}", out.stdout);
+    let data = &envelope(&out)["data"];
+    assert_eq!(data["desktop"]["running"], true, "{data}");
+    assert!(
+        data["desktop"]["operations"].as_u64().unwrap() > 0,
+        "{data}"
+    );
+    assert!(
+        data["doctor"]
+            .as_array()
+            .is_some_and(|packs| !packs.is_empty()),
+        "{data}"
+    );
+    assert_eq!(data["cli"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(data["cli"]["os"], std::env::consts::OS);
+}
+
+#[test]
+fn init_without_a_desktop_is_a_report_not_an_error() {
+    let missing = std::env::temp_dir()
+        .join("yuzuki-cli-no-such-dir")
+        .join("control.json");
+    let out = yuzuki(&missing.display().to_string(), &["init"]);
+    assert_eq!(out.code, 0, "{}", out.stdout);
+    let data = &envelope(&out)["data"];
+    assert_eq!(data["desktop"]["running"], false, "{data}");
+    assert!(data["doctor"].is_null(), "{data}");
+    assert!(data["next_steps"][0]
+        .as_str()
+        .unwrap()
+        .contains("app ensure"));
 }

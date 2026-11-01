@@ -63,7 +63,7 @@ Bootstrap should:
 
 ### 3. Initialize
 
-Planned (PR #13), do not run: yuzuki init --json.
+Run yuzuki init --json first. It reports the CLI version/OS/arch, the bundled yuzuki-mcp path with an mcpServers config, the Desktop state (running, pid, addr, operation count) and runtime.doctor. It never starts the Desktop unless --launch is given; desktop.running false means start it (step 6).
 
 Today, yuzuki doctor --json reports the Runtime Pack state. Detect, where the Desktop exposes it:
 - OS/arch;
@@ -98,15 +98,15 @@ This queues an install job; follow it with yuzuki job list --json and stop it wi
 
 ### 6. Ensure Desktop
 
-Planned, do not run: yuzuki app ensure. Use yuzuki app status --json, and --launch on a command when the user agreed to start the Desktop.
+With the user's agreement, run yuzuki app ensure --json: it starts the Desktop only when it is not running and reports data.launched. Exit 3 (launch_failed) means no Desktop executable was found next to yuzuki and YUZUKI_DESKTOP is unset. yuzuki app status --json never launches.
 
 ## Common operations
 
 See references/commands.md for every command, its status and the operation it calls. yuzuki ops list --json returns the registered operations with their input schemas; yuzuki call <operation> --input '<json>' --json calls any of them.
 
-## Dubbing run without pipeline ops (development path, measured 2026-10)
+## Developer worker path (debugging only, measured 2026-10)
 
-The Operation Registry exposes media.import_folder, media.list and asr.run (it queues the asr job; follow it with job list), so import and transcription go through the CLI/MCP. translate/tts/spatial/mix are not exposed yet (docs/issues/2026-10-dub-run.md I-03); until they are, a developer run drives those workers directly. Never use this path to write the Desktop database.
+The Operation Registry exposes media.import_folder, media.list, asr.run, translate.run, tts.synthesize, spatial.analyze, spatial.render and mix.export. Each queues the Desktop's existing job; follow it with job list. So import, transcription, translation, TTS, spatial rendering and mix export all go through the CLI (yuzuki translate run, yuzuki tts synthesize, yuzuki spatial analyze/render, yuzuki mix export) or MCP. Provider/secret and voice profile configuration are still GUI-only. The developer run below drives the workers directly and is only for debugging a worker; never use it to write the Desktop database.
 
 1. Decode: ffmpeg to 16 kHz mono PCM16 WAV (ASR input) and stereo WAV at source rate (spatial reference).
 2. ASR: pipe one JSON request (`model_id`, `language`, `device`, `media_path`) to workers/asr/faster_whisper_worker.py on stdin; set YUZUKI_ASR_MODEL_DIR. Measured on RTX 3050 Ti 4 GB, 18:41 audio, large-v3-turbo int8_float16: about 58 s, VRAM peak about 3.2 GB. Use device=cuda explicitly; it fails instead of silently falling back to cpu.

@@ -506,9 +506,22 @@ export default function ProviderSettings() {
             </div>
           )}
 
+          {selectedProvider?.id === "edge-tts" && (
+            <div className="provider-test-result error" role="note">
+              <strong>Online voice, off unless you choose it</strong>
+              <span>
+                Edge TTS needs an internet connection. The text of each sentence it
+                speaks (with emails, phone numbers and links masked) is sent to
+                Microsoft's online Edge speech service. Your audio files never leave
+                this device. It is used only when you pick it in a voice profile.
+              </span>
+            </div>
+          )}
+
           {selectedProvider?.system_managed &&
             selectedProvider.availability !== "unsupported-platform" &&
-            selectedProvider.id === "local.faster-whisper" && (
+            (selectedProvider.id === "local.faster-whisper" ||
+              selectedProvider.id === "edge-tts") && (
               <RuntimePacksCard
                 providerId={selectedProvider.id}
                 models={models}

@@ -84,13 +84,19 @@ struct RemoteSegment {
 }
 
 fn worker_script(name: &str) -> Result<PathBuf, String> {
-    // Debug builds run workers straight from the repository checkout.
+    worker_script_in("asr", name)
+}
+
+/// workers/<subdir>/<name>: debug builds run workers straight from the
+/// repository checkout; release builds use the copy bundled via
+/// tauri.conf.json bundle.resources (no build-machine path is compiled in).
+pub(crate) fn worker_script_in(subdir: &str, name: &str) -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/asr");
-    // Release builds use the copy bundled via tauri.conf.json bundle.resources;
-    // no build-machine path is compiled in.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../workers")
+        .join(subdir);
     #[cfg(not(debug_assertions))]
-    let dir = bundled_resource_dir()?.join("workers").join("asr");
+    let dir = bundled_resource_dir()?.join("workers").join(subdir);
     Ok(dir.join(name))
 }
 

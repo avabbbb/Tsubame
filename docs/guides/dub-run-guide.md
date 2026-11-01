@@ -8,7 +8,7 @@
 2. ASR：workers/asr/faster_whisper_worker.py，stdin 传 JSON（contract_version=1、media_path、model_id=large-v3-turbo、language=ja、device=cuda）。
 3. 翻译：本地网关 OpenAI/Anthropic 协议，每批 20 句，发送前经 for_cloud 脱敏，字数预算 4.5 字/秒。key 只从环境变量 YUZUKI_LLM_API_KEY 读取。
 4. 空间分析：spatial.analyze.analyze_file，保存为 <RUN_DIR>/spatial/spatial_track.npz。
-5. TTS：启动 workers/tts/edge_tts_shim.py（需 HTTPS_PROXY，edge-tts ≥ 7.3.1），先清理端口残留进程，2 并发逐句合成，超时隙则加速重合成（上限 1.5）。
+5. TTS：2026-10-25 实测时启动 workers/tts/edge_tts_shim.py（需 HTTPS_PROXY，edge-tts ≥ 7.3.1），先清理端口残留进程，2 并发逐句合成，超时隙则加速重合成（上限 1.5）。2026-10-29 起产品路径为安装 runtime.edge-tts 包并选择 Edge TTS (online) provider，经 yuzuki tts synthesize 驱动，不再需要 shim 与系统 ffmpeg。
 6. 渲染 + 混音 + 导出：python <REPO>/workers/dubber/dev_render_mix.py <RUN_DIR> <REPO> source_trajectory。
 
 ## 耗时对比

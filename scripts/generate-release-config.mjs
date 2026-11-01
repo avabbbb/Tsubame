@@ -33,7 +33,12 @@ if (!publicKey || !privateKey) {
 // Public key goes into a temporary, ignored build config. The private key
 // stays in GitHub Actions secrets and is NEVER persisted to this file.
 const release = {
-  bundle: { createUpdaterArtifacts: true, icon: ["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"] },
+  bundle: {
+    createUpdaterArtifacts: true,
+    icon: ["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"],
+    // Built by scripts/build-sidecars.mjs for the matrix target before tauri build.
+    externalBin: ["binaries/yuzuki", "binaries/yuzuki-mcp"],
+  },
   plugins: {
     updater: {
       pubkey: publicKey,

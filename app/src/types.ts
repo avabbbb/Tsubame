@@ -129,6 +129,8 @@ export interface CapabilityTarget {
   provider_id: string;
   provider_name: string;
   provider_kind: string;
+  /** "cloud": text leaves the device (remote API or the Edge online voice). */
+  data_flow: "local" | "cloud";
   execution: "remote_api" | "local_server" | "local_runtime" | "native_os";
   system_managed: boolean;
   provider_availability: "ready" | "runtime-required" | "unsupported-platform" | "error";
@@ -443,4 +445,71 @@ export interface SegmentPreview {
   /** Layered Segments mixed from their raw clip, exactly as the export does. */
   raw_segment_ids: number[];
   duration_ms: number;
+}
+
+/** sources::AssetKind (docs/08 asset probing). */
+export type AssetKind =
+  | "audio"
+  | "video"
+  | "subtitle"
+  | "image"
+  | "archive"
+  | "text"
+  | "metadata";
+
+export interface SourceAsset {
+  id: string;
+  kind: AssetKind;
+  name: string;
+  /** Absolute path for local assets, URL for remote ones. */
+  location: string;
+  size: number | null;
+  sha256: string | null;
+}
+
+export interface VoiceActor {
+  name_ja: string;
+  aliases: string[];
+}
+
+/** source.get_work output. */
+export interface SourceWork {
+  source_id: string;
+  remote_id: string;
+  rj_code: string | null;
+  title: string;
+  circle: string | null;
+  voice_actors: VoiceActor[];
+  languages: string[];
+  tags: string[];
+  cover: string | null;
+  release_date: string | null;
+  assets: SourceAsset[];
+}
+
+export type DownloadStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+/** download.list row. */
+export interface DownloadRow {
+  id: string;
+  url: string;
+  dest: string;
+  staging_path: string;
+  bytes_done: number;
+  total: number | null;
+  sha256: string | null;
+  status: DownloadStatus;
+  attempts: number;
+  error: string | null;
+  job_id: string | null;
+  source_id: string | null;
+  remote_id: string | null;
+  asset_id: string | null;
+  import: boolean;
+}
+
+/** download.enqueue / download.retry output. */
+export interface DownloadQueued {
+  downloads: DownloadRow[];
+  job: { id: string };
 }

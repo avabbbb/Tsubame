@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Tauri identifier of the Desktop; its app data directory is named after it.
@@ -24,8 +24,9 @@ pub const DESKTOP_EXE_ENV: &str = "YUZUKI_DESKTOP";
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const LAUNCH_POLL: Duration = Duration::from_millis(250);
-/// Executable names the Desktop may ship under, next to this sidecar.
-const DESKTOP_NAMES: &[&str] = &["YUZUKI", "yuzuki", "tsubame"];
+/// Executable name the Desktop ships under (Tauri mainBinaryName), next to this sidecar.
+/// Not YUZUKI or yuzuki: on case-insensitive filesystems those resolve to this CLI itself.
+const DESKTOP_NAMES: &[&str] = &["tsubame"];
 
 /// Contents of control.json, written by the Desktop at start.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +138,26 @@ impl ControlClient {
             Err(_) => {}
         }
         let exe = desktop_exe(opts.desktop_exe.as_deref())?;
-        Command::new(&exe).spawn().map_err(|e| {
+        let mut command = Command::new(&exe);
+        // The Desktop must outlive this call and must not hold the caller's
+        // stdout/stderr open (a pipe reader would never see EOF).
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command.spawn().map_err(|e| {
             ClientError::new(
                 "launch_failed",
                 format!("cannot start {}: {e}", exe.display()),
@@ -317,7 +337,7 @@ fn desktop_exe(explicit: Option<&Path>) -> Result<PathBuf, ClientError> {
         .collect();
     tried
         .iter()
-        .find(|path| path.is_file())
+        .find(|path| path.is_file() && !is_same_file(path, &me))
         .cloned()
         .ok_or_else(|| {
             let tried: Vec<String> = tried.iter().map(|p| p.display().to_string()).collect();
@@ -329,6 +349,14 @@ fn desktop_exe(explicit: Option<&Path>) -> Result<PathBuf, ClientError> {
                 ),
             )
         })
+}
+
+/// True when both paths name the same file (case-insensitive filesystems, symlinks).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn parse_response(bytes: &[u8]) -> Result<(u16, Value), ClientError> {

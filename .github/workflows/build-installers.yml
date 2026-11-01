@@ -7,6 +7,9 @@ on:
       - ".github/workflows/build-installers.yml"
       - ".github/workflows/release-desktop.yml"
       - "scripts/generate-release-config.mjs"
+      - "crates/**"
+      - "Cargo.lock"
+      - "scripts/build-sidecars.mjs"
   push:
     branches: [main]
   workflow_dispatch:
@@ -53,6 +56,8 @@ jobs:
         working-directory: app
       - name: Prepare platform icon bundle config
         run: node scripts/generate-preview-config.mjs
+      - name: Build yuzuki CLI and MCP sidecars
+        run: node scripts/build-sidecars.mjs --target ${{ matrix.target }}
       - uses: tauri-apps/tauri-action@v1
         env:
           APPLE_SIGNING_IDENTITY: "-"

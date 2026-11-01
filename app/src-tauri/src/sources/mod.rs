@@ -7,6 +7,7 @@
 //! `segments` (importing into the library is a separate, explicit step).
 
 pub mod dlsite;
+pub mod dlsite_auth;
 pub mod download;
 pub mod local;
 
@@ -174,6 +175,9 @@ impl From<std::io::Error> for SourceError {
 
 /// The adapter contract from docs/08. Methods an adapter does not support
 /// keep the default, which fails with a typed `unsupported` error.
+// list_assets/resolve_asset/acquire/refresh are the docs/08 contract; their
+// callers (DLsite library, library browser) are follow-ups.
+#[allow(dead_code)]
 pub trait SourceAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn label(&self) -> &'static str;
@@ -235,6 +239,13 @@ pub fn list() -> Vec<SourceInfo> {
         .collect()
 }
 
+/// The registered adapter with this id.
+pub fn adapter(source_id: &str) -> Option<Box<dyn SourceAdapter>> {
+    adapters()
+        .into_iter()
+        .find(|adapter| adapter.id() == source_id)
+}
+
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS source_works (
@@ -285,7 +296,33 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            UNIQUE (url, dest)
          );
          CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status, created_at);",
-    )
+    )?;
+    // download.enqueue provenance, added after the table shipped: guarded.
+    for (column, decl) in [
+        ("source_id", "TEXT"),
+        ("remote_id", "TEXT"),
+        ("asset_id", "TEXT"),
+        ("import", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !has_column(conn, "downloads", column)? {
+            conn.execute_batch(&format!("ALTER TABLE downloads ADD COLUMN {column} {decl}"))?;
+        }
+    }
+    // Search hits carry only list fields; source.get_work refetches these.
+    if !has_column(conn, "source_works", "partial")? {
+        conn.execute_batch(
+            "ALTER TABLE source_works ADD COLUMN partial INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|name| name == column))
 }
 
 fn to_json<T: Serialize>(value: &T) -> String {
@@ -306,6 +343,7 @@ pub fn upsert_work(conn: &Connection, work: &Work) -> Result<(), SourceError> {
            voice_actors_json = excluded.voice_actors_json,
            languages_json = excluded.languages_json, tags_json = excluded.tags_json,
            cover = excluded.cover, release_date = excluded.release_date,
+           partial = 0,
            fetched_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
         params![
             work.source_id,
@@ -324,8 +362,14 @@ pub fn upsert_work(conn: &Connection, work: &Work) -> Result<(), SourceError> {
         "DELETE FROM source_assets WHERE source_id = ?1 AND remote_id = ?2",
         params![work.source_id, work.remote_id],
     )?;
+    insert_assets(&tx, work)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn insert_assets(conn: &Connection, work: &Work) -> rusqlite::Result<()> {
     for (ordinal, asset) in work.assets.iter().enumerate() {
-        tx.execute(
+        conn.execute(
             "INSERT INTO source_assets
                (source_id, remote_id, asset_id, kind, name, location, size, sha256, ordinal)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -342,8 +386,53 @@ pub fn upsert_work(conn: &Connection, work: &Work) -> Result<(), SourceError> {
             ],
         )?;
     }
+    Ok(())
+}
+
+/// Caches a search hit only when nothing is cached yet, marked partial so
+/// source.get_work fetches the full work instead of returning it.
+pub fn cache_search_hit(conn: &Connection, work: &Work) -> Result<(), SourceError> {
+    let tx = conn.unchecked_transaction()?;
+    let inserted = tx.execute(
+        "INSERT INTO source_works
+           (source_id, remote_id, rj_code, title, circle, voice_actors_json,
+            languages_json, tags_json, cover, release_date, partial)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
+         ON CONFLICT (source_id, remote_id) DO NOTHING",
+        params![
+            work.source_id,
+            work.remote_id,
+            work.rj_code,
+            work.title,
+            work.circle,
+            to_json(&work.voice_actors),
+            to_json(&work.languages),
+            to_json(&work.tags),
+            work.cover,
+            work.release_date,
+        ],
+    )?;
+    if inserted > 0 {
+        insert_assets(&tx, work)?;
+    }
     tx.commit()?;
     Ok(())
+}
+
+/// Whether the cached work is only a search hit (false when not cached).
+pub fn is_partial(
+    conn: &Connection,
+    source_id: &str,
+    remote_id: &str,
+) -> Result<bool, SourceError> {
+    let partial: Option<i64> = conn
+        .query_row(
+            "SELECT partial FROM source_works WHERE source_id = ?1 AND remote_id = ?2",
+            params![source_id, remote_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(partial.is_some_and(|flag| flag != 0))
 }
 
 pub fn get_work(
@@ -449,6 +538,29 @@ mod tests {
         upsert_work(&conn, &stored).unwrap();
         assert_eq!(get_work(&conn, "dlsite", "RJ000001").unwrap(), Some(stored));
         assert_eq!(get_work(&conn, "dlsite", "RJ999999").unwrap(), None);
+    }
+
+    #[test]
+    fn search_hits_never_shadow_full_works() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        migrate(&conn).unwrap();
+        let full = work();
+        let mut hit = work();
+        hit.voice_actors.clear();
+        hit.tags.clear();
+        hit.assets.clear();
+        // An uncached hit is stored, marked partial.
+        cache_search_hit(&conn, &hit).unwrap();
+        assert!(is_partial(&conn, "dlsite", "RJ000001").unwrap());
+        // A full fetch replaces it and clears the mark.
+        upsert_work(&conn, &full).unwrap();
+        assert!(!is_partial(&conn, "dlsite", "RJ000001").unwrap());
+        // A later hit leaves the full work untouched.
+        cache_search_hit(&conn, &hit).unwrap();
+        assert!(!is_partial(&conn, "dlsite", "RJ000001").unwrap());
+        assert_eq!(get_work(&conn, "dlsite", "RJ000001").unwrap(), Some(full));
+        assert!(!is_partial(&conn, "dlsite", "RJ999999").unwrap());
     }
 
     #[test]

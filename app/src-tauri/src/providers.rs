@@ -23,6 +23,13 @@ pub const CAPABILITY_VOCABULARY: &[&str] = &[
     "image.generate",
 ];
 
+/// Built-in cloud voice. The runtime pack installs locally, but synthesis
+/// sends sentence text to Microsoft's online Edge speech service. Opt-in:
+/// never a default target, never installed or enabled without the user.
+pub const EDGE_TTS_PROVIDER_ID: &str = "edge-tts";
+pub const EDGE_TTS_KIND: &str = "edge-tts";
+pub const EDGE_TTS_MODEL_ID: &str = "edge-tts";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderConfig {
     pub id: String,
@@ -102,6 +109,9 @@ pub struct CapabilityTarget {
     pub provider_name: String,
     pub provider_kind: String,
     pub execution: String,
+    /// local (audio and text stay on the device) or cloud (text is sent
+    /// to an online service). See data_flow().
+    pub data_flow: String,
     pub system_managed: bool,
     pub provider_availability: String,
     pub provider_message: String,
@@ -183,6 +193,8 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
     let faster_ready = crate::runtime::resolve_faster_whisper_python().is_ok();
     // Active runtime.funasr pack, or the TSUBAME_FUNASR_PYTHON override.
     let funasr_ready = crate::runtime::resolve_funasr_python().is_ok();
+    // Active runtime.edge-tts pack, or the TSUBAME_EDGE_TTS_PYTHON override.
+    let edge_ready = crate::runtime::resolve_edge_tts_python().is_ok();
     let apple_supported = cfg!(target_os = "macos");
     let apple_ready = apple_supported && env::var("TSUBAME_APPLE_SPEECH_HELPER").is_ok();
 
@@ -241,6 +253,18 @@ pub fn builtin_local_providers() -> Vec<ProviderConfig> {
             last_refresh_at: None,
             last_error: None,
         },
+        make_builtin_provider(
+            EDGE_TTS_PROVIDER_ID,
+            "Edge TTS (online)",
+            EDGE_TTS_KIND,
+            "local_runtime",
+            edge_ready,
+            if edge_ready {
+                "Cloud voice: sentence text is sent to Microsoft's online Edge speech service (internet required)."
+            } else {
+                "Cloud voice, opt-in: install its runtime pack to use it. Sentence text is sent to Microsoft's online Edge speech service (internet required)."
+            },
+        ),
     ]
 }
 
@@ -290,7 +314,13 @@ pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
         ],
         "local.sensevoice" => vec![("iic/SenseVoiceSmall", "SenseVoice Small")],
         "local.apple-speech" => vec![("speech-transcriber", "Apple SpeechTranscriber")],
+        EDGE_TTS_PROVIDER_ID => vec![(EDGE_TTS_MODEL_ID, "Microsoft Edge online voices")],
         _ => vec![],
+    };
+    let (capability, owned_by) = if provider_id == EDGE_TTS_PROVIDER_ID {
+        ("speech.tts", "microsoft")
+    } else {
+        ("speech.asr", "local")
     };
 
     model_ids
@@ -299,15 +329,25 @@ pub fn builtin_provider_models(provider_id: &str) -> Vec<ModelDescriptor> {
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             display_name: display_name.into(),
-            owned_by: "local".into(),
+            owned_by: owned_by.into(),
             available: ready,
-            discovered_capabilities: vec!["speech.asr".into()],
+            discovered_capabilities: vec![capability.into()],
             manual_capabilities: None,
-            effective_capabilities: vec!["speech.asr".into()],
+            effective_capabilities: vec![capability.into()],
             capability_source: "catalog".into(),
             last_seen_at: None,
         })
         .collect()
+}
+
+/// Where a Provider's data goes: cloud for remote APIs and the Edge cloud
+/// voice (its runtime is local, its synthesis is not), else local.
+pub fn data_flow(provider: &ProviderConfig) -> &'static str {
+    if provider.execution == "remote_api" || provider.kind == EDGE_TTS_KIND {
+        "cloud"
+    } else {
+        "local"
+    }
 }
 
 pub fn provider_target(provider: &ProviderConfig, model: &ModelDescriptor) -> CapabilityTarget {
@@ -316,6 +356,7 @@ pub fn provider_target(provider: &ProviderConfig, model: &ModelDescriptor) -> Ca
         provider_name: provider.name.clone(),
         provider_kind: provider.kind.clone(),
         execution: provider.execution.clone(),
+        data_flow: data_flow(provider).into(),
         system_managed: provider.system_managed,
         provider_availability: provider.availability.clone(),
         provider_message: provider.message.clone(),
@@ -740,6 +781,35 @@ mod tests {
         assert!(models.iter().all(|model| model
             .effective_capabilities
             .contains(&"speech.asr".to_string())));
+    }
+
+    #[test]
+    fn edge_tts_is_an_opt_in_cloud_tts_provider() {
+        let edge = builtin_local_providers()
+            .into_iter()
+            .find(|provider| provider.id == EDGE_TTS_PROVIDER_ID)
+            .unwrap();
+        assert!(edge.system_managed);
+        assert_eq!(edge.kind, EDGE_TTS_KIND);
+        assert_eq!(data_flow(&edge), "cloud");
+        assert!(edge.message.contains("Microsoft"));
+        let models = builtin_provider_models(EDGE_TTS_PROVIDER_ID);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].effective_capabilities, vec!["speech.tts"]);
+        // Never offered as an ASR target, and ASR runtimes stay local.
+        for provider in builtin_local_providers() {
+            let asr = builtin_provider_models(&provider.id).iter().any(|model| {
+                model
+                    .effective_capabilities
+                    .contains(&"speech.asr".to_string())
+            });
+            assert_eq!(asr, provider.id != EDGE_TTS_PROVIDER_ID, "{}", provider.id);
+            if provider.id != EDGE_TTS_PROVIDER_ID {
+                assert_eq!(data_flow(&provider), "local", "{}", provider.id);
+            }
+        }
+        let target = provider_target(&edge, &models[0]);
+        assert_eq!(target.data_flow, "cloud");
     }
 
     #[test]

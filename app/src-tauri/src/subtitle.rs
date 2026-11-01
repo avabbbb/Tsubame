@@ -368,7 +368,7 @@ fn serialize_lrc(cues: &[SubtitleCue]) -> String {
         ));
         if cues
             .get(i + 1)
-            .map_or(true, |next| next.start_ms > cue.end_ms)
+            .is_none_or(|next| next.start_ms > cue.end_ms)
         {
             out.push_str(&format!("[{}]\n", format_lrc_timestamp(cue.end_ms)));
         }

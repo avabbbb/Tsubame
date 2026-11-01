@@ -275,6 +275,42 @@ fn codec_name(codec: CodecType) -> String {
         .unwrap_or_else(|| format!("{codec:?}"))
 }
 
+/// Duration of the first audio track from container headers only (no decode),
+/// or None when the container does not record one. Import uses it so the
+/// library, CLI and ASR see a length before the media is ever played.
+pub fn probe_duration_ms(src: &Path) -> Option<i64> {
+    let file = fs::File::open(src).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = src.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .ok()?;
+    probed
+        .format
+        .tracks()
+        .iter()
+        .filter(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find_map(|t| {
+            let params = &t.codec_params;
+            let frames = params.n_frames?;
+            if let Some(time_base) = params.time_base {
+                let time = time_base.calc_time(frames);
+                return Some(time.seconds as i64 * 1000 + (time.frac * 1000.0).round() as i64);
+            }
+            let rate = u64::from(params.sample_rate?);
+            (rate > 0).then(|| (frames * 1000 / rate) as i64)
+        })
+        .filter(|ms| *ms > 0)
+}
+
 fn decode_into(
     src: &Path,
     out: &Path,
@@ -717,6 +753,15 @@ mod tests {
         write_sine(&stereo, 48_000, 2, 0.25);
         let prepared = prepare(None, &stereo, DecodeTarget::NATIVE, &NoopSink).unwrap();
         assert_eq!(prepared.path, stereo);
+    }
+
+    #[test]
+    fn probe_reads_duration_from_headers() {
+        let dir = TempDir::new("probe");
+        let wav = dir.0.join("half.wav");
+        write_sine(&wav, 16_000, 1, 0.5);
+        assert_eq!(probe_duration_ms(&wav), Some(500));
+        assert_eq!(probe_duration_ms(&dir.0.join("missing.wav")), None);
     }
 
     #[test]

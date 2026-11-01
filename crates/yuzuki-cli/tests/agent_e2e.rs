@@ -216,7 +216,10 @@ fn step_02_import_local_media() {
         .iter()
         .any(|item| int(&item["id"]) == media_id));
 
-    let segments = yuzuki(&d, &["segment", "list", "--media-id", &media_id.to_string()]);
+    let segments = yuzuki(
+        &d,
+        &["segment", "list", "--media-id", &media_id.to_string()],
+    );
     assert!(
         segments.to_string().contains("おはようございます"),
         "sidecar did not seed segments: {segments}"

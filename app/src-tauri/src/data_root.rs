@@ -200,8 +200,14 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
 
         let copied = migrate_legacy(&legacy, &root).unwrap();
-        assert_eq!(copied, vec!["tsubame.db".to_string(), "runtime".to_string()]);
-        assert_eq!(fs::read(root.join("runtime").join("packs").join("x")).unwrap(), b"p");
+        assert_eq!(
+            copied,
+            vec!["tsubame.db".to_string(), "runtime".to_string()]
+        );
+        assert_eq!(
+            fs::read(root.join("runtime").join("packs").join("x")).unwrap(),
+            b"p"
+        );
         assert!(legacy.join("tsubame.db").exists());
 
         fs::write(root.join("tsubame.db"), b"new").unwrap();

@@ -39,7 +39,10 @@ pub fn rj_code(text: &str) -> Option<String> {
     while let Some(pos) = upper[from..].find("RJ") {
         let at = from + pos;
         let start = at + 2;
-        let digits = bytes[start..].iter().take_while(|b| b.is_ascii_digit()).count();
+        let digits = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
         let glued = at > 0 && bytes[at - 1].is_ascii_alphanumeric();
         if !glued && (digits == 6 || digits == 8) {
             return Some(format!("RJ{}", &upper[start..start + digits]));
@@ -61,7 +64,9 @@ fn validate(remote_id: &str) -> Result<PathBuf, SourceError> {
         )));
     }
     if !path.exists() {
-        return Err(SourceError::not_found(format!("path does not exist: {remote_id}")));
+        return Err(SourceError::not_found(format!(
+            "path does not exist: {remote_id}"
+        )));
     }
     Ok(path.to_path_buf())
 }
@@ -98,8 +103,14 @@ pub fn sidecars(media: &Path) -> Result<Vec<PathBuf>, SourceError> {
     let Some(dir) = media.parent() else {
         return Ok(Vec::new());
     };
-    let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-    let name = media.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+    let stem = media
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let name = media
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -107,7 +118,8 @@ pub fn sidecars(media: &Path) -> Result<Vec<PathBuf>, SourceError> {
             continue;
         }
         let path = entry.path();
-        if path == media || !matches!(classify(&path), Some(AssetKind::Subtitle | AssetKind::Text)) {
+        if path == media || !matches!(classify(&path), Some(AssetKind::Subtitle | AssetKind::Text))
+        {
             continue;
         }
         let Some(other) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -197,7 +209,9 @@ impl SourceAdapter for LocalAdapter {
     fn resolve_asset(&self, asset_id: &str) -> Result<Asset, SourceError> {
         let path = validate(asset_id)?;
         if !path.is_file() {
-            return Err(SourceError::invalid_input(format!("not a file: {asset_id}")));
+            return Err(SourceError::invalid_input(format!(
+                "not a file: {asset_id}"
+            )));
         }
         asset(&path).ok_or_else(|| {
             SourceError::invalid_input(format!("unrecognised file type: {asset_id}"))
@@ -253,8 +267,14 @@ mod tests {
         let tmp = TempDir::new();
         let root = tmp.0.join("RJ239066 おやすみ");
         for name in [
-            "01.mp3", "01.vtt", "01.mp3.lrc", "台本.txt", "cover.jpg", "SE/02.wav",
-            ".hidden.mp3", "notes.xyz",
+            "01.mp3",
+            "01.vtt",
+            "01.mp3.lrc",
+            "台本.txt",
+            "cover.jpg",
+            "SE/02.wav",
+            ".hidden.mp3",
+            "notes.xyz",
         ] {
             touch(&root.join(name));
         }
@@ -263,9 +283,15 @@ mod tests {
         assert_eq!(work.title, "RJ239066 おやすみ");
         assert_eq!(work.rj_code.as_deref(), Some("RJ239066"));
         assert_eq!(names(&work.assets, AssetKind::Audio), ["01.mp3", "02.wav"]);
-        assert_eq!(names(&work.assets, AssetKind::Subtitle), ["01.mp3.lrc", "01.vtt"]);
+        assert_eq!(
+            names(&work.assets, AssetKind::Subtitle),
+            ["01.mp3.lrc", "01.vtt"]
+        );
         assert_eq!(names(&work.assets, AssetKind::Text), ["台本.txt"]);
-        assert_eq!(work.cover, Some(root.join("cover.jpg").to_str().unwrap().to_string()));
+        assert_eq!(
+            work.cover,
+            Some(root.join("cover.jpg").to_str().unwrap().to_string())
+        );
         assert_eq!(work.assets.len(), 6);
         assert!(work.assets.iter().all(|asset| asset.size == Some(1)));
     }
@@ -273,31 +299,57 @@ mod tests {
     #[test]
     fn file_work_takes_only_its_own_sidecars() {
         let tmp = TempDir::new();
-        for name in ["01.mp3", "01.srt", "01.mp3.lrc", "02.mp3", "02.vtt", "台本.pdf"] {
+        for name in [
+            "01.mp3",
+            "01.srt",
+            "01.mp3.lrc",
+            "02.mp3",
+            "02.vtt",
+            "台本.pdf",
+        ] {
             touch(&tmp.0.join(name));
         }
         let media = tmp.0.join("01.mp3");
         let work = LocalAdapter.get_work(media.to_str().unwrap()).unwrap();
         assert_eq!(work.title, "01");
-        let all: Vec<&str> = work.assets.iter().map(|asset| asset.name.as_str()).collect();
+        let all: Vec<&str> = work
+            .assets
+            .iter()
+            .map(|asset| asset.name.as_str())
+            .collect();
         assert_eq!(all, ["01.mp3", "01.mp3.lrc", "01.srt", "台本.pdf"]);
     }
 
     #[test]
     fn bad_paths_fail_with_typed_errors() {
         let tmp = TempDir::new();
-        assert_eq!(LocalAdapter.get_work("relative/dir").unwrap_err().code, "invalid_input");
+        assert_eq!(
+            LocalAdapter.get_work("relative/dir").unwrap_err().code,
+            "invalid_input"
+        );
         let missing = tmp.0.join("missing");
         assert_eq!(
-            LocalAdapter.get_work(missing.to_str().unwrap()).unwrap_err().code,
+            LocalAdapter
+                .get_work(missing.to_str().unwrap())
+                .unwrap_err()
+                .code,
             "not_found"
         );
         let text = tmp.0.join("a.txt");
         touch(&text);
         assert_eq!(
-            LocalAdapter.get_work(text.to_str().unwrap()).unwrap_err().code,
+            LocalAdapter
+                .get_work(text.to_str().unwrap())
+                .unwrap_err()
+                .code,
             "invalid_input"
         );
-        assert_eq!(LocalAdapter.resolve_asset(text.to_str().unwrap()).unwrap().kind, AssetKind::Text);
+        assert_eq!(
+            LocalAdapter
+                .resolve_asset(text.to_str().unwrap())
+                .unwrap()
+                .kind,
+            AssetKind::Text
+        );
     }
 }

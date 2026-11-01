@@ -395,7 +395,7 @@ fn builtin_catalog_is_consistent() {
         );
         safe_relative(&pack.entry).unwrap();
     }
-    assert_eq!(catalog.len(), 3);
+    assert_eq!(catalog.len(), 4);
     assert!(catalog[0].sources[0].ends_with("/runtime.faster-whisper-1.2.1-1-windows-x86_64.zip"));
     assert_eq!(
         catalog[1].requires,
@@ -418,6 +418,37 @@ fn builtin_catalog_is_consistent() {
         assert_eq!(ids, vec![FUNASR_RUNTIME]);
     }
     assert_eq!(override_env_for(FUNASR_RUNTIME), Some(ENV_FUNASR_PYTHON));
+    let edge = catalog
+        .iter()
+        .find(|pack| pack.id == EDGE_TTS_RUNTIME)
+        .unwrap();
+    assert_eq!(edge.version, "7.3.1-1");
+    assert_eq!(edge.kind, PackKind::Runtime);
+    assert_eq!(edge.format, PackFormat::Zip);
+    assert_eq!(edge.platform, "windows-x86_64");
+    assert_eq!(edge.entry, "python.exe");
+    assert!(edge
+        .sources
+        .last()
+        .unwrap()
+        .ends_with("/runtime-edge-tts-7.3.1-1/runtime.edge-tts-7.3.1-1-windows-x86_64.zip"));
+    assert!(edge.requires.is_empty() && edge.hardware.is_none());
+    assert_eq!(
+        provider_pack_ids_for("edge-tts", "edge-tts", false).unwrap(),
+        vec![EDGE_TTS_RUNTIME]
+    );
+    // Opt-in: no other provider ever plans the cloud-voice pack.
+    for provider in ["local.faster-whisper", "local.sensevoice"] {
+        for nvidia in [false, true] {
+            let ids = provider_pack_ids_for(provider, "", nvidia).unwrap();
+            assert!(!ids.contains(&EDGE_TTS_RUNTIME), "{provider}");
+        }
+    }
+    assert_eq!(provider_pack_ids_for("remote-tts", "tts-1", false), None);
+    assert_eq!(
+        override_env_for(EDGE_TTS_RUNTIME),
+        Some(ENV_EDGE_TTS_PYTHON)
+    );
 }
 
 #[test]
@@ -542,8 +573,14 @@ fn mirror_source_maps_dirs_and_urls_to_pack_files() {
     let file = "runtime.faster-whisper-1.2.1-1-windows-x86_64.zip";
     let win = mirror_source(r"H:\data\packs\", file).unwrap();
     assert_eq!(win, format!("file:///H:/data/packs/{file}"));
-    assert_eq!(file_url_path(&win).unwrap(), std::path::PathBuf::from(format!("H:/data/packs/{file}")));
-    assert_eq!(mirror_source("/srv/packs", file).unwrap(), format!("file:///srv/packs/{file}"));
+    assert_eq!(
+        file_url_path(&win).unwrap(),
+        std::path::PathBuf::from(format!("H:/data/packs/{file}"))
+    );
+    assert_eq!(
+        mirror_source("/srv/packs", file).unwrap(),
+        format!("file:///srv/packs/{file}")
+    );
     assert_eq!(
         mirror_source("https://mirror.example/packs/", file).unwrap(),
         format!("https://mirror.example/packs/{file}")
@@ -554,7 +591,10 @@ fn mirror_source_maps_dirs_and_urls_to_pack_files() {
 #[test]
 fn cuda_dir_override_wins_over_missing_pack() {
     let env = |name: &str| (name == ENV_FW_CUDA_DIR).then(|| "H:/cuda".to_string());
-    assert_eq!(resolve_faster_whisper_cuda_dir_in(None, &env), Some(PathBuf::from("H:/cuda")));
+    assert_eq!(
+        resolve_faster_whisper_cuda_dir_in(None, &env),
+        Some(PathBuf::from("H:/cuda"))
+    );
     let none = |_: &str| None;
     assert_eq!(resolve_faster_whisper_cuda_dir_in(None, &none), None);
 }
@@ -570,4 +610,18 @@ fn funasr_python_prefers_override_then_pack() {
     let env = |name: &str| (name == ENV_FUNASR_PYTHON).then(|| "D:/dev/python.exe".to_string());
     let python = resolve_funasr_python_in(Some(&root), &env).unwrap();
     assert_eq!(python, PathBuf::from("D:/dev/python.exe"));
+}
+
+#[test]
+fn edge_tts_python_prefers_override_and_never_system_python() {
+    let root = temp_root("edge-tts-resolve");
+    let none = |_: &str| None;
+    let err = resolve_edge_tts_python_in(Some(&root), &none).unwrap_err();
+    assert!(err.contains("Edge TTS"), "{err}");
+    let env =
+        |name: &str| (name == ENV_EDGE_TTS_PYTHON).then(|| "D:/dev/edge/python.exe".to_string());
+    assert_eq!(
+        resolve_edge_tts_python_in(Some(&root), &env).unwrap(),
+        PathBuf::from("D:/dev/edge/python.exe")
+    );
 }

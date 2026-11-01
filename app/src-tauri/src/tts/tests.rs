@@ -709,3 +709,209 @@ fn request_body_sends_only_redacted_sentence_text() {
     let body = OpenAiCompatibleTts::request_body(&req);
     assert_eq!(body["input"].as_str(), Some("联系 ⟦EMAIL1⟧ 或 ⟦PHONE1⟧"));
 }
+
+// ----- Edge TTS (cloud voice) -----
+
+fn edge_request(kind: &str, text: &str, voice: &str, params: Value) -> TtsRequest {
+    TtsRequest {
+        contract_version: TTS_CONTRACT_VERSION,
+        model_id: crate::providers::EDGE_TTS_MODEL_ID.into(),
+        text: text.into(),
+        language: "zh-Hans".into(),
+        voice_kind: kind.into(),
+        preset_voice: voice.into(),
+        design_prompt: String::new(),
+        params,
+        take: 0,
+    }
+}
+
+fn edge_temp_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("tsubame-edge-tts-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// MPEG-2 Layer III, 48 kb/s, 24 kHz, mono, no CRC: 144-byte frames whose
+/// all-zero side info decodes to silence (the shape Edge voices return).
+fn silent_mp3(frames: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frames * 144);
+    for _ in 0..frames {
+        let mut frame = vec![0u8; 144];
+        frame[..4].copy_from_slice(&[0xFF, 0xF3, 0x64, 0xC0]);
+        out.extend(frame);
+    }
+    out
+}
+
+#[test]
+fn edge_request_maps_voice_prosody_and_redacts_text() {
+    use serde_json::json;
+    let out = std::env::temp_dir().join("edge-out.mp3");
+    let url = format!("{}://{}/{}", "https", "example.com", "private");
+    let text = format!("晚安，明天见。 {url}");
+    let req = edge_worker_request(
+        &edge_request(
+            "preset",
+            &text,
+            " ja-JP-NanamiNeural ",
+            json!({"speed": 1.25, "pitch": "+2Hz"}),
+        ),
+        &out,
+    )
+    .unwrap();
+    assert_eq!(req["contract_version"], 1);
+    assert_eq!(req["text"], crate::redact::for_cloud(text.trim()).trim());
+    assert!(!req["text"].as_str().unwrap().contains("example.com"));
+    assert_eq!(req["voice"], "ja-JP-NanamiNeural");
+    assert_eq!(req["rate"], "+25%");
+    assert_eq!(req["pitch"], "+2Hz");
+    assert_eq!(req["volume"], "+0%");
+    assert_eq!(req["output_path"], out.to_string_lossy().to_string());
+    let req = edge_worker_request(
+        &edge_request("preset", "晚安", "", json!({"rate": "-10%"})),
+        &out,
+    )
+    .unwrap();
+    assert_eq!(req["voice"], EDGE_TTS_DEFAULT_VOICE);
+    assert_eq!(req["rate"], "-10%");
+}
+
+#[test]
+fn edge_rate_clamps_speed() {
+    use serde_json::json;
+    assert_eq!(edge_rate_from_speed(None), "+0%");
+    assert_eq!(edge_rate_from_speed(Some(&json!(1.0))), "+0%");
+    assert_eq!(edge_rate_from_speed(Some(&json!(0.1))), "-50%");
+    assert_eq!(edge_rate_from_speed(Some(&json!("2.5"))), "+100%");
+    assert_eq!(edge_rate_from_speed(Some(&json!("fast"))), "+0%");
+}
+
+#[test]
+fn edge_rejects_voice_design_and_empty_text() {
+    use serde_json::json;
+    let out = std::env::temp_dir().join("edge-out.mp3");
+    let err =
+        edge_worker_request(&edge_request("design", "你好", "", json!({})), &out).unwrap_err();
+    assert_eq!(err.code, "provider_unavailable");
+    assert!(err.message.contains("preset"), "{}", err.message);
+    assert!(!err.retryable);
+    let err =
+        edge_worker_request(&edge_request("preset", "   ", "x", json!({})), &out).unwrap_err();
+    assert_eq!(err.code, "invalid_input");
+}
+
+#[test]
+fn edge_worker_output_maps_error_codes() {
+    let ok = parse_edge_worker_output(b"{\"ok\": true, \"format\": \"mp3\", \"bytes\": 42}\n", b"");
+    assert_eq!(ok.unwrap(), 42);
+    let net = parse_edge_worker_output(
+        br#"{"ok": false, "error": {"code": "network", "message": "ClientConnectorError", "retryable": false}}"#,
+        b"",
+    )
+    .unwrap_err();
+    assert_eq!(net.code, "network");
+    assert!(net.retryable);
+    let bad = parse_edge_worker_output(
+        br#"{"ok": false, "error": {"code": "invalid_input", "message": "voice is empty", "retryable": false}}"#,
+        b"",
+    )
+    .unwrap_err();
+    assert_eq!(bad.code, "invalid_input");
+    assert!(!bad.retryable);
+    let odd = parse_edge_worker_output(
+        br#"{"ok": false, "error": {"code": "boom", "message": "x"}}"#,
+        b"",
+    )
+    .unwrap_err();
+    assert_eq!(odd.code, "synthesis_failed");
+    let garbage =
+        parse_edge_worker_output(b"Traceback", b"ModuleNotFoundError: edge_tts").unwrap_err();
+    assert_eq!(garbage.code, "synthesis_failed");
+    assert!(
+        garbage.message.contains("ModuleNotFoundError"),
+        "{}",
+        garbage.message
+    );
+}
+
+#[test]
+fn edge_kind_selects_edge_adapter_and_builtin_target() {
+    use crate::providers::{
+        builtin_provider, EDGE_TTS_KIND, EDGE_TTS_MODEL_ID, EDGE_TTS_PROVIDER_ID,
+    };
+    let edge = builtin_provider(EDGE_TTS_PROVIDER_ID).unwrap();
+    let adapter = adapter_for_provider(&edge, None).unwrap();
+    assert_eq!(adapter.adapter_version(), EDGE_TTS_ADAPTER_VERSION);
+    // Built-in ids resolve without a Provider row; ASR built-ins never do TTS.
+    let asr = builtin_tts_target("local.faster-whisper", "large-v3")
+        .unwrap()
+        .unwrap_err();
+    assert!(asr.message.contains("speech.tts"), "{}", asr.message);
+    let unknown = builtin_tts_target(EDGE_TTS_PROVIDER_ID, "nope")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(unknown.code, "provider_unavailable");
+    match builtin_tts_target(EDGE_TTS_PROVIDER_ID, EDGE_TTS_MODEL_ID).unwrap() {
+        Ok(provider) => assert_eq!(provider.kind, EDGE_TTS_KIND),
+        Err(error) => {
+            // Pack not installed: the opt-in message, not "not found".
+            assert_eq!(error.code, "provider_unavailable");
+            assert!(error.message.contains("Microsoft"), "{}", error.message);
+        }
+    }
+    assert!(builtin_tts_target("prov", "tts-1").is_none());
+}
+
+#[test]
+fn edge_mp3_decodes_to_pcm_wav() {
+    let dir = edge_temp_dir();
+    let mp3 = dir.join("a.mp3");
+    std::fs::write(&mp3, silent_mp3(40)).unwrap();
+    let wav = decode_edge_mp3(&mp3, &dir.join("a.wav"), &NoopSink).unwrap();
+    let info = parse_wav(&wav).unwrap();
+    assert_eq!(info.sample_rate, 24_000);
+    assert_eq!(info.channels, 1);
+    assert!(info.frames > 0);
+}
+
+/// Runs the adapter against a fake one-shot worker. Needs an interpreter in
+/// TSUBAME_EDGE_TTS_PYTHON; skipped otherwise (never the system Python).
+#[test]
+fn edge_adapter_runs_one_shot_worker() {
+    use serde_json::json;
+    let Ok(python) = std::env::var(crate::runtime::ENV_EDGE_TTS_PYTHON) else {
+        eprintln!("skipped: set TSUBAME_EDGE_TTS_PYTHON to run the fake Edge TTS worker");
+        return;
+    };
+    let dir = edge_temp_dir();
+    let fixture = dir.join("fixture.mp3");
+    std::fs::write(&fixture, silent_mp3(40)).unwrap();
+    let script = dir.join("fake_edge_worker.py");
+    let source = r#"import json, shutil, sys
+req = json.loads(sys.stdin.buffer.read())
+if req["text"] == "network":
+    print(json.dumps({"ok": False, "error": {"code": "network", "message": "offline", "retryable": True}}))
+    sys.exit(1)
+shutil.copyfile(FIXTURE, req["output_path"])
+print(json.dumps({"ok": True, "format": "mp3", "bytes": 1}))
+"#
+    .replace("FIXTURE", &format!("{:?}", fixture.to_string_lossy()));
+    std::fs::write(&script, source).unwrap();
+    let work = dir.join("work");
+    let adapter = EdgeTts {
+        python: Some(python.into()),
+        script: Some(script),
+        work_dir: Some(work.clone()),
+        timeout: Duration::from_secs(60),
+    };
+    let request = edge_request("preset", "晚安", "zh-CN-XiaoxiaoNeural", json!({}));
+    let wav = tauri::async_runtime::block_on(adapter.synthesize(&request, &NoopSink)).unwrap();
+    assert_eq!(parse_wav(&wav).unwrap().sample_rate, 24_000);
+    let request = edge_request("preset", "network", "zh-CN-XiaoxiaoNeural", json!({}));
+    let err = tauri::async_runtime::block_on(adapter.synthesize(&request, &NoopSink)).unwrap_err();
+    assert_eq!(err.code, "network");
+    assert!(err.retryable);
+    // Temp MP3/WAV files never outlive a synthesis.
+    assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+}

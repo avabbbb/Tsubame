@@ -204,7 +204,10 @@ impl OpenAiCompatibleTts {
         }
         body.insert("model".into(), Value::String(request.model_id.clone()));
         // Only sentence text leaves the device (docs/09); audio needs no restore.
-        body.insert("input".into(), Value::String(crate::redact::for_cloud(&request.text)));
+        body.insert(
+            "input".into(),
+            Value::String(crate::redact::for_cloud(&request.text)),
+        );
         if !request.preset_voice.trim().is_empty() {
             body.insert(
                 "voice".into(),
@@ -380,6 +383,330 @@ impl TtsAdapter for MockTts {
     }
 }
 
+// ----- Edge TTS (cloud voice) -----
+
+pub const EDGE_TTS_ADAPTER_VERSION: &str = "edge-tts/worker@1;edge-tts=7.3.1";
+/// Voice used when a preset profile names none.
+pub const EDGE_TTS_DEFAULT_VOICE: &str = "zh-CN-XiaoxiaoNeural";
+const EDGE_TTS_WORKER: &str = "edge_tts_worker.py";
+const EDGE_TTS_CONTRACT_VERSION: u32 = 1;
+/// The worker bounds synthesis at 60 s itself; this catches a hung interpreter.
+const EDGE_TTS_TIMEOUT: Duration = Duration::from_secs(150);
+const EDGE_TTS_POLL: Duration = Duration::from_millis(100);
+
+/// CLOUD voice: one-shot workers/tts/edge_tts_worker.py run by the
+/// runtime.edge-tts interpreter (or TSUBAME_EDGE_TTS_PYTHON), never the
+/// system Python. Only redacted sentence text leaves the device, to
+/// Microsoft's online Edge speech service; the MP3 lands in a data-root temp
+/// file and is decoded to PCM WAV in Rust.
+pub struct EdgeTts {
+    /// None: resolve the pack interpreter at synthesis time.
+    pub python: Option<PathBuf>,
+    /// None: the bundled (or checkout) workers/tts/edge_tts_worker.py.
+    pub script: Option<PathBuf>,
+    /// None: <data root>/cache/tts-edge.
+    pub work_dir: Option<PathBuf>,
+    pub timeout: Duration,
+}
+
+impl Default for EdgeTts {
+    fn default() -> Self {
+        Self {
+            python: None,
+            script: None,
+            work_dir: None,
+            timeout: EDGE_TTS_TIMEOUT,
+        }
+    }
+}
+
+/// Voice-profile speed (0.5..=2.0, number or numeric string) to an edge-tts
+/// rate such as +25%; anything else is +0%.
+pub(crate) fn edge_rate_from_speed(speed: Option<&Value>) -> String {
+    let value = match speed {
+        Some(Value::Number(number)) => number.as_f64(),
+        Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    let Some(value) = value.filter(|value| value.is_finite()) else {
+        return "+0%".into();
+    };
+    let pct = ((value.clamp(0.5, 2.0) - 1.0) * 100.0).round() as i64;
+    format!("{pct:+}%")
+}
+
+/// The worker's stdin request. Preset voices only: Edge has no voice design.
+pub(crate) fn edge_worker_request(
+    request: &TtsRequest,
+    output_path: &Path,
+) -> Result<Value, TtsError> {
+    if request.voice_kind != "preset" {
+        return Err(TtsError::new(
+            "provider_unavailable",
+            "Edge TTS only plays its preset voices; a text-designed voice needs a Provider that supports voice design",
+            false,
+        ));
+    }
+    let text = crate::redact::for_cloud(request.text.trim());
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(TtsError::input("segment text is empty"));
+    }
+    let voice = request.preset_voice.trim();
+    let voice = if voice.is_empty() {
+        EDGE_TTS_DEFAULT_VOICE
+    } else {
+        voice
+    };
+    let params = request.params.as_object();
+    let text_param = |key: &str| {
+        params
+            .and_then(|params| params.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let rate = text_param("rate")
+        .unwrap_or_else(|| edge_rate_from_speed(params.and_then(|params| params.get("speed"))));
+    Ok(serde_json::json!({
+        "contract_version": EDGE_TTS_CONTRACT_VERSION,
+        "text": text,
+        "voice": voice,
+        "rate": rate,
+        "pitch": text_param("pitch").unwrap_or_else(|| "+0Hz".into()),
+        "volume": text_param("volume").unwrap_or_else(|| "+0%".into()),
+        "output_path": output_path.to_string_lossy(),
+    }))
+}
+
+fn redacted_tail(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim();
+    let start = text
+        .char_indices()
+        .rev()
+        .nth(399)
+        .map_or(0, |(index, _)| index);
+    crate::redact::for_cloud(&text[start..])
+}
+
+/// Maps the worker's one JSON line to the MP3 byte count or a TtsError
+/// (network | invalid_input | synthesis_failed; network is retryable).
+pub(crate) fn parse_edge_worker_output(stdout: &[u8], stderr: &[u8]) -> Result<u64, TtsError> {
+    let text = String::from_utf8_lossy(stdout);
+    let parsed = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok());
+    match parsed
+        .as_ref()
+        .and_then(|value| value.get("ok"))
+        .and_then(Value::as_bool)
+    {
+        Some(true) => Ok(parsed
+            .as_ref()
+            .and_then(|value| value.get("bytes"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)),
+        Some(false) => {
+            let error = parsed.as_ref().and_then(|value| value.get("error"));
+            let field = |key: &str| error.and_then(|error| error.get(key));
+            let code = field("code")
+                .and_then(Value::as_str)
+                .filter(|code| matches!(*code, "network" | "invalid_input" | "synthesis_failed"))
+                .unwrap_or("synthesis_failed");
+            let message = field("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Edge TTS worker failed");
+            let retryable =
+                code == "network" || field("retryable").and_then(Value::as_bool).unwrap_or(false);
+            Err(TtsError::new(
+                code,
+                format!("Edge TTS: {}", crate::redact::for_cloud(message)),
+                retryable,
+            ))
+        }
+        None => {
+            let tail = redacted_tail(stderr);
+            Err(TtsError::new(
+                "synthesis_failed",
+                if tail.is_empty() {
+                    "Edge TTS worker returned no result".to_string()
+                } else {
+                    format!("Edge TTS worker returned no result: {tail}")
+                },
+                false,
+            ))
+        }
+    }
+}
+
+fn edge_work_dir() -> PathBuf {
+    crate::data_root::get()
+        .map(|root| root.join("cache").join("tts-edge"))
+        .unwrap_or_else(|| std::env::temp_dir().join("yuzuki-tts-edge"))
+}
+
+fn drain_pipe<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buffer);
+        }
+        buffer
+    })
+}
+
+/// Async-friendly sleep without a direct tokio dependency.
+async fn edge_poll_pause() {
+    let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(EDGE_TTS_POLL)).await;
+}
+
+impl EdgeTts {
+    async fn run_worker(
+        &self,
+        python: &Path,
+        script: &Path,
+        payload: &[u8],
+        sink: &dyn ProgressSink,
+    ) -> Result<u64, TtsError> {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(python);
+        command
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // A pack interpreter must not pick up a developer's Python setup.
+            .env_remove("PYTHONPATH")
+            .env_remove("PYTHONHOME")
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8");
+        if let Some(dir) = script.parent() {
+            command.current_dir(dir);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command.spawn().map_err(|e| {
+            TtsError::new(
+                "provider_unavailable",
+                format!("cannot start the Edge TTS worker: {e}"),
+                false,
+            )
+        })?;
+        let written = child
+            .stdin
+            .take()
+            .map(|mut stdin| stdin.write_all(payload))
+            .unwrap_or(Ok(()));
+        let stdout = drain_pipe(child.stdout.take());
+        let stderr = drain_pipe(child.stderr.take());
+        let started = std::time::Instant::now();
+        let outcome = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break Ok(()),
+                Ok(None) => {}
+                Err(e) => break Err(TtsError::io(e)),
+            }
+            if sink.is_cancelled() {
+                break Err(TtsError::new("cancelled", "synthesis was cancelled", true));
+            }
+            if started.elapsed() > self.timeout {
+                break Err(TtsError::new(
+                    "network",
+                    "Edge TTS did not answer in time (check the internet connection or proxy)",
+                    true,
+                ));
+            }
+            edge_poll_pause().await;
+        };
+        if outcome.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let stdout = stdout.join().unwrap_or_default();
+        let stderr = stderr.join().unwrap_or_default();
+        outcome?;
+        let bytes = parse_edge_worker_output(&stdout, &stderr)?;
+        written.map_err(TtsError::io)?;
+        Ok(bytes)
+    }
+}
+
+/// Decodes the worker's MP3 to PCM WAV at its own rate and layout.
+pub(crate) fn decode_edge_mp3(
+    mp3: &Path,
+    wav: &Path,
+    sink: &dyn ProgressSink,
+) -> Result<Vec<u8>, TtsError> {
+    check_cancelled(sink)?;
+    crate::media_decode::decode_to_pcm_wav(
+        mp3,
+        wav,
+        crate::media_decode::DecodeTarget::NATIVE,
+        sink,
+    )
+    .map_err(|e| {
+        TtsError::new(
+            "invalid_audio",
+            format!("Edge TTS audio could not be decoded: {e}"),
+            false,
+        )
+    })?;
+    std::fs::read(wav).map_err(TtsError::io)
+}
+
+impl TtsAdapter for EdgeTts {
+    fn adapter_version(&self) -> &'static str {
+        EDGE_TTS_ADAPTER_VERSION
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    fn synthesize<'a>(
+        &'a self,
+        request: &'a TtsRequest,
+        sink: &'a dyn ProgressSink,
+    ) -> impl Future<Output = Result<Vec<u8>, TtsError>> + Send + 'a {
+        async move {
+            check_cancelled(sink)?;
+            let dir = self.work_dir.clone().unwrap_or_else(edge_work_dir);
+            let stem = uuid::Uuid::new_v4().to_string();
+            let mp3 = dir.join(format!("{stem}.mp3"));
+            let wav = dir.join(format!("{stem}.wav"));
+            // Validate before resolving the runtime so bad input fails clearly.
+            let payload =
+                serde_json::to_vec(&edge_worker_request(request, &mp3)?).map_err(TtsError::io)?;
+            let python = match &self.python {
+                Some(python) => python.clone(),
+                None => crate::runtime::resolve_edge_tts_python()
+                    .map_err(|e| TtsError::new("provider_unavailable", e, false))?,
+            };
+            let script = match &self.script {
+                Some(script) => script.clone(),
+                None => crate::asr::worker_script_in("tts", EDGE_TTS_WORKER)
+                    .map_err(|e| TtsError::new("provider_unavailable", e, false))?,
+            };
+            std::fs::create_dir_all(&dir).map_err(TtsError::io)?;
+            sink.progress("edge-tts", 0, 0);
+            let result = match self.run_worker(&python, &script, &payload, sink).await {
+                Ok(_) => decode_edge_mp3(&mp3, &wav, sink),
+                Err(error) => Err(error),
+            };
+            for path in [mp3.clone(), wav, mp3.with_extension("mp3.part")] {
+                let _ = std::fs::remove_file(path);
+            }
+            result
+        }
+    }
+}
+
 /// Adapters are chosen by Provider **kind**, never by model id.
 pub enum AnyTtsAdapter {
     OpenAiCompatible(OpenAiCompatibleTts),
@@ -387,6 +714,8 @@ pub enum AnyTtsAdapter {
     /// integrator smoke checks.
     #[allow(dead_code)]
     Mock(MockTts),
+    /// Opt-in cloud voice (Provider kind edge-tts).
+    EdgeTts(EdgeTts),
 }
 
 pub fn adapter_for_provider(
@@ -397,6 +726,7 @@ pub fn adapter_for_provider(
         "openai-compatible" => Ok(AnyTtsAdapter::OpenAiCompatible(
             OpenAiCompatibleTts::from_provider(provider, secret),
         )),
+        crate::providers::EDGE_TTS_KIND => Ok(AnyTtsAdapter::EdgeTts(EdgeTts::default())),
         other => Err(TtsError::new(
             "provider_unavailable",
             format!("provider adapter {other} does not implement speech.tts yet"),
@@ -410,6 +740,7 @@ impl TtsAdapter for AnyTtsAdapter {
         match self {
             Self::OpenAiCompatible(adapter) => adapter.adapter_version(),
             Self::Mock(adapter) => adapter.adapter_version(),
+            Self::EdgeTts(adapter) => adapter.adapter_version(),
         }
     }
 
@@ -423,6 +754,7 @@ impl TtsAdapter for AnyTtsAdapter {
             match self {
                 Self::OpenAiCompatible(adapter) => adapter.synthesize(request, sink).await,
                 Self::Mock(adapter) => adapter.synthesize(request, sink).await,
+                Self::EdgeTts(adapter) => adapter.synthesize(request, sink).await,
             }
         }
     }
@@ -1202,7 +1534,39 @@ pub fn asset_store(app: &tauri::AppHandle) -> Result<AssetStore, String> {
     Ok(AssetStore::new(dir.join("assets")))
 }
 
+/// Built-in (system-managed) speech.tts targets: today only the opt-in Edge
+/// cloud voice. None: not a built-in id, so look in the Provider table.
+pub(crate) fn builtin_tts_target(
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Result<ProviderConfig, TtsError>> {
+    let provider = crate::providers::builtin_provider(provider_id.trim())?;
+    let unavailable =
+        |message: String| Some(Err(TtsError::new("provider_unavailable", message, false)));
+    let models = crate::providers::builtin_provider_models(&provider.id);
+    let Some(model) = models
+        .iter()
+        .find(|model| model.model_id == model_id.trim())
+    else {
+        return unavailable("model not found in Provider inventory".into());
+    };
+    if !model
+        .effective_capabilities
+        .iter()
+        .any(|capability| capability == "speech.tts")
+    {
+        return unavailable("selected model does not resolve speech.tts".into());
+    }
+    if !provider.enabled || provider.availability != "ready" || !model.available {
+        return unavailable(provider.message.clone());
+    }
+    Some(Ok(provider))
+}
+
 fn resolve_tts_target(db: &MediaDb, profile: &VoiceProfile) -> Result<ProviderConfig, TtsError> {
+    if let Some(target) = builtin_tts_target(&profile.provider_id, &profile.model_id) {
+        return target;
+    }
     let provider = db
         .get_provider(&profile.provider_id)
         .map_err(TtsError::db)?

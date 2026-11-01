@@ -5,11 +5,21 @@
 //! Metadata only: no login, no downloads, no paywalled content. The network
 //! is touched only on an explicit get_work / list_assets / refresh call.
 
-use super::{Asset, AssetKind, Capabilities, SourceAdapter, SourceError, VoiceActor, Work};
+use super::{
+    Asset, AssetKind, Capabilities, SearchFilters, SourceAdapter, SourceError, VoiceActor, Work,
+};
+use regex::Regex;
 use serde_json::Value;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 const PRODUCT_API: &str = "https://www.dlsite.com/maniax/api/=/product.json?workno=";
+/// Public catalog search (fsr/ajax): JSON whose search_result is the
+/// result-list HTML. Scoped to voice/ASMR works; no login.
+const SEARCH_DEFAULT_LIMIT: u32 = 30;
+/// fsr only serves these page sizes.
+const SEARCH_PAGE_SIZES: [u32; 3] = [30, 50, 100];
 
 /// Romanizations DLsite does not carry (docs/08 "Name normalization").
 /// Keyed by the canonical Japanese name; never used as an identity key.
@@ -65,7 +75,9 @@ fn voice_actors(product: &Value) -> Vec<VoiceActor> {
         .and_then(|c| c.get("voice_by"))
         .and_then(Value::as_array);
     for entry in entries.into_iter().flatten() {
-        let Some(name) = str_field(entry, "name") else { continue };
+        let Some(name) = str_field(entry, "name") else {
+            continue;
+        };
         if actors.iter().any(|actor| actor.name_ja == name) {
             continue;
         }
@@ -92,7 +104,9 @@ fn cover(product: &Value) -> Option<Asset> {
     Some(Asset {
         id: "cover".into(),
         kind: AssetKind::Image,
-        name: str_field(image, "file_name").unwrap_or("cover.jpg").to_string(),
+        name: str_field(image, "file_name")
+            .unwrap_or("cover.jpg")
+            .to_string(),
         location: url,
         size: str_field(image, "file_size").and_then(|s| s.parse().ok()),
         sha256: None,
@@ -141,20 +155,132 @@ pub fn parse_product(rj: &str, body: &str) -> Result<Work, SourceError> {
     })
 }
 
-fn fetch_product(rj: &str) -> Result<String, SourceError> {
+/// GET url as text. Called from sync commands / job threads: block_on
+/// supplies the runtime reqwest's timers need (same as runtime::HttpFetcher).
+fn get_text(url: String, what: &str) -> Result<String, SourceError> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(30))
         .user_agent(concat!("YUZUKI/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| SourceError::network(e.to_string()))?;
-    let url = format!("{PRODUCT_API}{rj}");
-    // Called from sync commands / job threads: block_on supplies the runtime
-    // reqwest's timers need (same pattern as runtime::HttpFetcher).
     tauri::async_runtime::block_on(async move {
-        client.get(url).send().await?.error_for_status()?.text().await
+        client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await
     })
-    .map_err(|e| SourceError::network(format!("DLsite {rj}: {e}")))
+    .map_err(|e| SourceError::network(format!("DLsite {what}: {e}")))
+}
+
+fn fetch_product(rj: &str) -> Result<String, SourceError> {
+    get_text(format!("{PRODUCT_API}{rj}"), rj)
+}
+
+/// Percent-encodes one URL path segment, keeping RFC 3986 unreserved bytes.
+fn encode_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() * 3);
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+fn search_url(query: &str, per_page: u32) -> String {
+    // Same origin and site section (maniax) as PRODUCT_API.
+    let site = PRODUCT_API
+        .split_once("/api/")
+        .map_or(PRODUCT_API, |(site, _)| site);
+    format!(
+        "{site}/fsr/ajax/=/language/jp/keyword/{}/work_type_category%5B0%5D/audio/order/trend/per_page/{per_page}/page/1",
+        encode_segment(query)
+    )
+}
+
+fn unescape_html(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+struct SearchPatterns {
+    thumb: Regex,
+    title: Regex,
+    circle: Regex,
+}
+
+static SEARCH_PATTERNS: LazyLock<SearchPatterns> = LazyLock::new(|| SearchPatterns {
+    thumb: Regex::new(r"'(//img\.dlsite\.jp/[^']+\.jpg)'").expect("thumb pattern"),
+    title: Regex::new(r#"(?s)class="work_name">.{0,2000}?<a [^>]{0,400}title="([^"]+)""#)
+        .expect("title pattern"),
+    circle: Regex::new(r#"class="maker_name"><a [^>]{0,400}>([^<]+)</a>"#).expect("circle pattern"),
+});
+
+/// Normalizes an fsr/ajax body into works. The list carries only RJ code,
+/// title, circle and thumbnail; source.get_work fills actors, tags, languages.
+pub fn parse_search(body: &str) -> Result<Vec<Work>, SourceError> {
+    let value: Value = serde_json::from_str(body)
+        .map_err(|e| SourceError::parse(format!("DLsite search: {e}")))?;
+    let html = value
+        .get("search_result")
+        .and_then(Value::as_str)
+        .ok_or_else(|| SourceError::parse("DLsite search: missing search_result"))?;
+    let patterns: &SearchPatterns = &SEARCH_PATTERNS;
+    let mut works: Vec<Work> = Vec::new();
+    for item in html.split("data-list_item_product_id=\"").skip(1) {
+        let Some((id, rest)) = item.split_once('"') else {
+            continue;
+        };
+        let Ok(rj) = normalize_rj(id) else {
+            continue;
+        };
+        if works.iter().any(|work| work.remote_id == rj) {
+            continue;
+        }
+        let Some(title) = patterns.title.captures(rest).map(|c| unescape_html(&c[1])) else {
+            continue;
+        };
+        let cover = patterns
+            .thumb
+            .captures(rest)
+            .map(|c| format!("https:{}", &c[1]));
+        works.push(Work {
+            source_id: "dlsite".into(),
+            remote_id: rj.clone(),
+            rj_code: Some(rj),
+            title,
+            circle: patterns
+                .circle
+                .captures(rest)
+                .map(|c| unescape_html(c[1].trim())),
+            voice_actors: Vec::new(),
+            languages: Vec::new(),
+            tags: Vec::new(),
+            cover: cover.clone(),
+            release_date: None,
+            assets: cover
+                .into_iter()
+                .map(|location| Asset {
+                    id: "cover".into(),
+                    kind: AssetKind::Image,
+                    name: "cover.jpg".into(),
+                    location,
+                    size: None,
+                    sha256: None,
+                })
+                .collect(),
+        });
+    }
+    Ok(works)
 }
 
 impl SourceAdapter for DlsiteAdapter {
@@ -168,6 +294,7 @@ impl SourceAdapter for DlsiteAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            search: true,
             get_work: true,
             list_assets: true,
             refresh: true,
@@ -179,6 +306,21 @@ impl SourceAdapter for DlsiteAdapter {
     fn get_work(&self, remote_id: &str) -> Result<Work, SourceError> {
         let rj = normalize_rj(remote_id)?;
         parse_product(&rj, &fetch_product(&rj)?)
+    }
+
+    fn search(&self, query: &str, filters: &SearchFilters) -> Result<Vec<Work>, SourceError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(SourceError::invalid_input("DLsite search needs a keyword"));
+        }
+        let limit = filters.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).max(1);
+        let per_page = SEARCH_PAGE_SIZES
+            .into_iter()
+            .find(|size| *size >= limit)
+            .unwrap_or(SEARCH_PAGE_SIZES[2]);
+        let mut works = parse_search(&get_text(search_url(query, per_page), "search")?)?;
+        works.truncate(limit as usize);
+        Ok(works)
     }
 
     fn list_assets(&self, remote_id: &str) -> Result<Vec<Asset>, SourceError> {
@@ -206,7 +348,10 @@ mod tests {
         assert_eq!(work.circle.as_deref(), Some("ベレス解部"));
         assert_eq!(
             work.voice_actors,
-            [VoiceActor { name_ja: "陽向葵ゅか".into(), aliases: vec![] }]
+            [VoiceActor {
+                name_ja: "陽向葵ゅか".into(),
+                aliases: vec![]
+            }]
         );
         assert_eq!(work.tags.len(), 6);
         assert_eq!(work.tags[0], "脚");
@@ -222,9 +367,16 @@ mod tests {
     #[test]
     fn keeps_japanese_names_canonical_with_aliases() {
         let work = parse_product("RJ239066", ALIAS).unwrap();
-        let names: Vec<&str> = work.voice_actors.iter().map(|a| a.name_ja.as_str()).collect();
+        let names: Vec<&str> = work
+            .voice_actors
+            .iter()
+            .map(|a| a.name_ja.as_str())
+            .collect();
         assert_eq!(names, ["大山チロル", "秋山はるる"]);
-        assert_eq!(work.voice_actors[0].aliases, ["Chiroru Oyama", "Ooyama Chiroru"]);
+        assert_eq!(
+            work.voice_actors[0].aliases,
+            ["Chiroru Oyama", "Ooyama Chiroru"]
+        );
         assert_eq!(work.voice_actors[1].aliases, ["Haruru Akiyama"]);
     }
 
@@ -233,10 +385,79 @@ mod tests {
         assert_eq!(normalize_rj(" rj239066 ").unwrap(), "RJ239066");
         assert_eq!(normalize_rj("RJ01234567").unwrap(), "RJ01234567");
         for bad in ["RJ12345", "RJ12345a", "VJ239066", ""] {
-            assert_eq!(normalize_rj(bad).unwrap_err().code, "invalid_input", "{bad}");
+            assert_eq!(
+                normalize_rj(bad).unwrap_err().code,
+                "invalid_input",
+                "{bad}"
+            );
         }
-        assert_eq!(parse_product("RJ000001", "[]").unwrap_err().code, "not_found");
-        assert_eq!(parse_product("RJ000001", "<html>").unwrap_err().code, "parse");
+        assert_eq!(
+            parse_product("RJ000001", "[]").unwrap_err().code,
+            "not_found"
+        );
+        assert_eq!(
+            parse_product("RJ000001", "<html>").unwrap_err().code,
+            "parse"
+        );
         assert!(!DlsiteAdapter::new().capabilities().acquire);
+    }
+
+    #[test]
+    fn parses_search_result_list() {
+        let html = r#"<li data-list_item_product_id="RJ01687946" class="x"><dl><dt><thumb-with-ng-filter-block :thumb-candidates="['//img.dlsite.jp/resize/images2/work/doujin/RJ01688000/RJ01687946_img_main_240x240.webp','//img.dlsite.jp/resize/images2/work/doujin/RJ01688000/RJ01687946_img_main_240x240.jpg']"></thumb-with-ng-filter-block></dt><dd class="work_name"><div class="multiline_truncate"><a href="w" title="夢見ぐらし。&amp;セット">夢見ぐらし。&amp;セット</a></div></dd><dd class="maker_name"><a href="m">CANDY VOICE</a></dd></dl></li><li data-list_item_product_id="RJ01687946"></li><li data-list_item_product_id="bad"></li>"#;
+        let body = serde_json::json!({ "search_result": html, "page_info": { "count": 1 } });
+        let works = parse_search(&body.to_string()).unwrap();
+        assert_eq!(works.len(), 1);
+        let work = &works[0];
+        assert_eq!(work.remote_id, "RJ01687946");
+        assert_eq!(work.title, "夢見ぐらし。&セット");
+        assert_eq!(work.circle.as_deref(), Some("CANDY VOICE"));
+        assert_eq!(
+            work.cover.as_deref().and_then(|c| c.strip_prefix("https:")),
+            Some("//img.dlsite.jp/resize/images2/work/doujin/RJ01688000/RJ01687946_img_main_240x240.jpg")
+        );
+        assert_eq!(work.assets.len(), 1);
+        assert_eq!(parse_search("{}").unwrap_err().code, "parse");
+        assert_eq!(encode_segment("耳 a"), "%E8%80%B3%20a");
+        let site = PRODUCT_API.split_once("/api/").unwrap().0;
+        let url = search_url("耳", 30);
+        assert!(url.starts_with(site) && url.contains("/fsr/ajax/"), "{url}");
+        assert!(
+            url.contains("/keyword/%E8%80%B3/") && url.contains("/per_page/30/"),
+            "{url}"
+        );
+        assert!(DlsiteAdapter::new().capabilities().search);
+    }
+
+    #[test]
+    fn parses_live_search_markup() {
+        // First three items of a real fsr/ajax response (2026-11).
+        let works = parse_search(include_str!("fixtures/dlsite_search_live.json")).unwrap();
+        assert_eq!(works.len(), 3);
+        assert_eq!(works[0].remote_id, "RJ01719814");
+        assert_eq!(works[0].circle.as_deref(), Some("いっしんふらん"));
+        for work in &works {
+            assert!(work.rj_code.is_some() && !work.title.is_empty(), "{work:?}");
+            assert!(work.circle.is_some(), "{work:?}");
+            let cover = work.cover.as_deref().unwrap_or_default();
+            assert!(
+                cover.starts_with("https:")
+                    && cover.contains("//img.dlsite.jp/")
+                    && cover.ends_with(".jpg"),
+                "{cover}"
+            );
+        }
+    }
+
+    /// Real network through the env or system proxy:
+    /// cargo test -p tsubame --lib dlsite_live -- --ignored.
+    #[test]
+    #[ignore = "network"]
+    fn dlsite_live_search_and_product() {
+        let works = parse_search(&get_text(search_url("耳", 30), "search").unwrap()).unwrap();
+        assert!(!works.is_empty());
+        let work = DlsiteAdapter::new().get_work(&works[0].remote_id).unwrap();
+        assert_eq!(work.remote_id, works[0].remote_id);
+        assert!(work.cover.is_some() && !work.title.is_empty(), "{work:?}");
     }
 }

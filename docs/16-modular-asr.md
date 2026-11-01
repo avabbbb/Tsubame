@@ -115,7 +115,7 @@ Same 120 s Japanese ASMR clip, RTX 3050 Ti Laptop (4 GB), faster-whisper 1.2.1, 
 
 The worker reads the app-decoded 16 kHz mono WAV with `wave` + numpy instead of PyAV: PyAV 19 breaks faster-whisper 1.2.1 (`metadata_errors` argument).
 
-Runtime packs: the spike (embeddable CPython 3.12.0 running the worker from the hash-locked set, ~2.4 GB installed, dominated by cuDNN and cuBLAS) became two packs: `runtime.faster-whisper` (CPU BASE, 97,115,053-byte archive) and the optional `runtime.faster-whisper.cuda` (NVIDIA GPU libraries, 1,372,642,304-byte archive). Sizes, hashes, device selection and publication status: [Runtime bootstrap](06-runtime-bootstrap.md).
+Runtime packs: the spike (embeddable CPython 3.12.0 running the worker from the hash-locked set, ~2.4 GB installed, dominated by cuDNN and cuBLAS) became two packs: `runtime.faster-whisper` (CPU BASE, 97,115,945-byte archive) and the optional `runtime.faster-whisper.cuda` (NVIDIA GPU libraries, 1,372,642,304-byte archive). Sizes, hashes, device selection and publication status: [Runtime bootstrap](06-runtime-bootstrap.md).
 
 ## Runtime separation
 
